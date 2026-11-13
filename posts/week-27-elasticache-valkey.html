@@ -1,0 +1,457 @@
+---
+title: 'Week 27 - ElastiCache for Valkey: Twenty Thousand Requests, Three Different Bills'
+date: '2026-11-13T18:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-27-elasticache-valkey
+draft: true
+verified: '2026-11-13'
+verified_claims:
+  - claim: "Each simple read and write requires 1 ECPU for each kilobyte (KB) of data transferred"
+    source: https://aws.amazon.com/elasticache/pricing/
+  - claim: "When a command takes additional vCPU time and transfers more data than the baseline, ElastiCache calculates the ECPUs required based on the higher of the two dimensions"
+    source: https://aws.amazon.com/elasticache/pricing/
+  - claim: "Minimum billed data storage is 100 MB per cache for ElastiCache Serverless for Valkey, and 1 GB for Memcached and Redis OSS"
+    source: https://aws.amazon.com/elasticache/pricing/
+  - claim: "ElastiCache Serverless for Valkey in us-east-1 costs $0.084 per GB-hour of data storage and $0.0023 per million ECPUs"
+    source: https://aws.amazon.com/elasticache/pricing/
+  - claim: "Amazon ElastiCache for Valkey starts at $6/month and offers 33% lower price on ElastiCache Serverless and 20% lower on node-based compared to other supported engines"
+    source: https://aws.amazon.com/elasticache/pricing/
+  - claim: "The ElastiCacheProcessingUnits metric is the total number of ECPUs consumed by the requests executed on the cache"
+    source: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/serverless-metrics-events-redis.html
+  - claim: "If you are using ElastiCache Serverless, encryption in transit is always enabled and cannot be turned off"
+    source: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/serverless-getting-started.html
+  - claim: "ElastiCache uses port 6379 as the primary endpoint and 6380 as the read-optimised endpoint for serverless caches"
+    source: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/serverless-getting-started.html
+  - claim: "20,000 reads billed 20,803 ECPUs at 1 KB, 200,830 at 10 KB and 2,000,960 at 100 KB - a 96x spread at identical request count"
+    source: "Observed 2026-11-13 in us-east-1: CloudWatch ElastiCacheProcessingUnits, Sum, summed over each run's window after all runs had published"
+  - claim: "The lab cost $0.078, nearly all of it the 100 MB storage floor rather than the experiment's 2.2 million ECPUs"
+    source: "Cost Explorer get-cost-and-usage for 2026-11-13, filtered to Amazon ElastiCache, read 2026-11-13"
+  - claim: "200,000 sequential reads exceeded a 300-second Lambda timeout, recorded as Duration 300,000 ms with one error"
+    source: "Observed 2026-11-12: CloudWatch AWS/Lambda Duration Maximum 300000.0 and Errors 1.0 for week27-valkey-client"
+---
+
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 27 of 52</div>
+  <div class="post-title">Twenty thousand requests, three different bills</div>
+  <div class="post-subtitle">A cache priced per request would be easy to budget. ElastiCache Serverless is not priced per request, and the number everyone watches on the dashboard turns out to predict almost nothing about the invoice.</div>
+  <div class="post-meta">
+    <span>13 November 2026</span>
+    <span>Terraform &middot; HCP &middot; ElastiCache &middot; Valkey &middot; Lambda &middot; VPC</span>
+    <span>$0.08 measured</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#overview">Lab Overview</a></li>
+      <li><a href="#services">Cloud Services and Concepts</a></li>
+      <li><a href="#architecture">Architecture and Workflow</a></li>
+      <li><a href="#prerequisites">Prerequisites</a></li>
+      <li><a href="#implementation">Implementation</a></li>
+      <li><a href="#validation">Validation and Evidence</a></li>
+      <li><a href="#security-cost">Security and Cost</a></li>
+      <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+      <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
+
+    <p>A courier charges by the parcel. You send a hundred parcels, you pay for
+    a hundred. Then you discover the invoice is by weight, and the hundred
+    envelopes you sent last month cost rather less than the hundred boxes you
+    sent this month.</p>
+
+    <p>Nothing about the count changed. The count was never the thing being
+    charged for.</p>
+
+    <p><strong>The problem.</strong> Capacity conversations about a cache start
+    with requests per second, because that is the number on every dashboard.
+    ElastiCache Serverless bills in ECPUs, and an ECPU is charged per kilobyte
+    moved. The request rate and the bill are related only through a quantity
+    nobody is looking at.</p>
+
+    <p><strong>The objective.</strong> Issue the same number of requests three
+    times, against values of 1&nbsp;KB, 10&nbsp;KB and 100&nbsp;KB, and read
+    the billed ECPUs for each from CloudWatch.</p>
+
+    <p><strong>The outcome.</strong> 20,000 requests billed
+    <strong>20,803</strong>, <strong>200,830</strong> and
+    <strong>2,000,960</strong> ECPUs &mdash; a <strong>96&times;</strong>
+    spread with the request count held constant. The byte model predicts all
+    three to within 4%, which is the point: the model is sound and the request
+    count is the useless number.</p>
+
+    <table>
+      <tbody>
+        <tr><td><strong>Difficulty</strong></td><td>Beginner to intermediate</td></tr>
+        <tr><td><strong>Measured cost</strong></td><td>$0.078 from Cost Explorer &mdash; the cache ran about 12 hours</td></tr>
+        <tr><td><strong>Deployment</strong></td><td>Terraform via HCP Terraform with OIDC dynamic credentials</td></tr>
+        <tr><td><strong>Region</strong></td><td><code>us-east-1</code> &mdash; a serverless cache is reachable only from its own VPC</td></tr>
+        <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-27-elasticache-valkey/README.md">GitHub &mdash; prerequisites, Terraform, commands, validation, cleanup</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
+
+    <table>
+      <thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Amazon ElastiCache Serverless</strong></td><td>The cache under test, and the thing doing the billing</td>
+            <td>A managed in-memory cache with no nodes to size. You are charged for data stored and for the work your requests do, rather than for a server by the hour.</td></tr>
+        <tr><td><strong>Valkey</strong></td><td>The engine &mdash; version 9.0, the current default</td>
+            <td>An open-source key-value store, forked from Redis in 2024 and now the engine AWS prices lowest. Same commands, same clients.</td></tr>
+        <tr><td><strong>AWS Lambda</strong></td><td>The load generator, inside the VPC because the cache has no public endpoint</td>
+            <td>Runs code on demand with no server to manage. Attaching it to a VPC is what lets it reach private resources.</td></tr>
+        <tr><td><strong>Amazon CloudWatch</strong></td><td><code>ElastiCacheProcessingUnits</code> &mdash; the only figure here that is a measurement rather than a calculation</td>
+            <td>AWS's metrics service. Most services publish numbers into it without being asked.</td></tr>
+        <tr><td><strong>Amazon VPC</strong></td><td>Required &mdash; a serverless cache is reachable only from inside one</td>
+            <td>A private network inside your account. Nothing in it is reachable from the internet unless you arrange it.</td></tr>
+        <tr><td><strong>HCP Terraform</strong></td><td>Remote applies using OIDC, so no AWS keys are stored anywhere</td>
+            <td>HashiCorp's hosted Terraform. It runs plans and applies on its own machines and keeps the state file.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>An ECPU is the higher of two numbers</h3>
+    <p>AWS defines it in two parts. A simple read or write
+    <em>"requires 1 ECPU for each kilobyte (KB) of data transferred"</em>. A
+    command that needs more processing consumes proportionally more. And when
+    both apply, <em>"ElastiCache calculates the ECPUs required based on the
+    higher of the two dimensions"</em> &mdash; not the sum.</p>
+
+    <p>For a plain <code>GET</code> the byte dimension wins, which makes the
+    arithmetic simple and the budgeting counter-intuitive: a 100&nbsp;KB value
+    costs a hundred times a 1&nbsp;KB value to read, and the request counter
+    shows the same number either way.</p>
+
+    <h3>Valkey's floor is 100 MB, not 1 GB</h3>
+    <p>Storage is billed per GB-hour with a minimum, and the minimum differs
+    by engine: <strong>100&nbsp;MB</strong> for Valkey against
+    <strong>1&nbsp;GB</strong> for Redis OSS and Memcached. At
+    $0.084/GB-hour that is about <strong>$6.13 a month</strong> for a cache
+    that holds almost nothing, which is the figure behind AWS's "starts at
+    $6/month". The same page says there is <em>"no minimum fee"</em>. Both
+    statements are true: there is no fee floor, but there is a storage floor.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture and Workflow</h2>
+
+    <figure class="diagram">
+<svg viewBox="0 0 960 430" xmlns="http://www.w3.org/2000/svg" role="img"
+           aria-label="An AWS Lambda function in a VPC issues 20,000 reads against an Amazon ElastiCache Serverless cache for Valkey, three times, at value sizes of 1 KB, 10 KB and 100 KB. The request count is identical each time. The ECPUs billed are 20,803, 200,830 and 2,000,960 respectively, because an ECPU is charged per kilobyte transferred rather than per request."
+           style="width:100%;height:auto;background:#fff;border:1px solid #e6e8eb;border-radius:8px">
+        <rect width="960" height="430" fill="#ffffff"/>
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5A6B7B"/></marker></defs>
+        <rect x="14" y="14" width="932" height="400" rx="2" fill="none" stroke="#232F3E" stroke-width="2"/>
+        <rect x="14" y="14" width="34" height="30" fill="#232F3E"/>
+        <text x="21" y="34" font-family="Arial,sans-serif" font-size="11" font-weight="700" fill="#FFFFFF">aws</text>
+        <text x="58" y="34" font-family="Arial,sans-serif" font-size="13" fill="#232F3E">AWS Cloud</text>
+        <rect x="44" y="56" width="872" height="340" rx="2" fill="none" stroke="#5A6B7B" stroke-width="1.5"/>
+        <text x="56" y="76" font-family="Arial,sans-serif" font-size="12" font-weight="600" fill="#5A6B7B">Region: us-east-1</text>
+        <rect x="72" y="92" width="500" height="280" rx="2" fill="none" stroke="#5A6B7B" stroke-width="1.5"/>
+        <text x="84" y="112" font-family="Arial,sans-serif" font-size="12" font-weight="600" fill="#5A6B7B">VPC — a serverless cache has no public endpoint</text>
+        <g transform="translate(120,200) scale(0.65000)"><g id="Icon-Architecture/64/Arch_AWS-Lambda_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/64/Compute" fill="#ED7100">
+            <rect id="Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M28.0075352,66 L15.5907274,66 L29.3235885,37.296 L35.5460249,50.106 L28.0075352,66 Z M30.2196674,34.553 C30.0512768,34.208 29.7004629,33.989 29.3175745,33.989 L29.3145676,33.989 C28.9286723,33.99 28.5778583,34.211 28.4124746,34.558 L13.097944,66.569 C12.9495999,66.879 12.9706487,67.243 13.1550766,67.534 C13.3374998,67.824 13.6582439,68 14.0020416,68 L28.6420072,68 C29.0299071,68 29.3817234,67.777 29.5481094,67.428 L37.563706,50.528 C37.693006,50.254 37.6920037,49.937 37.5586944,49.665 L30.2196674,34.553 Z M64.9953491,66 L52.6587274,66 L32.866809,24.57 C32.7014253,24.222 32.3486067,24 31.9617091,24 L23.8899822,24 L23.8990031,14 L39.7197081,14 L59.4204149,55.429 C59.5857986,55.777 59.9386172,56 60.3255148,56 L64.9953491,56 L64.9953491,66 Z M65.9976745,54 L60.9599868,54 L41.25928,12.571 C41.0938963,12.223 40.7410777,12 40.3531778,12 L22.89768,12 C22.3453987,12 21.8963569,12.447 21.8953545,12.999 L21.884329,24.999 C21.884329,25.265 21.9885708,25.519 22.1780103,25.707 C22.3654452,25.895 22.6200358,26 22.8866544,26 L31.3292417,26 L51.1221625,67.43 C51.2885485,67.778 51.6393624,68 52.02626,68 L65.9976745,68 C66.5519605,68 67,67.552 67,67 L67,55 C67,54.448 66.5519605,54 65.9976745,54 L65.9976745,54 Z" id="AWS-Lambda_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g></g>
+        <text x="146" y="268" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" fill="#232F3E">load client</text>
+        <text x="146" y="283" text-anchor="middle" font-family="Arial,sans-serif" font-size="10.5" fill="#687078">20,000 reads, each run</text>
+        <g transform="translate(400,200) scale(0.65000)"><title>Icon-Architecture/64/Arch_Amazon-ElastiCache_64</title>
+    <g id="Icon-Architecture/64/Arch_Amazon-ElastiCache_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/64/Database" fill="#C925D1">
+            <rect id="Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M51,61.5554864 L51,55.7029342 C48.466,57.3400887 43.904,58.1131616 39.556,58.1131616 C34.816,58.1131616 31.121,57.2860836 29,55.8679498 L29,61.5554864 C29,63.2486461 32.948,64.9998113 39.556,64.9998113 C46.3,64.9998113 51,63.1846401 51,61.5554864 L51,61.5554864 Z M39.556,49.2203227 C34.816,49.2203227 31.121,48.3942447 29,46.976111 L29,52.6866497 C29.031,54.3738088 32.973,56.1129729 39.556,56.1129729 C46.279,56.1129729 50.969,54.3088027 51,52.6826493 L51,46.8100953 C48.466,48.4482498 43.904,49.2203227 39.556,49.2203227 L39.556,49.2203227 Z M51,43.7908105 L51,37.0291726 C48.466,38.666327 43.904,39.4393999 39.556,39.4393999 C34.816,39.4393999 31.121,38.613322 29,37.1951882 L29,43.7948108 C29.031,45.48197 32.973,47.220134 39.556,47.220134 C46.279,47.220134 50.969,45.4159638 51,43.7908105 L51,43.7908105 Z M28.997,33.9928861 C28.997,33.9958864 28.998,33.9988867 28.998,34.001887 L29,34.001887 L29,34.012888 C29.031,35.7000472 32.973,37.4392112 39.556,37.4392112 C46.898,37.4392112 50.969,35.4170205 51,34.0098877 L51,34.001887 L51.002,34.001887 C51.002,33.9988867 51.003,33.9958864 51.003,33.9928861 C51.003,32.5847533 46.927,30.546561 39.556,30.546561 C32.946,30.546561 28.997,32.2987263 28.997,33.9928861 L28.997,33.9928861 Z M53,34.0178885 L53,43.7738088 L53.003,43.7738088 C53.003,43.7828097 53,43.7898104 53,43.7988112 L53,52.6666478 L53.003,52.6666478 C53.003,52.6756486 53,52.6826493 53,52.6916502 L53,61.5554864 C53,65.2968393 46.031,67 39.556,67 C31.929,67 27,64.8627984 27,61.5554864 L27,52.6976507 C27,52.6866497 26.997,52.6776488 26.997,52.6666478 L27,52.6666478 L27,43.8048118 C27,43.7948108 26.997,43.7848099 26.997,43.7738088 L27,43.7738088 L27,34.023889 C27,34.012888 26.997,34.0038872 26.997,33.9928861 C26.997,30.684574 31.927,28.5463723 39.556,28.5463723 C46.032,28.5463723 53.003,30.2505331 53.003,33.9928861 C53.003,34.001887 53,34.0088876 53,34.0178885 L53,34.0178885 Z M67,21.1206718 C67.553,21.1206718 68,20.6726295 68,20.1205774 L68,15.0000943 C68,14.4470422 67.553,14 67,14 L13,14 C12.447,14 12,14.4470422 12,15.0000943 L12,20.1205774 C12,20.6726295 12.447,21.1206718 13,21.1206718 C14.221,21.1206718 15.214,22.1077649 15.214,23.3208793 C15.214,24.5339938 14.221,25.5210869 13,25.5210869 C12.447,25.5210869 12,25.9691292 12,26.5211812 L12,47.0031135 C12,47.5551656 12.447,48.0032078 13,48.0032078 L23,48.0032078 L23,46.0030192 L18,46.0030192 L18,43.0027361 L23,43.0027361 L23,41.0025474 L17,41.0025474 C16.447,41.0025474 16,41.4495896 16,42.0026418 L16,46.0030192 L14,46.0030192 L14,27.4012643 C15.843,26.9522219 17.214,25.2930654 17.214,23.3208793 C17.214,21.3476932 15.843,19.6885367 14,19.2394943 L14,16.0001887 L66,16.0001887 L66,19.2394943 C64.157,19.6885367 62.786,21.3476932 62.786,23.3208793 C62.786,25.2930654 64.157,26.9522219 66,27.4012643 L66,46.0030192 L64,46.0030192 L64,42.0026418 C64,41.4495896 63.553,41.0025474 63,41.0025474 L57,41.0025474 L57,43.0027361 L62,43.0027361 L62,46.0030192 L57,46.0030192 L57,48.0032078 L67,48.0032078 C67.553,48.0032078 68,47.5551656 68,47.0031135 L68,26.5211812 C68,25.9691292 67.553,25.5210869 67,25.5210869 C65.779,25.5210869 64.786,24.5339938 64.786,23.3208793 C64.786,22.1077649 65.779,21.1206718 67,21.1206718 L67,21.1206718 Z M28,28.0013209 L28,20.0005661 C28,19.4475139 27.553,19.0004717 27,19.0004717 L21,19.0004717 C20.447,19.0004717 20,19.4475139 20,20.0005661 L20,37.00217 C20,37.5542221 20.447,38.0022644 21,38.0022644 L24,38.0022644 L24,36.0020757 L22,36.0020757 L22,21.0006604 L26,21.0006604 L26,28.0013209 L28,28.0013209 Z M58,36.0020757 L57,36.0020757 L57,38.0022644 L59,38.0022644 C59.553,38.0022644 60,37.5542221 60,37.00217 L60,20.0005661 C60,19.4475139 59.553,19.0004717 59,19.0004717 L53,19.0004717 C52.447,19.0004717 52,19.4475139 52,20.0005661 L52,28.0013209 L54,28.0013209 L54,21.0006604 L58,21.0006604 L58,36.0020757 Z M50,27.0012265 L50,20.0005661 C50,19.4475139 49.553,19.0004717 49,19.0004717 L42,19.0004717 C41.447,19.0004717 41,19.4475139 41,20.0005661 L41,26.0011322 L43,26.0011322 L43,21.0006604 L48,21.0006604 L48,27.0012265 L50,27.0012265 Z M37,26.0011322 L37,21.0006604 L32,21.0006604 L32,27.0012265 L30,27.0012265 L30,20.0005661 C30,19.4475139 30.447,19.0004717 31,19.0004717 L38,19.0004717 C38.553,19.0004717 39,19.4475139 39,20.0005661 L39,26.0011322 L37,26.0011322 Z" id="Amazon-ElastiCache_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g></g>
+        <text x="426" y="268" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" fill="#232F3E">Valkey 9.0</text>
+        <text x="426" y="283" text-anchor="middle" font-family="Arial,sans-serif" font-size="10.5" fill="#687078">serverless</text>
+        <path d="M184 196 L392 176" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)"/>
+        <circle cx="288" cy="174" r="11" fill="#232F3E"/>
+        <text x="288" y="178" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">1</text>
+        <path d="M184 216 L392 216" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)"/>
+        <circle cx="288" cy="204" r="11" fill="#232F3E"/>
+        <text x="288" y="208" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">2</text>
+        <path d="M184 236 L392 256" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)"/>
+        <circle cx="288" cy="234" r="11" fill="#232F3E"/>
+        <text x="288" y="238" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">3</text>
+        <text x="322" y="164" text-anchor="start" font-family="Arial,sans-serif" font-size="11" font-weight="400" fill="#687078">1 KB</text>
+        <text x="322" y="206" text-anchor="start" font-family="Arial,sans-serif" font-size="11" font-weight="400" fill="#687078">10 KB</text>
+        <text x="322" y="272" text-anchor="start" font-family="Arial,sans-serif" font-size="11" font-weight="400" fill="#687078">100 KB</text>
+        <text x="620" y="140" text-anchor="start" font-family="Arial,sans-serif" font-size="10.5" font-weight="700" fill="#687078">SAME REQUEST COUNT, BILLED:</text>
+        <rect x="620" y="156" width="290" height="34" rx="3" fill="#F2F3F3" stroke="#D5DBDB" stroke-width="1.4"/>
+        <circle cx="640" cy="173" r="11" fill="#232F3E"/>
+        <text x="640" y="177" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">1</text>
+        <text x="664" y="178" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="400" fill="#1A7F37">1 KB</text>
+        <text x="760" y="178" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="400" fill="#1A7F37">20,803 ECPUs</text>
+        <rect x="620" y="196" width="290" height="34" rx="3" fill="#F2F3F3" stroke="#D5DBDB" stroke-width="1.4"/>
+        <circle cx="640" cy="213" r="11" fill="#232F3E"/>
+        <text x="640" y="217" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">2</text>
+        <text x="664" y="218" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="400" fill="#232F3E">10 KB</text>
+        <text x="760" y="218" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="400" fill="#232F3E">200,830 ECPUs</text>
+        <rect x="620" y="236" width="290" height="34" rx="3" fill="#FDF3F2" stroke="#D13212" stroke-width="1.4"/>
+        <circle cx="640" cy="253" r="11" fill="#232F3E"/>
+        <text x="640" y="257" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">3</text>
+        <text x="664" y="258" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="600" fill="#D13212">100 KB</text>
+        <text x="760" y="258" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="600" fill="#D13212">2,000,960 ECPUs</text>
+        <text x="620" y="296" text-anchor="start" font-family="Arial,sans-serif" font-size="11" font-weight="400" fill="#687078">96x the cost. 20,000 requests either way.</text>
+        <text x="72" y="388" text-anchor="start" font-family="Arial,sans-serif" font-size="12.5" font-weight="600" fill="#232F3E">An ECPU is charged per kilobyte moved, not per request.</text>
+      </svg>
+      <figcaption>Three runs against one cache. The request count is held at
+      20,000 throughout; only the value size changes.</figcaption>
+    </figure>
+
+    <ol>
+      <li><strong>20,000 reads of 1 KB values.</strong> The byte dimension
+      implies 20,000 ECPUs.</li>
+      <li><strong>20,000 reads of 10 KB values.</strong> Same request count,
+      ten times the bytes.</li>
+      <li><strong>20,000 reads of 100 KB values.</strong> Same request count
+      again, a hundred times the bytes.</li>
+    </ol>
+
+    <p>Each run writes its value once, then reads it back 20,000 times
+    sequentially. A cache hit is the cheapest thing the service does, so this
+    is the <em>best</em> case for a request-based estimate &mdash; and it still
+    misses by two orders of magnitude.</p>
+  </div>
+
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
+
+    <table>
+      <thead><tr><th>Requirement</th><th>Why</th><th>How to check</th></tr></thead>
+      <tbody>
+        <tr><td>Terraform &ge; 1.10</td><td><code>cloud {}</code> block and AWS provider v6</td><td><code>terraform version</code></td></tr>
+        <tr><td>HCP Terraform workspace, CLI-driven</td><td>The Lambda package is built locally and uploaded with the configuration</td><td><code>terraform init</code></td></tr>
+        <tr><td>AWS permissions for ElastiCache, Lambda, VPC, IAM</td><td>The apply creates all four</td><td><code>aws sts get-caller-identity</code></td></tr>
+        <tr><td>Python 3.11+ with pip</td><td>Builds the package &mdash; <code>valkey-py</code> is not in the Lambda runtime</td><td><code>python --version</code></td></tr>
+        <tr><td>AWS CLI v2</td><td>Teardown is verified against the API</td><td><code>aws --version</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <h3>What was deployed</h3>
+    <table>
+      <thead><tr><th>Resource</th><th>How many</th><th>Its job</th></tr></thead>
+      <tbody>
+        <tr><td>ElastiCache Serverless cache</td><td>1</td><td>Valkey 9.0, storage capped at 2 GB and 15,000 ECPUs/second</td></tr>
+        <tr><td>Lambda function</td><td>1</td><td>The load generator, VPC-attached</td></tr>
+        <tr><td>VPC and subnets</td><td>1 / 2</td><td>Two AZs, because the cache requires a subnet in more than one</td></tr>
+        <tr><td>Security groups</td><td>2</td><td>Client egress only; cache accepts 6379 from the client alone</td></tr>
+        <tr><td>IAM role and policy</td><td>1 / 1</td><td>Logs, plus the EC2 permissions Lambda needs to build its VPC network interface</td></tr>
+        <tr><td>CloudWatch log group</td><td>1</td><td>7-day retention</td></tr>
+      </tbody>
+    </table>
+    <p>Ten resources, applied in about seven minutes.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-27-elasticache-valkey/docs/blog/screenshots/02-hcp-apply.png" alt="The HCP Terraform run page for week-27-dev showing the apply finished with ten resources created, triggered via CLI.">
+      <figcaption>The apply, run remotely by HCP Terraform using OIDC dynamic
+      credentials &mdash; the workspace holds a role to assume, not an access
+      key.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-27-elasticache-valkey/docs/blog/screenshots/01-cache-created.png" alt="The ElastiCache console showing one Valkey cache named week27-valkey, status Available, engine version 9.0, configuration Serverless.">
+      <figcaption>One serverless cache, engine version 9.0. There is no node
+      type to choose and no node count, which is exactly why the bill has to
+      be expressed in something other than instance-hours.</figcaption>
+    </figure>
+
+    <h3>The one thing that is not obvious in the Terraform</h3>
+    <p>Encryption in transit is not a choice. AWS: <em>"If you are using
+    ElastiCache Serverless, encryption in transit is always enabled"</em>, and
+    it cannot be turned off. The client therefore has to speak TLS or it will
+    not connect at all:</p>
+    <pre><code>_client = valkey.Valkey(host=HOST, port=PORT, ssl=True,
+                        ssl_cert_reqs=None, socket_timeout=10)</code></pre>
+    <p>Port 6379 is the primary endpoint. 6380 is a read-optimised reader
+    endpoint, left closed here so the measurement has one path.</p>
+  </div>
+
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
+
+    <p>Three runs, 20,000 reads each, separated by five idle minutes so no
+    measurement window overlaps another. Billed ECPUs are read from
+    CloudWatch's <code>ElastiCacheProcessingUnits</code> after every run has
+    finished and published.</p>
+
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>20,000 reads at 1 KB</td><td>~20,000 ECPUs</td><td>20,803 billed</td><td>&#9989;</td></tr>
+        <tr><td>20,000 reads at 10 KB</td><td>~200,000 ECPUs</td><td>200,830 billed</td><td>&#9989;</td></tr>
+        <tr><td>20,000 reads at 100 KB</td><td>~2,000,000 ECPUs</td><td>2,000,960 billed</td><td>&#9989;</td></tr>
+        <tr><td>Spread at constant request count</td><td>about 100&times;</td><td><strong>96&times;</strong></td><td>&#9989;</td></tr>
+        <tr><td><code>BytesUsedForCache</code></td><td>under the 100 MB floor</td><td>a few hundred KB</td><td>&#9989;</td></tr>
+      </tbody>
+    </table>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-27-elasticache-valkey/docs/blog/screenshots/03-ecpu-by-size.png" alt="A terminal showing the three runs: 20,000 requests each, with 20,803, 200,830 and 2,000,960 ECPUs billed and costs of $0.000048, $0.000462 and $0.004602.">
+      <figcaption>The estimate and the measurement side by side. They agree,
+      which is what makes the request column meaningless rather than merely
+      imprecise.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-27-elasticache-valkey/docs/blog/screenshots/04-cloudwatch-ecpus.png" alt="A CloudWatch graph of ElastiCacheProcessingUnits per minute over 35 minutes, showing two barely visible deflections and one spike reaching about 1.45 million.">
+      <figcaption>The same three runs as CloudWatch saw them. The 1 KB and
+      10 KB runs are almost invisible against the 100 KB spike &mdash; and all
+      three moved exactly 20,000 requests.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-27-elasticache-valkey/docs/blog/screenshots/05-cache-metrics.png" alt="A CloudWatch graph of BytesUsedForCache showing stored data far below the 100 MB minimum billed storage.">
+      <figcaption>Stored data never approached the 100 MB minimum. The storage
+      line of this bill was the floor, not the contents.</figcaption>
+    </figure>
+  </div>
+
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
+
+    <h3>What this means for a platform team</h3>
+    <p><strong>Size a cache from payload, not from request rate.</strong> The
+    request-per-second figure on the dashboard is the number everyone quotes
+    in a capacity review, and on ElastiCache Serverless it carries almost no
+    information about cost. Two services with identical traffic profiles can
+    differ by two orders of magnitude on the invoice because one of them
+    caches rendered HTML and the other caches integers.</p>
+
+    <p>The practical control is the value itself. Caching a 100&nbsp;KB
+    serialised object where a 1&nbsp;KB identifier would do is not a style
+    preference at this price; it is the dominant term.</p>
+
+    <p>On security, two things are worth copying regardless of engine: the
+    cache has no public endpoint and cannot be given one, and encryption in
+    transit is mandatory and cannot be disabled. Neither needed configuring
+    &mdash; which is the right default for a datastore.</p>
+
+    <h3>Cost</h3>
+    <table>
+      <thead><tr><th>Line</th><th>Rate (us-east-1, verified 13 November 2026)</th></tr></thead>
+      <tbody>
+        <tr><td>Storage</td><td>$0.084 per GB-hour, minimum <strong>100 MB</strong> billed for Valkey</td></tr>
+        <tr><td>ECPUs</td><td>$0.0023 per million</td></tr>
+        <tr><td>VPC</td><td>Free &mdash; no NAT gateway, the client sits with the cache</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Measured: $0.078</strong> from Cost Explorer, for a cache that
+    existed about twelve hours. Nearly all of that is the storage floor at
+    $0.0084/hour; the three experiment runs together billed 2.2&nbsp;million
+    ECPUs, which is <strong>half a cent</strong>.</p>
+
+    <p>That ratio is itself the lesson in miniature. The workload everyone
+    would have budgeted for cost a fraction of the idle floor nobody would
+    have thought to budget for.</p>
+  </div>
+
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
+
+    <p><strong>Problem.</strong> The first run died with
+    <code>ReadTimeoutError: Read timeout on endpoint URL</code> while invoking
+    the Lambda.<br>
+    <strong>Root cause.</strong> Two layers. boto3 stops waiting for a
+    response after 60 seconds by default, well short of the function's
+    300-second timeout; and 200,000 sequential round-trips genuinely exceeded
+    that 300 seconds. CloudWatch recorded <code>Duration: 300,000 ms</code>
+    and one error.<br>
+    <strong>Resolution.</strong> An explicit <code>read_timeout</code> on the
+    boto3 client, and 20,000 requests rather than 200,000.<br>
+    <strong>Lesson.</strong> A serverless cache answers in about a
+    millisecond and a loop of 200,000 of them does not finish in five
+    minutes. Per-operation latency and total runtime are different
+    questions.</p>
+
+    <p><strong>Problem.</strong> The first measurement reported 10&nbsp;KB
+    values billing <em>fewer</em> ECPUs than 1&nbsp;KB values.<br>
+    <strong>Root cause.</strong> The CloudWatch windows were five minutes
+    wide and overlapped each other, so each figure included a neighbouring
+    run. A second attempt fixed the overlap but still queried too early and
+    caught only the first of the two minutes each run spans.<br>
+    <strong>Resolution.</strong> Idle gaps between runs, and the measurement
+    taken after all three have finished publishing.<br>
+    <strong>Lesson.</strong> Bytes moved set a floor on ECPUs, so a billed
+    figure below that floor is impossible rather than surprising. The runner
+    now refuses to print any result below it, which is what caught both
+    attempts.</p>
+
+    <p><strong>Problem.</strong> The remote apply failed with
+    <code>No valid credential sources found</code>.<br>
+    <strong>Root cause.</strong> The workspace is created on first
+    <code>terraform init</code> and starts with no variables, so an HCP run
+    has no way to reach AWS.<br>
+    <strong>Resolution.</strong> Set <code>TFC_AWS_PROVIDER_AUTH</code> and
+    <code>TFC_AWS_RUN_ROLE_ARN</code> on the workspace, which is how every
+    other week in this series authenticates.<br>
+    <strong>Lesson.</strong> A new workspace is not a configured workspace,
+    and the error names the symptom rather than the cause.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup and Key Takeaways</h2>
+
+    <p>Teardown is verified against the API rather than the destroy output
+    &mdash; a destroy reports what Terraform removed, not what is left in the
+    account. The cache and the function are both checked by name.</p>
+
+    <h3>Key takeaways</h3>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Request count is the wrong input</h4>
+        <p>20,000 requests billed 20,803 or 2,000,960 ECPUs depending only on
+        value size. Capacity conversations that start with requests per second
+        start in the wrong place.</p>
+      </div>
+      <div class="card">
+        <h4>Payload size is the design decision</h4>
+        <p>At 1 ECPU per kilobyte, what you choose to put in the cache is the
+        dominant cost term. Caching an identifier instead of a rendered object
+        is a pricing choice.</p>
+      </div>
+      <div class="card">
+        <h4>"No minimum fee" is not "no floor"</h4>
+        <p>Valkey bills a minimum 100 MB of storage &mdash; about $6.13 a
+        month &mdash; against 1 GB for Redis OSS. For a small cache that
+        minimum matters more than the headline discount.</p>
+      </div>
+      <div class="card">
+        <h4>A measurement that is impossible is not a measurement</h4>
+        <p>Bytes moved set a floor on ECPUs. Knowing that floor is what
+        exposed two bad measurement windows that otherwise produced
+        plausible-looking tables.</p>
+      </div>
+    </div>
+
+    <h3>References</h3>
+    <ul>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-27-elasticache-valkey/README.md"><strong>The full lab guide</strong></a></li>
+      <li><a href="https://aws.amazon.com/elasticache/pricing/">Amazon ElastiCache pricing</a> &mdash; ECPUs, and the minimum billed storage per engine</li>
+      <li><a href="https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/serverless-metrics-events-redis.html">Metrics for Valkey and Redis OSS serverless caches</a> &mdash; <code>ElastiCacheProcessingUnits</code></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/serverless-getting-started.html">Getting started with ElastiCache Serverless</a> &mdash; TLS is always on</li>
+      <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_serverless_cache">Terraform &mdash; <code>aws_elasticache_serverless_cache</code></a></li>
+      <li><a href="https://pypi.org/project/valkey/">valkey-py</a> &mdash; the client, not present in the Lambda runtime</li>
+    </ul>
+  </div>
+
+</div>
