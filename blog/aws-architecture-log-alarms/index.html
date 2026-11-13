@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #112 — The datapoint is a query, and the query can run before the logs arrive | Jayanth Katta Blog</title>
+<meta name="description" content="A Log Alarm evaluates a CloudWatch Logs Insights query that runs on a schedule, so its datapoints are query executions rather than published metric values. That removes the metric filter as an intermediate step, and it introduces three failure modes a metric alarm does not have: a query whose window closes before the logs are ingested returns a number that is real, low and wrong; an empty result and a missing field are treated differently even though both mean nothing happened; and a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort, so the breach you care about can be outside the window you evaluated."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The datapoint is a query, and the query can run before the logs arrive"/>
+<meta property="og:description" content="A Log Alarm evaluates a CloudWatch Logs Insights query that runs on a schedule, so its datapoints are query executions rather than published metric values. That removes the metric filter as an intermediate step, and it introduces three failure modes a metric alarm does not have: a query whose window closes before the logs are ingested returns a number that is real, low and wrong; an empty result and a missing field are treated differently even though both mean nothing happened; and a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort, so the breach you care about can be outside the window you evaluated."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-log-alarms/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The datapoint is a query, and the query can run before the logs arrive"/>
+<meta name="twitter:description" content="A Log Alarm evaluates a CloudWatch Logs Insights query that runs on a schedule, so its datapoints are query executions rather than published metric values. That removes the metric filter as an intermediate step, and it introduces three failure modes a metric alarm does not have: a query whose window closes before the logs are ingested returns a number that is real, low and wrong; an empty result and a missing field are treated differently even though both mean nothing happened; and a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort, so the breach you care about can be outside the window you evaluated."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-log-alarms/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=c039b840" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=c039b840">
+<script src="/blog/assets/site-footer.js?v=c039b840" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #112 — The datapoint is a query, and the query can run before the logs arrive…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #112 — The datapoint is a query, and the query can run before the logs arrive</h1>
+      <p class="post-description">A Log Alarm evaluates a CloudWatch Logs Insights query that runs on a schedule, so its datapoints are query executions rather than published metric values. That removes the metric filter as an intermediate step, and it introduces three failure modes a metric alarm does not have: a query whose window closes before the logs are ingested returns a number that is real, low and wrong; an empty result and a missing field are treated differently even though both mean nothing happened; and a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort, so the breach you care about can be outside the window you evaluated.</p>
+      <div class="post-info">
+        <span>Nov 13, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>16 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 13 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-log-alarms" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      For years, alarming on logs meant a metric filter: match a pattern, emit a number, alarm on the
+      number. A Log Alarm takes the other route.
+      <em>&ldquo;A Log Alarm monitors the results of a CloudWatch Logs Insights query that runs on a schedule
+      using a Scheduled Query&rdquo;</em>, and
+      <em>&ldquo;Unlike metric alarms that require metric filters as an intermediate step, Log Alarms
+      evaluate directly on log data using the same Logs Insights query language you use for ad-hoc
+      analysis.&rdquo;</em>
+    </p>
+    <p>
+      That is a real improvement. A metric filter decides at ingestion time what will be countable later; a
+      query decides at evaluation time what to ask. You can alarm on a field that nobody thought to extract
+      when the log group was created.
+    </p>
+    <p>
+      But the unit being evaluated has changed. #110 and #111 were about alarms whose datapoints arrive from
+      somewhere and sometimes do not. Here the datapoint <em>is</em> an action the alarm takes &mdash; a
+      query execution &mdash; and three properties of that follow it into production.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The query window and the ingestion window are not the same window</strong></div>
+      <div class="challenge-body">
+        <p>
+          Each execution reads a time range you define:
+          <em>&ldquo;StartTimeOffset defines the lookback window in seconds for each query
+          execution&rdquo;</em> and
+          <em>&ldquo;EndTimeOffset defines the end of the query time range as an offset in seconds from the
+          current time&rdquo;</em>. The documentation then says the part that matters:
+        </p>
+        <p>
+          The offsets define the window relative to execution time, and then:
+          <em>&ldquo;<strong>they do not account for ingestion delay. If events are still being ingested for
+          the window you query, the query runs before they are available and skips them.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Consider what the alarm sees. The query succeeds. It returns a number. The number is lower than
+          the truth, by however many events had not landed yet. Nothing is missing, nothing errors, and no
+          state tells you the count was partial &mdash; a metric filter never had this problem, because it
+          counted events as they arrived rather than asking later whether they had.
+        </p>
+        <p>
+          AWS gives the arithmetic, for logs that take up to two minutes to become queryable. A 60-second
+          lookback ending at execution time is the broken case, because
+          <em>&ldquo;recent events are not yet ingested and are missed&rdquo;</em>. A 180-second lookback
+          ending 120 seconds in the past is the working one, because
+          <em>&ldquo;all events are ingested and evaluable&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Measure your ingestion delay for the log groups in question, then <em>&ldquo;Use EndTimeOffset to shift the window back far enough that ingestion is complete for the entire range&rdquo;</em>. You are trading detection latency for correctness, deliberately, and the trade is the right way round: an alarm two minutes late is an inconvenience, while an alarm reading a systematically low number is a monitoring system that lies in the reassuring direction.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Nothing happened is a zero, or it is missing data, depending on how you counted</strong></div>
+      <div class="challenge-body">
+        <p>
+          Missing data on a Log Alarm has its own definition:
+          <em>&ldquo;Missing data occurs when a scheduled query execution does not produce a value that can
+          be evaluated against the threshold.&rdquo;</em> It covers
+          <em>&ldquo;No logs present&rdquo;</em> and
+          <em>&ldquo;Matching query results were not present as per the query filter&rdquo;</em>, and this:
+          <em>&ldquo;The field referenced in the aggregation expression was not present in the query results.
+          For example, count(error-codes) where error-codes does not exist in the returned log
+          events.&rdquo;</em>
+        </p>
+        <p>
+          Then the exception that decides your alarm's behaviour:
+          <em>&ldquo;<strong>Note that count(*) on an empty result set returns 0, which is a valid datapoint
+          and is not treated as missing.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Two queries, both meaning <em>no errors in the last five minutes</em>. One aggregates with
+          <code>count(*)</code> and produces a 0 that is compared against the threshold. The other
+          aggregates with <code>count(someField)</code> and produces missing data, handled by
+          <code>TreatMissingData</code> instead. Set that to <code>breaching</code> &mdash; the sensible
+          default from #111 &mdash; and a quiet period pages you. Set it to <code>notBreaching</code> and a
+          log group that has stopped receiving anything at all looks healthy.
+        </p>
+        <p>
+          Log Alarms also carry a treatment metric alarms do not:
+          <em>&ldquo;ignore &ndash; Ignore the missing datapoint and evaluate only available data&rdquo;</em>.
+          That is the option that keeps an M-out-of-N window from being consumed by absences, and it is the
+          one with no equivalent in the metric alarm vocabulary.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide which of the two shapes you are writing. For sparse events, AWS's guidance is explicit: <em>&ldquo;For sparse events (such as errors that rarely occur), set TreatMissingData to notBreaching to keep the alarm in OK state when no logs match&rdquo;</em>, and <em>&ldquo;For continuous signals (such as traffic logs), consider setting TreatMissingData to breaching to detect when expected log data stops arriving.&rdquo;</em> Then make the aggregation match: <code>count(*)</code> when a zero is meaningful, a field aggregate when absence should be treated as absence.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>With a by clause, you evaluate the first 500 alphabetically &mdash; not the worst 500</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When you include a by clause in your aggregation expression, the alarm evaluates each
+          unique combination of field values (called a contributor) independently&rdquo;</em>, and
+          <em>&ldquo;The alarm transitions to ALARM state if any contributor breaches the
+          threshold.&rdquo;</em> Three limits apply:
+          <em>&ldquo;Maximum 5 fields in the by clause&rdquo;</em>,
+          <em>&ldquo;Maximum 500 contributor results returned per query execution&rdquo;</em>, and
+          <em>&ldquo;Maximum 100 contributors tracked in ALARM state simultaneously&rdquo;</em>.
+        </p>
+        <p>
+          The default ordering is the hazard:
+          <em>&ldquo;<strong>By default, contributors are sorted alphabetically and only the first 500 are
+          returned per query execution.</strong>&rdquo;</em>
+        </p>
+        <p>
+          On an estate with more than 500 services, endpoints or tenants, that means the set you evaluate is
+          chosen by name. A latency alarm grouped by service name watches the ones early in the alphabet.
+          The worst offender is evaluated if it happens to sort well. There is a signal &mdash;
+          <em>&ldquo;PARTIAL_DATA &ndash; The query returned the maximum 500 contributor groups but more
+          matched&rdquo;</em> &mdash; but it reports that the set was truncated, not that something outside
+          it was breaching.
+        </p>
+        <p>
+          And one behaviour overrides your missing-data setting entirely:
+          <em>&ldquo;If a contributor disappears from query results (for example, an ephemeral resource is
+          terminated), that contributor transitions to OK state regardless of the missing data treatment
+          setting.&rdquo;</em> #111's fix &mdash; treat absence as breaching &mdash; does not reach this
+          case. A contributor that stops appearing is declared well.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Sort by value, always, on any grouped alarm that could exceed the cap: <em>&ldquo;To sort contributors by their aggregated value instead, specify | sort asc or | sort desc in your aggregation expression&rdquo;</em>, because <em>&ldquo;Value-based sorting ensures that the most significant contributors are evaluated first when the total number exceeds 500.&rdquo;</em> Pick the direction that matches your comparison operator. Then alarm on PARTIAL_DATA appearing at all, because it means your grouping is too wide to see the whole estate.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-112-log-alarms.svg" alt="Diagram: A CloudWatch Log Alarm monitors the results of a Logs Insights query that runs on a schedule using a Scheduled Query, so unlike metric alarms that require metric filters as an intermediate step it evaluates directly on log data. CloudWatch automatically creates an AWS managed Scheduled Query when you create the alarm, you cannot modify it directly, and CloudWatch deletes it when you delete the alarm. Each query execution produces an aggregated value, and CloudWatch evaluates recent executions against the threshold using M-out-of-N evaluation, where QueryResultsToEvaluate is N, the number of recent query executions to evaluate, and QueryResultsToAlarm is M, the number of breaching results required to trigger ALARM. The central hazard is that each execution reads the window from StartTimeOffset to EndTimeOffset relative to execution time, and those offsets do not account for ingestion delay, so if events are still being ingested the query runs before they are available and skips them, producing a number that is real, low and wrong rather than a missing datapoint. The documented fix is to use EndTimeOffset to shift the window back far enough that ingestion is complete for the entire range. Missing data has its own definition: no logs present, no matching results, or the aggregation field absent from the results, while count star on an empty result set returns zero, which is a valid datapoint and is not treated as missing. Treatments are missing, notBreaching, breaching and ignore, the last of which evaluates only available data and has no metric alarm equivalent. With a by clause each unique combination of field values is a contributor evaluated independently, limited to 5 fields in the by clause, 500 contributor results returned per query execution and 100 contributors tracked in ALARM simultaneously, and because contributors are sorted alphabetically by default the evaluated set is chosen by name unless you add sort ascending or descending to sort by aggregated value. PARTIAL_DATA reports that the query returned the maximum 500 contributor groups but more matched. A contributor that disappears from query results transitions to OK regardless of the missing data treatment setting. Two further evaluation states exist: EVALUATION_FAILURE for a transient CloudWatch service issue and EVALUATION_ERROR for a client configuration error such as insufficient permissions or an invalid query, both of which send the alarm to INSUFFICIENT_DATA. Concurrent query executions across the account cannot exceed 100, so Log Alarm schedules need spreading. Cost follows the query rather than the alarm, billed as logs data scanned by CloudWatch Logs Insights queries under the DataScanned-Bytes usage type and the StartQuery operation.">
+
+    <h3>Metric filter or scheduled query: the same alarm, a different unit</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Metric filter plus metric alarm</th><th>Log Alarm</th></tr>
+      <tr>
+        <td>When the question is decided</td>
+        <td>At ingestion, by the filter pattern</td>
+        <td>At evaluation, by the query</td>
+      </tr>
+      <tr>
+        <td>What a datapoint is</td>
+        <td>A published metric value</td>
+        <td>A query execution's aggregated result</td>
+      </tr>
+      <tr>
+        <td>Can you ask about a field nobody extracted</td>
+        <td>No &mdash; not retroactively</td>
+        <td>Yes &mdash; the query decides</td>
+      </tr>
+      <tr>
+        <td>Effect of ingestion delay</td>
+        <td>None &mdash; counted on arrival</td>
+        <td><strong>Events can be skipped by a window that closed too early</strong></td>
+      </tr>
+      <tr>
+        <td>What drives the bill</td>
+        <td>The alarm itself, <em>&ldquo;prorated by the hour&rdquo;</em></td>
+        <td>The data each execution scans, on top of the alarm</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The fourth row is the architectural difference, not a quirk. Moving the evaluation downstream of
+      ingestion buys you retrospective questions and inherits ingestion's timing.
+    </p>
+
+    <h3>M-out-of-N, when N is a count of query runs</h3>
+    <p>
+      The parameters read like a metric alarm's and mean something else:
+      <em>&ldquo;QueryResultsToEvaluate is the number of recent query executions to evaluate (N in
+      M-out-of-N)&rdquo;</em> and
+      <em>&ldquo;QueryResultsToAlarm is the number of breaching results required to trigger ALARM (M in
+      M-out-of-N)&rdquo;</em>, with
+      <em>&ldquo;Log Alarms evaluate the last N query executions. The alarm transitions to ALARM when M of
+      those N executions breach the threshold.&rdquo;</em>
+    </p>
+    <p>
+      So the evaluation window is measured in scheduled runs, and its wall-clock length is N multiplied by
+      your <code>ScheduleExpression</code>. Five executions on <code>rate(5 minutes)</code> is a
+      twenty-five-minute memory; five on <code>rate(15 minutes)</code> is over an hour. The same N means two
+      very different alarms, which is a thing to write in the alarm description rather than leave to the
+      reader of a dashboard.
+    </p>
+    <p>
+      The state reason spells the evaluation out, which is unusually legible for an alarm:
+      <em>&ldquo;Threshold Crossed: 3 out of the last 5 query results&rdquo;</em>, with each result's value
+      and timestamp, and a structured <code>NewStateReasonData</code> carrying
+      <code>queryResultsToEvaluate</code>, <code>queryResultsToAlarm</code> and a per-execution
+      <code>status</code>.
+    </p>
+
+    <h3>Three states that are not OK, ALARM or INSUFFICIENT_DATA</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>EvaluationState</th><th>What happened</th><th>Where the alarm ends up</th></tr>
+      <tr>
+        <td><code>EVALUATION_FAILURE</code></td>
+        <td><em>&ldquo;A transient CloudWatch service issue prevented evaluation&rdquo;</em></td>
+        <td><code>INSUFFICIENT_DATA</code>, with <em>&ldquo;manual monitoring until the issue is resolved&rdquo;</em> recommended</td>
+      </tr>
+      <tr>
+        <td><code>EVALUATION_ERROR</code></td>
+        <td><em>&ldquo;A client configuration error prevented evaluation&rdquo;</em> &mdash; permissions, an invalid query, or all results failed</td>
+        <td><code>INSUFFICIENT_DATA</code> <em>&ldquo;immediately&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td><code>PARTIAL_DATA</code></td>
+        <td><em>&ldquo;The query returned the maximum 500 contributor groups but more matched&rdquo;</em></td>
+        <td>Evaluates anyway, on the contributors it has</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The first two both land in <code>INSUFFICIENT_DATA</code>, which by #110's rules fires nothing. The
+      difference between them is whose problem it is, and the only place that distinction survives is the
+      <code>EvaluationState</code> field. A dashboard showing alarm state alone cannot tell a revoked
+      permission from a CloudWatch incident.
+    </p>
+
+    <h3>What it costs, and why the alarm-cost guidance does not cover it</h3>
+    <p>
+      CloudWatch's own cost documentation enumerates alarm types &mdash; metric alarms, Metrics Insights
+      query alarms, composite alarms &mdash; and tells you
+      <em>&ldquo;Costs for metric and composite alarms are prorated by the hour.&rdquo;</em> Log Alarms are
+      not among the types that section describes, so check the pricing page for what the alarm itself
+      carries. What is documented is the query's own line: the
+      <em>&ldquo;DataScanned-Bytes&rdquo;</em> usage type against the
+      <em>&ldquo;StartQuery&rdquo;</em> operation, listed as
+      <em>&ldquo;Logs data scanned by CloudWatch Logs Insights queries&rdquo;</em>, and a Log Alarm runs one
+      of those on every schedule tick.
+    </p>
+    <p>
+      That inverts the usual cost intuition. A metric alarm's cost is fixed and independent of how busy the
+      system is. A Log Alarm's cost is a product of three things you chose &mdash; the log groups, the
+      lookback window, and the schedule &mdash; multiplied by how much the system is logging. Halving the
+      interval doubles the executions; doubling <code>StartTimeOffset</code> doubles the range each one
+      reads; and a noisy day costs more than a quiet one.
+    </p>
+    <p>
+      AWS's query guidance is cost guidance as much as performance guidance:
+      <em>&ldquo;Use filter commands early in your query to reduce the volume of data processed&rdquo;</em>,
+      <em>&ldquo;Limit query time ranges (StartTimeOffset) to avoid timeouts with high-volume log
+      groups&rdquo;</em>, and <em>&ldquo;Use field indexes to optimize query performance.&rdquo;</em>
+    </p>
+
+    <h3>One account-level number that turns many alarms into one problem</h3>
+    <p>
+      <em>&ldquo;<strong>Concurrent query executions across your account cannot exceed 100.</strong>&rdquo;</em>
+      With the instruction that follows it:
+      <em>&ldquo;Spread out Log Alarm schedules across your account to avoid hitting Scheduled Query
+      concurrency limits&rdquo;</em> and
+      <em>&ldquo;Factor in this quota when creating multiple Log Alarms with overlapping schedules.&rdquo;</em>
+    </p>
+    <p>
+      Every Log Alarm on <code>rate(5 minutes)</code> created from the same template starts at the same
+      instant. The quota is shared with every other scheduled query in the account, including ones created
+      for reporting and lookup tables that have nothing to do with alarming. This is the failure that
+      arrives at scale rather than in testing, and the alarm it breaks is not the one you were adding.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Removing the metric filter removes a decision made too early</h3>
+    <p>
+      A metric filter is a commitment made when the log group is created to the questions you will later be
+      allowed to ask cheaply. Evaluating the query directly moves that commitment to the moment you have the
+      question, which is the right place for it. The cost model follows honestly: you pay per question
+      asked rather than per answer pre-computed.
+    </p>
+
+    <h3>The managed Scheduled Query has the right lifecycle</h3>
+    <p>
+      <em>&ldquo;CloudWatch automatically creates an AWS managed Scheduled Query that runs your query on the
+      specified schedule&rdquo;</em>, it is visible in the Logs console,
+      <em>&ldquo;You cannot modify it directly&rdquo;</em>, and
+      <em>&ldquo;CloudWatch deletes the AWS managed Scheduled Query when you delete the alarm.&rdquo;</em>
+      Visible, not editable, and garbage-collected with its owner &mdash; that is three correct choices, and
+      the third is the one most managed sub-resources get wrong.
+    </p>
+
+    <h3>Multi-contributor alarms make the right action possible</h3>
+    <p>
+      <em>&ldquo;For multi-contributor alarms, Amazon SNS and Lambda actions run at the contributor level
+      (once per breaching contributor). Systems Manager OpsItem actions run at the alarm level.&rdquo;</em>
+      Per-contributor notification is what makes a grouped alarm actionable rather than merely informative,
+      and keeping OpsItems at the alarm level avoids opening five hundred tickets. The gap is documented
+      rather than discovered:
+      <em>&ldquo;Systems Manager Incident Manager and investigation actions are not supported for Log
+      Alarms.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td><code>EndTimeOffset</code></td>
+        <td>Greater than your measured ingestion delay</td>
+        <td>The offsets <em>&ldquo;do not account for ingestion delay&rdquo;</em>, and skipped events return a low number, not a missing one</td>
+      </tr>
+      <tr>
+        <td>Aggregation shape when the answer is <em>nothing happened</em></td>
+        <td><code>count(*)</code> when a zero is the answer</td>
+        <td>It <em>&ldquo;returns 0, which is a valid datapoint and is not treated as missing&rdquo;</em>; a field aggregate on an absent field is missing data instead</td>
+      </tr>
+      <tr>
+        <td><code>TreatMissingData</code> for sparse events</td>
+        <td><code>notBreaching</code></td>
+        <td>AWS's own guidance, to keep the alarm in OK when no logs match</td>
+      </tr>
+      <tr>
+        <td><code>TreatMissingData</code> for continuous signals</td>
+        <td><code>breaching</code></td>
+        <td>To detect when expected log data stops arriving &mdash; #111's rule, restated for logs</td>
+      </tr>
+      <tr>
+        <td>Grouped alarms above 500 contributors</td>
+        <td>Always append <code>| sort desc</code> or <code>| sort asc</code></td>
+        <td>The default is alphabetical, so without it the evaluated set is chosen by name rather than by severity</td>
+      </tr>
+      <tr>
+        <td>N in M-out-of-N</td>
+        <td>Set it from wall-clock tolerance, not from habit</td>
+        <td>N executions times the schedule is the real memory of the alarm</td>
+      </tr>
+      <tr>
+        <td>Schedules across the account</td>
+        <td>Stagger them deliberately</td>
+        <td><em>&ldquo;Concurrent query executions across your account cannot exceed 100&rdquo;</em>, shared with every other scheduled query</td>
+      </tr>
+      <tr>
+        <td><code>ActionLogLineCount</code></td>
+        <td>Leave at 0 unless the log group is known to be clean</td>
+        <td>Log lines in notifications <em>&ldquo;might expose sensitive data from your logs in Amazon SNS messages&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Compare every Log Alarm's <code>EndTimeOffset</code> against the ingestion delay of its log
+      groups.</strong> Any alarm whose window ends at or near execution time is reading an incomplete range
+      on every run, and reporting a number that looks fine. This is the highest-value check here and it is
+      two configuration fields.
+    </p>
+    <p>
+      <strong>List the grouped alarms with no <code>sort</code> in their aggregation expression.</strong>
+      Each one is watching the alphabetically first 500 contributors. If any of them has ever reported
+      <code>PARTIAL_DATA</code>, it has already been looking at a subset chosen by name.
+    </p>
+    <p>
+      <strong>Count your scheduled queries, not just your Log Alarms.</strong> The concurrency quota is
+      account-wide and shared with reporting and lookup-table queries, so the number that matters is not one
+      a Log Alarm's own page will show you.
+    </p>
+    <p>
+      <strong>Check which alarms were updated recently.</strong>
+      <em>&ldquo;When you update the query, aggregation expression, schedule, or log groups of a Log Alarm,
+      the alarm transitions to INSUFFICIENT_DATA until sufficient new datapoints are collected&rdquo;</em> &mdash;
+      so a routine query tweak creates a blind window whose length is N times the schedule. Threshold and
+      M-out-of-N changes do not.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The last three posts have each found a different way for a monitoring signal to be absent while a
+      dashboard reads normal. #110: the alarm state that means <em>I cannot tell</em>. #111: a signal
+      produced by the watcher, so its silence has two causes.
+    </p>
+    <p>
+      Log Alarms add a fourth case, and it is the quietest of them. Here the datapoint is present. It is a
+      number, produced by a query that succeeded, evaluated against a threshold exactly as designed. It is
+      simply lower than the truth, because the query asked at a moment when some of the evidence had not
+      finished arriving. There is no state for that, no <code>EvaluationState</code>, no partial flag &mdash;
+      only two offsets that you chose.
+    </p>
+    <p>
+      Which makes the design rule for this primitive different from the previous two. For a canary, you add
+      a second alarm. For a Log Alarm, you move the window: measure the ingestion delay and keep
+      <code>EndTimeOffset</code> behind it, accepting a known lag in exchange for a complete read. A
+      monitor that is late and right is a monitor. A monitor that is prompt and systematically low is a
+      source of confidence with nothing behind it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs field indexes: what an index changes about which queries are cheap, when a query does not use one, and why the cost of asking a question is mostly a property of the log group's shape rather than of the question.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html" target="_blank" rel="noopener">Log alarms &#8212; the definition of a Log Alarm and its managed Scheduled Query lifecycle, every configuration parameter including <code>StartTimeOffset</code>, <code>EndTimeOffset</code>, <code>QueryResultsToEvaluate</code> and <code>QueryResultsToAlarm</code>, the ingestion-delay behaviour and its worked example, the missing-data definition and the <code>count(*)</code> exception, the four treatments including <code>ignore</code>, the multi-contributor limits and alphabetical default ordering, the <code>EVALUATION_FAILURE</code>, <code>EVALUATION_ERROR</code> and <code>PARTIAL_DATA</code> states, the disappearing-contributor behaviour, the account concurrency quota, <code>ActionLogLineCount</code> and its sensitive-data warning, and the unsupported Incident Manager actions</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html" target="_blank" rel="noopener">Analyzing, optimizing, and reducing CloudWatch costs &#8212; the <code>DataScanned-Bytes</code> usage type against <code>StartQuery</code> for logs data scanned by Logs Insights queries, and the alarm cost model that covers metric, Metrics Insights and composite alarms</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Alarm-On-Logs.html" target="_blank" rel="noopener">Alarming on logs &#8212; the two documented routes to an alarm on log data, the metric filter path and the Log Alarm path; no figures in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/ScheduledQueries.html" target="_blank" rel="noopener">Automating log analysis with scheduled queries &#8212; further reading on the Scheduled Query mechanism a Log Alarm creates and manages, and the three query languages it supports; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html" target="_blank" rel="noopener">CloudWatch Logs Insights language query syntax &#8212; further reading on the query language the alarm evaluates; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-cloud-wan-flow-logs/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #74 - The Cloud WAN metadata is best effort</span></a><a href="/blog/aws-daily-intelligence-image-builder-devops-agent/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #75 - The agent fills the form; you still submit it</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-log-alarms/';
+      this.page.identifier = 'aws-architecture-log-alarms';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=c039b840"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

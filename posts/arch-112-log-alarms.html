@@ -1,0 +1,501 @@
+---
+title: "AWS Architecture Series #112 — The datapoint is a query, and the query can run before the logs arrive"
+date: '2026-11-13T09:00:00'
+slug: aws-architecture-log-alarms
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-13'
+problem: "A Log Alarm evaluates a CloudWatch Logs Insights query that runs on a schedule, so its datapoints are query executions rather than published metric values. That removes the metric filter as an intermediate step, and it introduces three failure modes a metric alarm does not have: a query whose window closes before the logs are ingested returns a number that is real, low and wrong; an empty result and a missing field are treated differently even though both mean nothing happened; and a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort, so the breach you care about can be outside the window you evaluated."
+builds: "A reading of what a Log Alarm actually evaluates: how a scheduled query differs from a metric filter as a monitoring primitive, what M-out-of-N means when the datapoints are query executions, when an empty result is a zero and when it is missing data, how contributor truncation and sorting decide which breaches you can see, and what the alarm costs when the thing being evaluated is data you have to scan."
+verified_claims:
+  - claim: "A Log Alarm monitors the results of a CloudWatch Logs Insights query that runs on a schedule using a Scheduled Query"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Unlike metric alarms that require metric filters as an intermediate step, Log Alarms evaluate directly on log data using the same Logs Insights query language you use for ad-hoc analysis"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "CloudWatch evaluates the aggregated results against your threshold using M-out-of-N evaluation on recent query executions"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "QueryResultsToEvaluate is the number of recent query executions to evaluate (N in M-out-of-N)"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "QueryResultsToAlarm is the number of breaching results required to trigger ALARM (M in M-out-of-N)"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "StartTimeOffset defines the lookback window in seconds for each query execution"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "EndTimeOffset defines the end of the query time range as an offset in seconds from the current time"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "StartTimeOffset and EndTimeOffset do not account for ingestion delay. If events are still being ingested for the window you query, the query runs before they are available and skips them"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Use EndTimeOffset to shift the window back far enough that ingestion is complete for the entire range"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "count(*) on an empty result set returns 0, which is a valid datapoint and is not treated as missing"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "The field referenced in the aggregation expression was not present in the query results, for example count(error-codes) where error-codes does not exist in the returned log events"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "TreatMissingData value ignore means ignore the missing datapoint and evaluate only available data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "When you include a by clause in your aggregation expression, the alarm evaluates each unique combination of field values (called a contributor) independently"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Maximum 500 contributor results returned per query execution"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Maximum 100 contributors tracked in ALARM state simultaneously"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "At most one in five of the contributors a query execution returns can be tracked in ALARM at once"
+    derive: "100 / 500"
+    expect: "0.2"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "By default, contributors are sorted alphabetically and only the first 500 are returned per query execution"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Value-based sorting ensures that the most significant contributors are evaluated first when the total number exceeds 500"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "If a contributor disappears from query results (for example, an ephemeral resource is terminated), that contributor transitions to OK state regardless of the missing data treatment setting"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "PARTIAL_DATA means the query returned the maximum 500 contributor groups but more matched"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "EVALUATION_ERROR is a client configuration error that prevented evaluation, and the alarm transitions to INSUFFICIENT_DATA immediately"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Concurrent query executions across your account cannot exceed 100"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "You can optionally include raw query result log lines in alarm notifications by setting the ActionLogLineCount parameter to a value between 1 and 50"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Including log lines in notifications might expose sensitive data from your logs in Amazon SNS messages"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "When you update the query, aggregation expression, schedule, or log groups of a Log Alarm, the alarm transitions to INSUFFICIENT_DATA until sufficient new datapoints are collected"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "Systems Manager Incident Manager and investigation actions are not supported for Log Alarms"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "CloudWatch deletes the AWS managed Scheduled Query when you delete the alarm"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html
+  - claim: "The usage type DataScanned-Bytes with API operation StartQuery covers logs data scanned by CloudWatch Logs Insights queries"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html
+  - claim: "Costs for metric and composite alarms are prorated by the hour"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html
+catch: "A Log Alarm's datapoints are query executions, not published metric values, which removes the metric filter but adds three things a metric alarm never had. A query window that closes before ingestion completes silently skips events and returns a number that is low rather than missing. An empty result set is a zero when you count star and missing data when you count a field that is absent. And a multi-contributor alarm returns the first 500 contributors alphabetically unless you sort by value, so the worst offender can sit outside the set you evaluated, reported only as PARTIAL_DATA."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #112 &middot; Operational Excellence</div>
+  <h1 class="post-title">The datapoint is a query, and the query can run before the logs arrive</h1>
+  <p class="post-subtitle">A Log Alarm evaluates a scheduled Logs Insights query instead of a metric. That removes the metric filter from the middle, and replaces it with a question metric alarms never had to ask: was the data there when the query ran?</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Operational Excellence &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      For years, alarming on logs meant a metric filter: match a pattern, emit a number, alarm on the
+      number. A Log Alarm takes the other route.
+      <em>&ldquo;A Log Alarm monitors the results of a CloudWatch Logs Insights query that runs on a schedule
+      using a Scheduled Query&rdquo;</em>, and
+      <em>&ldquo;Unlike metric alarms that require metric filters as an intermediate step, Log Alarms
+      evaluate directly on log data using the same Logs Insights query language you use for ad-hoc
+      analysis.&rdquo;</em>
+    </p>
+    <p>
+      That is a real improvement. A metric filter decides at ingestion time what will be countable later; a
+      query decides at evaluation time what to ask. You can alarm on a field that nobody thought to extract
+      when the log group was created.
+    </p>
+    <p>
+      But the unit being evaluated has changed. #110 and #111 were about alarms whose datapoints arrive from
+      somewhere and sometimes do not. Here the datapoint <em>is</em> an action the alarm takes &mdash; a
+      query execution &mdash; and three properties of that follow it into production.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The query window and the ingestion window are not the same window</strong></div>
+      <div class="challenge-body">
+        <p>
+          Each execution reads a time range you define:
+          <em>&ldquo;StartTimeOffset defines the lookback window in seconds for each query
+          execution&rdquo;</em> and
+          <em>&ldquo;EndTimeOffset defines the end of the query time range as an offset in seconds from the
+          current time&rdquo;</em>. The documentation then says the part that matters:
+        </p>
+        <p>
+          The offsets define the window relative to execution time, and then:
+          <em>&ldquo;<strong>they do not account for ingestion delay. If events are still being ingested for
+          the window you query, the query runs before they are available and skips them.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Consider what the alarm sees. The query succeeds. It returns a number. The number is lower than
+          the truth, by however many events had not landed yet. Nothing is missing, nothing errors, and no
+          state tells you the count was partial &mdash; a metric filter never had this problem, because it
+          counted events as they arrived rather than asking later whether they had.
+        </p>
+        <p>
+          AWS gives the arithmetic, for logs that take up to two minutes to become queryable. A 60-second
+          lookback ending at execution time is the broken case, because
+          <em>&ldquo;recent events are not yet ingested and are missed&rdquo;</em>. A 180-second lookback
+          ending 120 seconds in the past is the working one, because
+          <em>&ldquo;all events are ingested and evaluable&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Measure your ingestion delay for the log groups in question, then <em>&ldquo;Use EndTimeOffset to shift the window back far enough that ingestion is complete for the entire range&rdquo;</em>. You are trading detection latency for correctness, deliberately, and the trade is the right way round: an alarm two minutes late is an inconvenience, while an alarm reading a systematically low number is a monitoring system that lies in the reassuring direction.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Nothing happened is a zero, or it is missing data, depending on how you counted</strong></div>
+      <div class="challenge-body">
+        <p>
+          Missing data on a Log Alarm has its own definition:
+          <em>&ldquo;Missing data occurs when a scheduled query execution does not produce a value that can
+          be evaluated against the threshold.&rdquo;</em> It covers
+          <em>&ldquo;No logs present&rdquo;</em> and
+          <em>&ldquo;Matching query results were not present as per the query filter&rdquo;</em>, and this:
+          <em>&ldquo;The field referenced in the aggregation expression was not present in the query results.
+          For example, count(error-codes) where error-codes does not exist in the returned log
+          events.&rdquo;</em>
+        </p>
+        <p>
+          Then the exception that decides your alarm's behaviour:
+          <em>&ldquo;<strong>Note that count(*) on an empty result set returns 0, which is a valid datapoint
+          and is not treated as missing.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Two queries, both meaning <em>no errors in the last five minutes</em>. One aggregates with
+          <code>count(*)</code> and produces a 0 that is compared against the threshold. The other
+          aggregates with <code>count(someField)</code> and produces missing data, handled by
+          <code>TreatMissingData</code> instead. Set that to <code>breaching</code> &mdash; the sensible
+          default from #111 &mdash; and a quiet period pages you. Set it to <code>notBreaching</code> and a
+          log group that has stopped receiving anything at all looks healthy.
+        </p>
+        <p>
+          Log Alarms also carry a treatment metric alarms do not:
+          <em>&ldquo;ignore &ndash; Ignore the missing datapoint and evaluate only available data&rdquo;</em>.
+          That is the option that keeps an M-out-of-N window from being consumed by absences, and it is the
+          one with no equivalent in the metric alarm vocabulary.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide which of the two shapes you are writing. For sparse events, AWS's guidance is explicit: <em>&ldquo;For sparse events (such as errors that rarely occur), set TreatMissingData to notBreaching to keep the alarm in OK state when no logs match&rdquo;</em>, and <em>&ldquo;For continuous signals (such as traffic logs), consider setting TreatMissingData to breaching to detect when expected log data stops arriving.&rdquo;</em> Then make the aggregation match: <code>count(*)</code> when a zero is meaningful, a field aggregate when absence should be treated as absence.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>With a by clause, you evaluate the first 500 alphabetically &mdash; not the worst 500</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When you include a by clause in your aggregation expression, the alarm evaluates each
+          unique combination of field values (called a contributor) independently&rdquo;</em>, and
+          <em>&ldquo;The alarm transitions to ALARM state if any contributor breaches the
+          threshold.&rdquo;</em> Three limits apply:
+          <em>&ldquo;Maximum 5 fields in the by clause&rdquo;</em>,
+          <em>&ldquo;Maximum 500 contributor results returned per query execution&rdquo;</em>, and
+          <em>&ldquo;Maximum 100 contributors tracked in ALARM state simultaneously&rdquo;</em>.
+        </p>
+        <p>
+          The default ordering is the hazard:
+          <em>&ldquo;<strong>By default, contributors are sorted alphabetically and only the first 500 are
+          returned per query execution.</strong>&rdquo;</em>
+        </p>
+        <p>
+          On an estate with more than 500 services, endpoints or tenants, that means the set you evaluate is
+          chosen by name. A latency alarm grouped by service name watches the ones early in the alphabet.
+          The worst offender is evaluated if it happens to sort well. There is a signal &mdash;
+          <em>&ldquo;PARTIAL_DATA &ndash; The query returned the maximum 500 contributor groups but more
+          matched&rdquo;</em> &mdash; but it reports that the set was truncated, not that something outside
+          it was breaching.
+        </p>
+        <p>
+          And one behaviour overrides your missing-data setting entirely:
+          <em>&ldquo;If a contributor disappears from query results (for example, an ephemeral resource is
+          terminated), that contributor transitions to OK state regardless of the missing data treatment
+          setting.&rdquo;</em> #111's fix &mdash; treat absence as breaching &mdash; does not reach this
+          case. A contributor that stops appearing is declared well.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Sort by value, always, on any grouped alarm that could exceed the cap: <em>&ldquo;To sort contributors by their aggregated value instead, specify | sort asc or | sort desc in your aggregation expression&rdquo;</em>, because <em>&ldquo;Value-based sorting ensures that the most significant contributors are evaluated first when the total number exceeds 500.&rdquo;</em> Pick the direction that matches your comparison operator. Then alarm on PARTIAL_DATA appearing at all, because it means your grouping is too wide to see the whole estate.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-112-log-alarms.svg" alt="Diagram: A CloudWatch Log Alarm monitors the results of a Logs Insights query that runs on a schedule using a Scheduled Query, so unlike metric alarms that require metric filters as an intermediate step it evaluates directly on log data. CloudWatch automatically creates an AWS managed Scheduled Query when you create the alarm, you cannot modify it directly, and CloudWatch deletes it when you delete the alarm. Each query execution produces an aggregated value, and CloudWatch evaluates recent executions against the threshold using M-out-of-N evaluation, where QueryResultsToEvaluate is N, the number of recent query executions to evaluate, and QueryResultsToAlarm is M, the number of breaching results required to trigger ALARM. The central hazard is that each execution reads the window from StartTimeOffset to EndTimeOffset relative to execution time, and those offsets do not account for ingestion delay, so if events are still being ingested the query runs before they are available and skips them, producing a number that is real, low and wrong rather than a missing datapoint. The documented fix is to use EndTimeOffset to shift the window back far enough that ingestion is complete for the entire range. Missing data has its own definition: no logs present, no matching results, or the aggregation field absent from the results, while count star on an empty result set returns zero, which is a valid datapoint and is not treated as missing. Treatments are missing, notBreaching, breaching and ignore, the last of which evaluates only available data and has no metric alarm equivalent. With a by clause each unique combination of field values is a contributor evaluated independently, limited to 5 fields in the by clause, 500 contributor results returned per query execution and 100 contributors tracked in ALARM simultaneously, and because contributors are sorted alphabetically by default the evaluated set is chosen by name unless you add sort ascending or descending to sort by aggregated value. PARTIAL_DATA reports that the query returned the maximum 500 contributor groups but more matched. A contributor that disappears from query results transitions to OK regardless of the missing data treatment setting. Two further evaluation states exist: EVALUATION_FAILURE for a transient CloudWatch service issue and EVALUATION_ERROR for a client configuration error such as insufficient permissions or an invalid query, both of which send the alarm to INSUFFICIENT_DATA. Concurrent query executions across the account cannot exceed 100, so Log Alarm schedules need spreading. Cost follows the query rather than the alarm, billed as logs data scanned by CloudWatch Logs Insights queries under the DataScanned-Bytes usage type and the StartQuery operation.">
+
+    <h3>Metric filter or scheduled query: the same alarm, a different unit</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Metric filter plus metric alarm</th><th>Log Alarm</th></tr>
+      <tr>
+        <td>When the question is decided</td>
+        <td>At ingestion, by the filter pattern</td>
+        <td>At evaluation, by the query</td>
+      </tr>
+      <tr>
+        <td>What a datapoint is</td>
+        <td>A published metric value</td>
+        <td>A query execution's aggregated result</td>
+      </tr>
+      <tr>
+        <td>Can you ask about a field nobody extracted</td>
+        <td>No &mdash; not retroactively</td>
+        <td>Yes &mdash; the query decides</td>
+      </tr>
+      <tr>
+        <td>Effect of ingestion delay</td>
+        <td>None &mdash; counted on arrival</td>
+        <td><strong>Events can be skipped by a window that closed too early</strong></td>
+      </tr>
+      <tr>
+        <td>What drives the bill</td>
+        <td>The alarm itself, <em>&ldquo;prorated by the hour&rdquo;</em></td>
+        <td>The data each execution scans, on top of the alarm</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The fourth row is the architectural difference, not a quirk. Moving the evaluation downstream of
+      ingestion buys you retrospective questions and inherits ingestion's timing.
+    </p>
+
+    <h3>M-out-of-N, when N is a count of query runs</h3>
+    <p>
+      The parameters read like a metric alarm's and mean something else:
+      <em>&ldquo;QueryResultsToEvaluate is the number of recent query executions to evaluate (N in
+      M-out-of-N)&rdquo;</em> and
+      <em>&ldquo;QueryResultsToAlarm is the number of breaching results required to trigger ALARM (M in
+      M-out-of-N)&rdquo;</em>, with
+      <em>&ldquo;Log Alarms evaluate the last N query executions. The alarm transitions to ALARM when M of
+      those N executions breach the threshold.&rdquo;</em>
+    </p>
+    <p>
+      So the evaluation window is measured in scheduled runs, and its wall-clock length is N multiplied by
+      your <code>ScheduleExpression</code>. Five executions on <code>rate(5 minutes)</code> is a
+      twenty-five-minute memory; five on <code>rate(15 minutes)</code> is over an hour. The same N means two
+      very different alarms, which is a thing to write in the alarm description rather than leave to the
+      reader of a dashboard.
+    </p>
+    <p>
+      The state reason spells the evaluation out, which is unusually legible for an alarm:
+      <em>&ldquo;Threshold Crossed: 3 out of the last 5 query results&rdquo;</em>, with each result's value
+      and timestamp, and a structured <code>NewStateReasonData</code> carrying
+      <code>queryResultsToEvaluate</code>, <code>queryResultsToAlarm</code> and a per-execution
+      <code>status</code>.
+    </p>
+
+    <h3>Three states that are not OK, ALARM or INSUFFICIENT_DATA</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>EvaluationState</th><th>What happened</th><th>Where the alarm ends up</th></tr>
+      <tr>
+        <td><code>EVALUATION_FAILURE</code></td>
+        <td><em>&ldquo;A transient CloudWatch service issue prevented evaluation&rdquo;</em></td>
+        <td><code>INSUFFICIENT_DATA</code>, with <em>&ldquo;manual monitoring until the issue is resolved&rdquo;</em> recommended</td>
+      </tr>
+      <tr>
+        <td><code>EVALUATION_ERROR</code></td>
+        <td><em>&ldquo;A client configuration error prevented evaluation&rdquo;</em> &mdash; permissions, an invalid query, or all results failed</td>
+        <td><code>INSUFFICIENT_DATA</code> <em>&ldquo;immediately&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td><code>PARTIAL_DATA</code></td>
+        <td><em>&ldquo;The query returned the maximum 500 contributor groups but more matched&rdquo;</em></td>
+        <td>Evaluates anyway, on the contributors it has</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The first two both land in <code>INSUFFICIENT_DATA</code>, which by #110's rules fires nothing. The
+      difference between them is whose problem it is, and the only place that distinction survives is the
+      <code>EvaluationState</code> field. A dashboard showing alarm state alone cannot tell a revoked
+      permission from a CloudWatch incident.
+    </p>
+
+    <h3>What it costs, and why the alarm-cost guidance does not cover it</h3>
+    <p>
+      CloudWatch's own cost documentation enumerates alarm types &mdash; metric alarms, Metrics Insights
+      query alarms, composite alarms &mdash; and tells you
+      <em>&ldquo;Costs for metric and composite alarms are prorated by the hour.&rdquo;</em> Log Alarms are
+      not among the types that section describes, so check the pricing page for what the alarm itself
+      carries. What is documented is the query's own line: the
+      <em>&ldquo;DataScanned-Bytes&rdquo;</em> usage type against the
+      <em>&ldquo;StartQuery&rdquo;</em> operation, listed as
+      <em>&ldquo;Logs data scanned by CloudWatch Logs Insights queries&rdquo;</em>, and a Log Alarm runs one
+      of those on every schedule tick.
+    </p>
+    <p>
+      That inverts the usual cost intuition. A metric alarm's cost is fixed and independent of how busy the
+      system is. A Log Alarm's cost is a product of three things you chose &mdash; the log groups, the
+      lookback window, and the schedule &mdash; multiplied by how much the system is logging. Halving the
+      interval doubles the executions; doubling <code>StartTimeOffset</code> doubles the range each one
+      reads; and a noisy day costs more than a quiet one.
+    </p>
+    <p>
+      AWS's query guidance is cost guidance as much as performance guidance:
+      <em>&ldquo;Use filter commands early in your query to reduce the volume of data processed&rdquo;</em>,
+      <em>&ldquo;Limit query time ranges (StartTimeOffset) to avoid timeouts with high-volume log
+      groups&rdquo;</em>, and <em>&ldquo;Use field indexes to optimize query performance.&rdquo;</em>
+    </p>
+
+    <h3>One account-level number that turns many alarms into one problem</h3>
+    <p>
+      <em>&ldquo;<strong>Concurrent query executions across your account cannot exceed 100.</strong>&rdquo;</em>
+      With the instruction that follows it:
+      <em>&ldquo;Spread out Log Alarm schedules across your account to avoid hitting Scheduled Query
+      concurrency limits&rdquo;</em> and
+      <em>&ldquo;Factor in this quota when creating multiple Log Alarms with overlapping schedules.&rdquo;</em>
+    </p>
+    <p>
+      Every Log Alarm on <code>rate(5 minutes)</code> created from the same template starts at the same
+      instant. The quota is shared with every other scheduled query in the account, including ones created
+      for reporting and lookup tables that have nothing to do with alarming. This is the failure that
+      arrives at scale rather than in testing, and the alarm it breaks is not the one you were adding.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Removing the metric filter removes a decision made too early</h3>
+    <p>
+      A metric filter is a commitment made when the log group is created to the questions you will later be
+      allowed to ask cheaply. Evaluating the query directly moves that commitment to the moment you have the
+      question, which is the right place for it. The cost model follows honestly: you pay per question
+      asked rather than per answer pre-computed.
+    </p>
+
+    <h3>The managed Scheduled Query has the right lifecycle</h3>
+    <p>
+      <em>&ldquo;CloudWatch automatically creates an AWS managed Scheduled Query that runs your query on the
+      specified schedule&rdquo;</em>, it is visible in the Logs console,
+      <em>&ldquo;You cannot modify it directly&rdquo;</em>, and
+      <em>&ldquo;CloudWatch deletes the AWS managed Scheduled Query when you delete the alarm.&rdquo;</em>
+      Visible, not editable, and garbage-collected with its owner &mdash; that is three correct choices, and
+      the third is the one most managed sub-resources get wrong.
+    </p>
+
+    <h3>Multi-contributor alarms make the right action possible</h3>
+    <p>
+      <em>&ldquo;For multi-contributor alarms, Amazon SNS and Lambda actions run at the contributor level
+      (once per breaching contributor). Systems Manager OpsItem actions run at the alarm level.&rdquo;</em>
+      Per-contributor notification is what makes a grouped alarm actionable rather than merely informative,
+      and keeping OpsItems at the alarm level avoids opening five hundred tickets. The gap is documented
+      rather than discovered:
+      <em>&ldquo;Systems Manager Incident Manager and investigation actions are not supported for Log
+      Alarms.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td><code>EndTimeOffset</code></td>
+        <td>Greater than your measured ingestion delay</td>
+        <td>The offsets <em>&ldquo;do not account for ingestion delay&rdquo;</em>, and skipped events return a low number, not a missing one</td>
+      </tr>
+      <tr>
+        <td>Aggregation shape when the answer is <em>nothing happened</em></td>
+        <td><code>count(*)</code> when a zero is the answer</td>
+        <td>It <em>&ldquo;returns 0, which is a valid datapoint and is not treated as missing&rdquo;</em>; a field aggregate on an absent field is missing data instead</td>
+      </tr>
+      <tr>
+        <td><code>TreatMissingData</code> for sparse events</td>
+        <td><code>notBreaching</code></td>
+        <td>AWS's own guidance, to keep the alarm in OK when no logs match</td>
+      </tr>
+      <tr>
+        <td><code>TreatMissingData</code> for continuous signals</td>
+        <td><code>breaching</code></td>
+        <td>To detect when expected log data stops arriving &mdash; #111's rule, restated for logs</td>
+      </tr>
+      <tr>
+        <td>Grouped alarms above 500 contributors</td>
+        <td>Always append <code>| sort desc</code> or <code>| sort asc</code></td>
+        <td>The default is alphabetical, so without it the evaluated set is chosen by name rather than by severity</td>
+      </tr>
+      <tr>
+        <td>N in M-out-of-N</td>
+        <td>Set it from wall-clock tolerance, not from habit</td>
+        <td>N executions times the schedule is the real memory of the alarm</td>
+      </tr>
+      <tr>
+        <td>Schedules across the account</td>
+        <td>Stagger them deliberately</td>
+        <td><em>&ldquo;Concurrent query executions across your account cannot exceed 100&rdquo;</em>, shared with every other scheduled query</td>
+      </tr>
+      <tr>
+        <td><code>ActionLogLineCount</code></td>
+        <td>Leave at 0 unless the log group is known to be clean</td>
+        <td>Log lines in notifications <em>&ldquo;might expose sensitive data from your logs in Amazon SNS messages&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Compare every Log Alarm's <code>EndTimeOffset</code> against the ingestion delay of its log
+      groups.</strong> Any alarm whose window ends at or near execution time is reading an incomplete range
+      on every run, and reporting a number that looks fine. This is the highest-value check here and it is
+      two configuration fields.
+    </p>
+    <p>
+      <strong>List the grouped alarms with no <code>sort</code> in their aggregation expression.</strong>
+      Each one is watching the alphabetically first 500 contributors. If any of them has ever reported
+      <code>PARTIAL_DATA</code>, it has already been looking at a subset chosen by name.
+    </p>
+    <p>
+      <strong>Count your scheduled queries, not just your Log Alarms.</strong> The concurrency quota is
+      account-wide and shared with reporting and lookup-table queries, so the number that matters is not one
+      a Log Alarm's own page will show you.
+    </p>
+    <p>
+      <strong>Check which alarms were updated recently.</strong>
+      <em>&ldquo;When you update the query, aggregation expression, schedule, or log groups of a Log Alarm,
+      the alarm transitions to INSUFFICIENT_DATA until sufficient new datapoints are collected&rdquo;</em> &mdash;
+      so a routine query tweak creates a blind window whose length is N times the schedule. Threshold and
+      M-out-of-N changes do not.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The last three posts have each found a different way for a monitoring signal to be absent while a
+      dashboard reads normal. #110: the alarm state that means <em>I cannot tell</em>. #111: a signal
+      produced by the watcher, so its silence has two causes.
+    </p>
+    <p>
+      Log Alarms add a fourth case, and it is the quietest of them. Here the datapoint is present. It is a
+      number, produced by a query that succeeded, evaluated against a threshold exactly as designed. It is
+      simply lower than the truth, because the query asked at a moment when some of the evidence had not
+      finished arriving. There is no state for that, no <code>EvaluationState</code>, no partial flag &mdash;
+      only two offsets that you chose.
+    </p>
+    <p>
+      Which makes the design rule for this primitive different from the previous two. For a canary, you add
+      a second alarm. For a Log Alarm, you move the window: measure the ingestion delay and keep
+      <code>EndTimeOffset</code> behind it, accepting a known lag in exchange for a complete read. A
+      monitor that is late and right is a monitor. A monitor that is prompt and systematically low is a
+      source of confidence with nothing behind it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs field indexes: what an index changes about which queries are cheap, when a query does not use one, and why the cost of asking a question is mostly a property of the log group's shape rather than of the question.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarm-log.html" target="_blank" rel="noopener">Log alarms &#8212; the definition of a Log Alarm and its managed Scheduled Query lifecycle, every configuration parameter including <code>StartTimeOffset</code>, <code>EndTimeOffset</code>, <code>QueryResultsToEvaluate</code> and <code>QueryResultsToAlarm</code>, the ingestion-delay behaviour and its worked example, the missing-data definition and the <code>count(*)</code> exception, the four treatments including <code>ignore</code>, the multi-contributor limits and alphabetical default ordering, the <code>EVALUATION_FAILURE</code>, <code>EVALUATION_ERROR</code> and <code>PARTIAL_DATA</code> states, the disappearing-contributor behaviour, the account concurrency quota, <code>ActionLogLineCount</code> and its sensitive-data warning, and the unsupported Incident Manager actions</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html" target="_blank" rel="noopener">Analyzing, optimizing, and reducing CloudWatch costs &#8212; the <code>DataScanned-Bytes</code> usage type against <code>StartQuery</code> for logs data scanned by Logs Insights queries, and the alarm cost model that covers metric, Metrics Insights and composite alarms</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Alarm-On-Logs.html" target="_blank" rel="noopener">Alarming on logs &#8212; the two documented routes to an alarm on log data, the metric filter path and the Log Alarm path; no figures in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/ScheduledQueries.html" target="_blank" rel="noopener">Automating log analysis with scheduled queries &#8212; further reading on the Scheduled Query mechanism a Log Alarm creates and manages, and the three query languages it supports; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html" target="_blank" rel="noopener">CloudWatch Logs Insights language query syntax &#8212; further reading on the query language the alarm evaluates; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
