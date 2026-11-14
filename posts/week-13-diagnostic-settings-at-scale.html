@@ -1,0 +1,367 @@
+---
+title: 'Week 13 — Diagnostic Settings at Scale, and the Two Resources That Were Never Going to Comply'
+date: '2026-11-14T19:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-13-diagnostic-settings-at-scale
+verified: '2026-11-14'
+verified_claims:
+  - claim: "A set of built-in initiatives is available to apply diagnostic settings for various destinations; each destination type has a unique initiative for the allLogs and audit category groups, and each initiative contains the entire set of built-in policies for the supported resources"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in"
+  - claim: "Policies are applied to new resources when they're created; use a remediation task to apply the policy to existing resources, and for an initiative you must create a remediation task for each policy in the initiative"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in"
+  - claim: "The effect parameter accepts DeployIfNotExists, AuditIfNotExists or Disabled with DeployIfNotExists as the default, and the categoryGroup parameter accepts none, audit or allLogs with audit as the default"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in"
+  - claim: "Built-in log policies for Log Analytics workspaces, event hubs and storage accounts exist for a listed set of resource types; for a resource type that doesn't have a built-in policy you must create a custom policy definition"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in"
+  - claim: "The role required by the remediation managed identity is found in the policy definition under roleDefinitionIds, and must be assigned to the identity created for the policy assignment"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in"
+  - claim: "Terraform's uuidv5 function produces a deterministic name-based UUID, unlike uuid() which returns a new value on every evaluation"
+    source: "https://developer.hashicorp.com/terraform/language/functions/uuidv5"
+  - claim: "A Terraform variable validation block checks a value and returns an error message when the condition is false, failing the plan rather than warning"
+    source: "https://developer.hashicorp.com/terraform/language/values/variables"
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Azure Policy</span>
+  <span class="stack-badge">deployIfNotExists</span>
+  <span class="stack-badge">Log Analytics</span>
+  <span class="stack-badge">Diagnostic Settings</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab &middot; Week 13 of 52</div>
+
+<h1>Week 13 &mdash; Diagnostic Settings at Scale, and the Two Resources That Were Never Going to Comply</h1>
+
+<p class="post-subtitle">One built-in initiative, four resources, three
+different outcomes &mdash; and the two that look like failures are the ones
+worth understanding.</p>
+
+<h2>&#128203; In This Post</h2>
+<ul>
+  <li><a href="#overview">Lab Overview</a></li>
+  <li><a href="#services">Cloud Services and Concepts</a></li>
+  <li><a href="#architecture">Architecture and Workflow</a></li>
+  <li><a href="#prerequisites">Prerequisites</a></li>
+  <li><a href="#implementation">Implementation</a></li>
+  <li><a href="#validation">Validation and Evidence</a></li>
+  <li><a href="#security-cost">Security and Cost</a></li>
+  <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+  <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+</ul>
+
+<h2 id="overview">Lab Overview</h2>
+
+<p><strong>The problem.</strong> "All our resources send logs" is a claim every
+platform team makes and almost none can demonstrate. Diagnostic settings are
+per-resource, created one at a time, and silently absent on anything nobody
+remembered. Week 12 built detections that read a log table; this is the week
+that fills it.</p>
+
+<p><strong>The objective.</strong> Turn resource logging on automatically
+across a subscription using Azure Policy, then prove it &mdash; not by reading
+a compliance percentage, but by asking the workspace whether a log was actually
+written.</p>
+
+<p><strong>The outcome.</strong> Nine resources, seven validation checks, and
+<strong>14 Key Vault audit rows</strong> in the workspace. Two of the four
+target resources were deliberately left untouched, and that is the result
+rather than a gap.</p>
+
+<h2 id="services">Cloud Services and Concepts</h2>
+
+<table>
+  <thead>
+    <tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Azure Policy initiative</strong></td>
+      <td>Turns logging on across resource types without writing a rule per type</td>
+      <td>A bundle of policy definitions assigned as one unit. Azure ships one for this job containing 69 policies for the <code>audit</code> category group.</td>
+    </tr>
+    <tr>
+      <td><strong><code>deployIfNotExists</code></strong></td>
+      <td>Creates the missing diagnostic setting rather than just reporting it</td>
+      <td>A policy effect that deploys a resource when the condition isn't met. Needs an identity to deploy <em>as</em>, which is why the assignment carries one.</td>
+    </tr>
+    <tr>
+      <td><strong>Diagnostic setting</strong></td>
+      <td>The object that routes a resource's logs to the workspace</td>
+      <td>A per-resource routing rule: these categories, to that destination. It collects only what happens <em>after</em> it exists.</td>
+    </tr>
+    <tr>
+      <td><strong>Remediation task</strong></td>
+      <td>Applies the policy to resources that already existed</td>
+      <td>A one-off job per policy. Without it, the assignment only affects resources created afterwards.</td>
+    </tr>
+    <tr>
+      <td><strong>Log Analytics workspace</strong></td>
+      <td>Where the logs land, and the only thing that can confirm they did</td>
+      <td>The table store behind Azure Monitor, billed per GB ingested.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Category groups.</strong> <code>audit</code> and <code>allLogs</code>
+are two preset bundles of log categories. The choice is usually described as a
+volume decision; it is also a <em>coverage</em> decision, because a resource type
+can support one and not the other. That distinction is this week's result.</p>
+
+<h2 id="architecture">Architecture and Workflow</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/diagrams/week-13-architecture.svg" alt="Architecture diagram. At subscription scope, a built-in Azure Policy initiative is assigned with a system-assigned managed identity holding Log Analytics Contributor; the identity is what deployIfNotExists deploys as. Inside the resource group, four target resources produce three outcomes. A key vault and a public IP are remediated and send resource logs to the Log Analytics workspace. A network security group is untouched, because it supports the allLogs category group and not audit. A storage account is untouched because no built-in policy covers the type at any category group. The workspace itself is also covered and logs itself. Remediation tasks are created per policy, not per initiative." style="width:100%;max-width:900px" />
+  <figcaption><strong>One initiative, three outcomes.</strong> The two
+  untouched resources are not gaps &mdash; one needs a different category
+  group, the other has no built-in policy to comply with.</figcaption>
+</figure>
+
+<ol>
+  <li>A built-in initiative is assigned at <strong>subscription scope</strong>
+      with a system-assigned managed identity.</li>
+  <li>The identity is granted <strong>Log Analytics Contributor</strong> &mdash;
+      the role named in the policies' <code>roleDefinitionIds</code>.</li>
+  <li>Policy evaluation finds which resources are missing a diagnostic setting.</li>
+  <li>A <strong>remediation task per policy</strong> applies the setting to
+      resources that already existed.</li>
+  <li>Each remediated resource writes its logs to the workspace.</li>
+  <li>A deliberate Key Vault operation generates an audit event.</li>
+  <li>The workspace is queried for the row &mdash; the only step that proves
+      data moved.</li>
+</ol>
+
+<p><strong>Three design decisions.</strong></p>
+
+<p><em>Assign the initiative, do not write the policies.</em> Azure ships 69
+policy definitions for <code>audit</code> and 139 for <code>allLogs</code>.
+Hand-writing per-type rules would reinvent them and then rot as Azure adds
+types.</p>
+
+<p><em>Look it up by display name, not GUID.</em> A bare GUID in a
+<code>.tf</code> file is indistinguishable from a leaked identifier to the
+repository's secret sweep &mdash; and the name says what it is.</p>
+
+<p><em>Cap the workspace in code.</em> The week's whole purpose is turning
+ingestion on, and ingestion is the largest surprise bill in Azure.</p>
+
+<h2 id="prerequisites">Prerequisites</h2>
+
+<ul>
+  <li>An Azure subscription where you hold <strong>Owner</strong> &mdash; the
+      assignment creates a role assignment at subscription scope.</li>
+  <li>Providers registered: <code>Microsoft.OperationalInsights</code>,
+      <code>Microsoft.Insights</code>, <code>Microsoft.PolicyInsights</code>,
+      <code>Microsoft.KeyVault</code>, <code>Microsoft.Storage</code>,
+      <code>Microsoft.Network</code>.</li>
+  <li>Terraform &ge; 1.10, <code>hashicorp/azurerm</code> ~&gt; 5.2.</li>
+  <li><strong>No cross-week dependency.</strong> The week builds its own
+      workspace so the ingestion it generates is measured in isolation.</li>
+</ul>
+
+<h2 id="implementation">Implementation</h2>
+
+<h3>Step 1 &mdash; Price it, and notice what the gate does not cover</h3>
+
+<p><strong>Why.</strong> Week 11 of this lab shipped a cost note that missed a
+flat $6/month meter, so every week since runs a gate first. This week the gate
+passes and still does not protect you.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/01-price-check.png" alt="Terminal output of price_check.py for week 13 listing 30 flat recurring meters, all acknowledged, with a note that the meter which actually applies is Analytics Logs Data Ingestion at 2.76 dollars per GB and is not covered by the gate" style="width:100%" />
+  <figcaption><strong>30 flat meters, all acknowledged &mdash; and none of them
+  is the risk.</strong> The exposure is <strong>$2.76/GB ingestion</strong>,
+  a usage meter the gate does not watch.</figcaption>
+</figure>
+
+<p>So the bound went into Terraform instead, with a prediction written down
+first so the measurement could contradict it:</p>
+
+<pre><code>daily_quota_gb = 0.5     # ingestion STOPS at the cap, it does not bill past it
+# predicted: under 0.05 GB/day, recorded in meters.json before deploying</code></pre>
+
+<h3>Step 2 &mdash; Assign Azure's initiative, not your own</h3>
+
+<pre><code>data "azurerm_policy_set_definition" "diag_to_law" {
+  display_name = "Enable ${var.category_group} category group resource logging for supported resources to Log Analytics"
+}
+
+resource "azurerm_subscription_policy_assignment" "diag" {
+  policy_definition_id = data.azurerm_policy_set_definition.diag_to_law.id
+  identity { type = "SystemAssigned" }
+  parameters = jsonencode({ logAnalytics = { value = azurerm_log_analytics_workspace.diag.id } })
+}</code></pre>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/03-initiative-assigned.png" alt="The Azure Policy Assignments blade showing the week 13 assignment named resource logs to Log Analytics at audit, scoped to sub-lab-dev, with type Initiative" style="width:100%" />
+  <figcaption><strong>Assigned at subscription scope, type Initiative.</strong>
+  Full source:
+  <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-13-diagnostic-settings-at-scale/terraform/policy.tf">policy.tf</a>.</figcaption>
+</figure>
+
+<h3>Step 3 &mdash; Remediate, one task per policy</h3>
+
+<p><strong>Why.</strong> This is the step that gets skipped. An assignment
+applies to resources created <em>after</em> it; everything already there needs
+a remediation task, and for an initiative that means <strong>one per
+policy</strong>.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/04-remediation-tasks.png" alt="Terminal output showing three policy definition reference IDs evaluated as compliant and three separate remediation tasks each succeeded with one deployment" style="width:100%" />
+  <figcaption><strong>Three policies matched, so three tasks.</strong> The
+  <code>audit</code> initiative holds 69; <code>allLogs</code> holds 139. In an
+  estate, that is the operational cost of the pattern.</figcaption>
+</figure>
+
+<h2 id="validation">Validation and Evidence</h2>
+
+<table>
+  <thead>
+    <tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Workspace exists</td><td>present</td><td><code>law-wk13-dev-scus-001</code></td><td>PASS</td></tr>
+    <tr><td>Daily ingestion cap set</td><td>capped</td><td>0.5 GB/day</td><td>PASS</td></tr>
+    <tr><td>Setting on key vault</td><td>1</td><td>1</td><td>PASS</td></tr>
+    <tr><td>Setting on public IP</td><td>1</td><td>1</td><td>PASS</td></tr>
+    <tr><td><strong>No setting on NSG under <code>audit</code></strong></td><td><strong>0, by design</strong></td><td>0</td><td>PASS</td></tr>
+    <tr><td><strong>No setting on storage</strong></td><td><strong>0, by design</strong></td><td>0</td><td>PASS</td></tr>
+    <tr><td><strong>Logs actually arrived</strong></td><td>&gt; 0 rows</td><td><strong>14 Key Vault audit rows</strong></td><td>PASS</td></tr>
+  </tbody>
+</table>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/05-coverage-matrix.png" alt="validate.sh output showing seven checks passing including two rows where the expected result is that no diagnostic setting exists, and a final row confirming fourteen Key Vault audit rows reached the workspace" style="width:100%" />
+  <figcaption><strong>Two of those PASS rows are resources the policy did not
+  touch.</strong> Expected absence is a result, and a suite that cannot express
+  it will call correct behaviour a failure.</figcaption>
+</figure>
+
+<p><strong>What each result proves.</strong> Rows 1&ndash;2 prove
+configuration. Rows 3&ndash;6 prove the initiative's coverage boundary &mdash;
+including where it deliberately stops. Only row 7 proves a log was written.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/06-logs-arrived.png" alt="Terminal output querying the Log Analytics workspace showing fourteen AuditEvent rows from Microsoft.KeyVault, with individual rows listing SecretGet, SecretSet and an Authentication event with result Unauthorized" style="width:100%" />
+  <figcaption><strong>The only slot that proves data moved.</strong> A
+  compliance percentage describes configuration; this asks the workspace.
+  The <code>Unauthorized</code> row is a real failed authentication the audit
+  log caught.</figcaption>
+</figure>
+
+<h2 id="security-cost">Security and Cost</h2>
+
+<p><strong>Security.</strong> No secrets exist in this week. The remediation
+identity is system-assigned &mdash; an object that cannot hold a password
+&mdash; and holds exactly <strong>Log Analytics Contributor</strong>, the role
+the policies name, at the scope they are assigned to. The Key Vault uses RBAC
+rather than access policies. <strong>The notable privilege is the assignment
+scope itself:</strong> a subscription-scope <code>deployIfNotExists</code> can
+create resources anywhere in the subscription, so the blast radius was
+enumerated <em>before</em> applying &mdash; one virtual network, one route
+table, one network watcher, none of them covered under <code>audit</code>.</p>
+
+<p><strong>Cost.</strong> Measured figure pending the invoice; this post will
+carry it rather than an estimate. What is established is the complete list of
+meters that could apply, written before deployment, and the three bounds:
+<code>daily_quota_gb = 0.5</code>, the smaller category group, and an
+enumerated blast radius.</p>
+
+<p>One meter was worth chasing. The price API lists <strong>$4.85/hour</strong>
+under the Key Vault service &mdash; roughly $3,500/month. It belongs to
+<em>Azure Dedicated HSM</em>, a different product; a standard vault bills per
+10,000 operations. Checked rather than assumed, which is the only reason a
+perfectly good resource was not dropped from the design.</p>
+
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+
+<p><strong>Problem.</strong> The apply failed with
+<code>UndefinedPolicyParameter: the parameter 'categoryGroup' is not defined
+in the policy definition</code>.<br />
+<strong>Root cause.</strong> Microsoft's parameter table lists
+<code>categoryGroup</code> among the common parameters, but that applies to the
+individual <em>policies</em>. Queried live, these initiatives accept only
+<code>effect</code>, <code>diagnosticSettingName</code>,
+<code>resourceLocationList</code>, <code>logAnalytics</code> and
+<code>resourceTypeList</code>.<br />
+<strong>Resolution.</strong> The category group is chosen by <em>which
+initiative you assign</em>, so the variable selects the initiative by name.<br />
+<strong>Lesson.</strong> <strong>Ask the API what a thing accepts; the doc
+table is a summary, not a schema.</strong></p>
+
+<p><strong>Problem.</strong> The workspace stayed empty and the pipeline looked
+broken.<br />
+<strong>Root cause.</strong> The first probe wrote its secret in the same minute
+the diagnostic setting was being created. <strong>A diagnostic setting only
+collects what happens after it is active</strong>, so the event was never
+captured &mdash; and with nothing else touching the vault, there was nothing to
+find.<br />
+<strong>Resolution.</strong> Issue the operation once the setting is live. Rows
+appeared in about four minutes.<br />
+<strong>Lesson.</strong> An empty result is not a failure until you have
+established that the thing you are looking for ever happened.</p>
+
+<p><strong>Problem.</strong> The public IP read <code>NonCompliant</code> while
+its diagnostic setting demonstrably existed.<br />
+<strong>Root cause.</strong> Compliance state refreshes on its own schedule.<br />
+<strong>Lesson.</strong> <strong>Ask each resource, not the dashboard.</strong>
+The validation queries settings per resource for the same reason it queries the
+workspace for rows.</p>
+
+<p><strong>Problem.</strong> <code>az monitor diagnostic-settings list
+--resource &lt;id&gt;</code> fails with a usage error on CLI 2.86.0 given a
+valid resource ID.<br />
+<strong>Resolution.</strong> The ARM API answers normally; the validation goes
+through <code>az rest</code>. The same class of CLI breakage as
+<code>az role assignment</code> in week 12.</p>
+
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-13-diagnostic-settings-at-scale/docs/blog/screenshots/07-teardown.png" alt="cleanup.sh output showing remediation tasks removed, nine resources destroyed, and four checks confirming against Azure that the resource group, workspace, subscription policy assignment and remediation role assignment are all gone" style="width:100%" />
+  <figcaption><strong>Four assertions, not one.</strong> Two of the nine
+  resources live outside the resource group.</figcaption>
+</figure>
+
+<p><strong>The teardown trap.</strong> The policy assignment and its role
+assignment are at <em>subscription</em> scope. Deleting the resource group
+removes the workspace and leaves the assignment behind &mdash; still trying to
+remediate into a destination that no longer exists. Both are asserted
+separately, against Azure rather than against the destroy's exit code.</p>
+
+<h3>Takeaways</h3>
+
+<ol>
+  <li><strong>Assign Azure's initiative; don't write 69 policies.</strong> And
+      look it up by display name, so no GUID lands in your Terraform.</li>
+  <li><strong>Remediation is per policy, not per initiative.</strong> Assigning
+      it changes nothing for what already exists.</li>
+  <li><strong>Expected absence is a result.</strong> Two resources were never
+      going to comply &mdash; one unsupported by the category group, one by any
+      built-in policy. A suite that cannot say "0, by design" will report
+      correct behaviour as failure.</li>
+  <li><strong>Compliance is not evidence.</strong> It says a setting exists. Ask
+      the workspace whether a log was written.</li>
+  <li><strong>When the gate does not cover the risk, bound it in code.</strong>
+      The meter that could bill here is a usage meter, so the cap went into
+      Terraform and the prediction went into the repo before deployment.</li>
+</ol>
+
+<p><strong>Repository:</strong>
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-13-diagnostic-settings-at-scale">week-13-diagnostic-settings-at-scale</a>
+&mdash; Terraform, validation, cleanup, and the committed
+<code>meters.json</code> recording every charge this week accepted.</p>
+
+<h2>References</h2>
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings-policy-built-in">Enable diagnostic settings by category group using built-in policies</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/how-to/remediate-resources">Remediate non-compliant resources with Azure Policy</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/platform/diagnostic-settings">Diagnostic settings in Azure Monitor</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/values/variables">Terraform &mdash; input variables and validation</a></li>
+</ul>
+
+</div>
