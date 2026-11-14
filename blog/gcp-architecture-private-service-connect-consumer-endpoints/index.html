@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #93 — Private Service Connect: Consumer Endpoints | Jayanth Katta Blog</title>
+<meta name="description" content="Four posts have been about reaching outward: a VM calling a public Google address, an on-premises host routed to a VIP whose addresses are public but unrouted. Private Service Connect inverts that. A consumer endpoint is an internal IP address in your own VPC network, and the question stops being how to route to Google and becomes which address in your own space the service should answer on. That also makes it the first option in this block that can reach the regional endpoints #90 and #92 both excluded."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Private Service Connect: Consumer Endpoints"/>
+<meta property="og:description" content="Four posts have been about reaching outward: a VM calling a public Google address, an on-premises host routed to a VIP whose addresses are public but unrouted. Private Service Connect inverts that. A consumer endpoint is an internal IP address in your own VPC network, and the question stops being how to route to Google and becomes which address in your own space the service should answer on. That also makes it the first option in this block that can reach the regional endpoints #90 and #92 both excluded."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-private-service-connect-consumer-endpoints/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Private Service Connect: Consumer Endpoints"/>
+<meta name="twitter:description" content="Four posts have been about reaching outward: a VM calling a public Google address, an on-premises host routed to a VIP whose addresses are public but unrouted. Private Service Connect inverts that. A consumer endpoint is an internal IP address in your own VPC network, and the question stops being how to route to Google and becomes which address in your own space the service should answer on. That also makes it the first option in this block that can reach the regional endpoints #90 and #92 both excluded."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-private-service-connect-consumer-endpoints/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=c039b840" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=c039b840">
+<script src="/blog/assets/site-footer.js?v=c039b840" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #93 — Private Service Connect: Consumer Endpoints…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #93 — Private Service Connect: Consumer Endpoints</h1>
+      <p class="post-description">Four posts have been about reaching outward: a VM calling a public Google address, an on-premises host routed to a VIP whose addresses are public but unrouted. Private Service Connect inverts that. A consumer endpoint is an internal IP address in your own VPC network, and the question stops being how to route to Google and becomes which address in your own space the service should answer on. That also makes it the first option in this block that can reach the regional endpoints #90 and #92 both excluded.</p>
+      <div class="post-info">
+        <span>Nov 14, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>13 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 14 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-private-service-connect-consumer-endpoints" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Everything in the private-access block so far has pointed outward. #90 had a VM calling the ordinary public address of a Google API. #91 and #92 had an on-premises host routed to a VIP whose addresses are public but deliberately unrouted. In all three the destination belonged to Google and the work was getting packets to it.
+    </p>
+    <p>
+      This inverts. <em>Private Service Connect endpoints are internal IP addresses in a consumer VPC network that can be directly accessed by clients in that network.</em> The service answers on an address you chose, in your own space, and the routing question largely disappears.
+    </p>
+    <p>
+      Which is a better model for most things and introduces three decisions the previous mechanisms did not have.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We will put a custom URL in front of the endpoint"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not with an endpoint. <em>Endpoints provide layer 4 connectivity to services</em>, and the documentation names the alternative in the same breath: <em>if you need load balancer features, such as custom URLs or advanced traffic management, use backends.</em> Backends are a different construct &mdash; <em>backends are deployed by using network endpoint groups (NEGs) that let consumers direct traffic to their load balancer before reaching a Private Service Connect service.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide at layer 4 or layer 7 before you build, because the two are different resources rather than two settings on one. An endpoint is a forwarding rule; a backend is a NEG behind your own load balancer. If anything in the requirement list mentions paths, hostnames, headers, WAF or TLS termination you want to own, the answer is backends and the endpoint was never going to stretch.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We will change the bundle later if we need to"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You cannot. <em>You can't update an endpoint for Google APIs and services after it is created.</em> And the bundle is the governance decision: <em>use all-apis to give access to all supported APIs</em>, or <em>use vpc-sc to restrict access to Google APIs that support VPC Service Controls.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Settle the VPC Service Controls question before creating the endpoint, exactly as #92 argued for the VIP choice &mdash; it is the same decision wearing different clothes. Note the recreate path is not free either: <em>each forwarding rule counts toward the per VPC network quota for Private Service Connect</em>, so an estate that iterates by creating new endpoints will meet a limit.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Endpoint creation fails and the error is about Service Directory"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Almost certainly a leftover zone. <em>If your VPC network does not contain any endpoints, check if a Cloud DNS private zone exists for p.googleapis.com.</em> If one does, <em>if the zone exists, delete it before you create the endpoint.</em> Otherwise: <em>if you don't delete it, creation of the Service Directory DNS zone used for Private Service Connect fails.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check for the zone first, especially in an estate that has tried this before &mdash; a deleted endpoint can leave its zone behind, and the next attempt fails with an error that names a product nobody configured. The diagnostic is one command and the fix is a deletion, but only if you know to look.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Three types, one direction each, and a clear line at layer 4.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-093-private-service-connect-consumer-endpoints.svg" alt="Diagram: Private Service Connect consumer endpoints, the first mechanism in this block giving you an address inside your own network; an endpoint is an internal IP address in the consumer VPC network reached directly by clients there, deployed as a forwarding rule referencing a service attachment, a bundle of global Google APIs, or a regional or multi-regional API; endpoints provide layer 4 connectivity only so custom URLs and advanced traffic management require backends with network endpoint groups and your own load balancer; interfaces are the third type and let the producer initiate connections back; for Google APIs this is an alternative to Private Google Access and can target regional and multi-regional APIs, create several internal addresses, direct on-premises traffic at specific addresses and regions, and centralise traffic through a load balancer; the all-apis and vpc-sc bundles mirror the previous post's VIP choice; endpoints get automatic DNS names under p.googleapis.com; and two sharp edges, a leftover Cloud DNS private zone that makes creation fail and an endpoint that cannot be updated after creation" />
+      <figcaption>An internal address of your own, at layer 4.</figcaption>
+    </figure>
+
+    <h3>The three types, and which way each one faces</h3>
+    <p>
+      The product is a family rather than one thing: <em>Private Service Connect lets you send traffic to endpoints and backends that forward the traffic to managed services, including Google APIs and published services.</em> Endpoints and backends both carry consumer-to-producer traffic and differ in layer. The third type reverses the direction entirely &mdash; <em>Private Service Connect interfaces let managed services initiate connections to consumer VPC networks</em>, and usefully they compose: <em>Private Service Connect interfaces provide bidirectional communication and can be used in the same VPC network as endpoints and backends.</em>
+    </p>
+    <p>
+      An endpoint's mechanism is a forwarding rule, and what it points at is the interesting part: <em>endpoints are created by deploying a forwarding rule that references a service attachment , a bundle of global Google APIs , or a regional or multi-regional API.</em> One construct, three kinds of target &mdash; another company's service, a bundle of Google's, or a single regional Google API. And <em>endpoints are deployed by using forwarding rules that provide the consumer an IP address that is mapped to the Private Service Connect service.</em>
+    </p>
+
+    <div class="callout">
+      <strong>The gap this closes, three posts late</strong>
+      <p>#90 established that Private Google Access <em>doesn't support regional and multi-regional endpoints</em>, the ones ending <code>rep.googleapis.com</code>. #92 confirmed neither VIP serves them either, and that a wildcard pointed at a VIP actively breaks them.</p>
+      <p>Here they are supported: <em>endpoints let you target a bundle of global Google APIs , or a regional or multi-regional Google API</em>, and backends go further still &mdash; <em>backends let you target a global Google API , a regional Google API , or a multi-regional Google API.</em> So the answer to "how do I reach a regional endpoint privately", which the last three posts could only answer with "not this way", is Private Service Connect. Worth knowing before anyone spends a day trying to make a VIP do it.</p>
+    </div>
+
+    <h3>What it buys over Private Google Access</h3>
+    <p>
+      The documentation positions it as a choice rather than a successor: <em>using Private Service Connect to access Google APIs is an alternative to using Private Google Access or the public domain names for Google APIs.</em> With a nice framing of why the mechanism is the same as for third-party services &mdash; <em>in this case, the producer is Google.</em>
+    </p>
+    <p>
+      Three capabilities are listed, and each corresponds to something the earlier mechanisms could not do. <em>Create one or more internal IP addresses to access Google APIs for different use cases</em> &mdash; several addresses, so different workloads can have different paths, where a VIP is one shared destination. <em>Direct on-premises traffic to specific IP addresses and regions when accessing Google APIs</em> &mdash; which addresses #91's region problems directly. And <em>centralize Google API traffic through a supported load balancer to apply your own certificates, security policies, or observability</em>, which is simply not available when the destination is Google's own VIP.
+    </p>
+    <p>
+      That third one is the strongest argument for backends over endpoints in a regulated estate: if you need to see, log or police API traffic yourself, you need your own load balancer in the path, and only backends put it there.
+    </p>
+
+    <h3>The bundle, which is #92's decision relocated</h3>
+    <p>
+      For Google APIs the endpoint takes a bundle, and the two options map exactly onto yesterday's two VIPs: <em>use all-apis to give access to all supported APIs</em>, or <em>use vpc-sc to restrict access to Google APIs that support VPC Service Controls.</em>
+    </p>
+    <p>
+      Same governance question, third presentation. In #92 it was which domain you create DNS records for; here it is a flag on a forwarding rule. The substance has not changed and neither has the trap: choosing the restrictive option blocks APIs that do not support VPC Service Controls, by design, and the team that discovers it may not be the team that chose it.
+    </p>
+    <p>
+      You do get the DNS for free, which the VIP route did not give you: <em>if your endpoint name is xyz , DNS records are created for storage-xyz.p.googleapis.com , compute-xyz.p.googleapis.com , and other commonly used APIs in the API bundle.</em> No zone to build, no wildcard to reason about, and no risk of capturing names you did not intend &mdash; which was #92's main hazard.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The more interesting case is a service somebody else publishes, and the documentation is direct about what that unlocks: <em>private Service Connect endpoints and published services let two independent companies communicate with each other by using internal IP addresses.</em> Two organisations, two VPC networks, no shared address space, no peering, no transitivity to reason about &mdash; and each side sees an internal address.
+    </p>
+    <p>
+      That is a materially different proposition from everything in the hybrid block. #81's peering required coordinated address space and gave non-transitive reachability; #88's Partner Interconnect required a shared physical facility and a third party. This requires neither, because the connection is brokered by a service attachment rather than by a network join.
+    </p>
+    <p>
+      Three things that attachment carries are worth knowing from the consumer side, because they tell you what you do and do not control.
+    </p>
+    <p>
+      <strong>Access is the producer's decision.</strong> The attachment holds <em>a consumer accept list that defines which consumers are allowed to connect to the service.</em> You can create the endpoint; whether it connects is on their list. Which is the right design and means a failed connection may be an administrative matter rather than a technical one.
+    </p>
+    <p>
+      <strong>Source addresses are translated on their side.</strong> The attachment names <em>the NAT subnet where translated traffic is sourced from in the producer VPC network.</em> So your client's address is not what the producer's service sees, which matters if you expected to use source IP for anything &mdash; allow-listing, logging, rate limiting by client.
+    </p>
+    <p>
+      <strong>DNS may be handed to you.</strong> There is <em>an optional DNS domain , if provided, that is used in the DNS entries for endpoints that are automatically created in the consumer's Cloud DNS zone.</em> Optional, and the producer's choice, so whether you get usable names or just an IP address depends on how they published.
+    </p>
+
+    <div class="callout">
+      <strong>Where the single IP address comes from</strong>
+      <p>The architecture note underneath all of this: <em>producer services are published through load balancers that expose a single IP address to the consumer V</em>PC network. One address on your side regardless of how many instances serve it on theirs, which is what makes the endpoint model simple to consume and also what caps it at layer 4 &mdash; there is nothing in that address for a path or a hostname to attach to.</p>
+    </div>
+
+    <h3>Reading this against the last four posts</h3>
+    <p>
+      It is worth laying the four private-access options side by side, because the block has now produced one mechanism per post and they are easy to conflate. Private Google Access is a subnet flag that lets an internal-only VM use Google's public addresses. The VIPs are public addresses with no public routes, reached over routing you supply, and are the only option for an on-premises host. Private Service Connect endpoints are internal addresses in your network at layer 4. Backends are the same but with your load balancer in front.
+    </p>
+    <p>
+      The decision order that falls out: what is the client, what is the producer, and do you need layer 7. An on-premises client constrains you to the VIPs. A Google API with no need for inspection is cheapest as Private Google Access. Anything needing your own certificates or policies needs backends. Everything else is an endpoint.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Consuming a service another organisation publishes</td>
+            <td>A Private Service Connect endpoint</td>
+            <td>It gives both sides internal addresses with no shared address space.</td>
+          </tr>
+          <tr>
+            <td>Needing custom URLs, paths or traffic management</td>
+            <td>Backends, not endpoints</td>
+            <td>Endpoints provide layer 4 connectivity only.</td>
+          </tr>
+          <tr>
+            <td>Needing your own certificates, policies or observability</td>
+            <td>Backends</td>
+            <td>Only they put a load balancer you own in the path.</td>
+          </tr>
+          <tr>
+            <td>Reaching a regional or multi-regional Google API privately</td>
+            <td>An endpoint or a backend</td>
+            <td>Private Google Access and both VIPs exclude those endpoints.</td>
+          </tr>
+          <tr>
+            <td>Different workloads needing different API paths</td>
+            <td>Several endpoints</td>
+            <td>You can create one or more internal addresses for different use cases.</td>
+          </tr>
+          <tr>
+            <td>On-premises traffic that must hit a specific region</td>
+            <td>An endpoint per target</td>
+            <td>Directing on-premises traffic at specific addresses and regions is a stated capability.</td>
+          </tr>
+          <tr>
+            <td><strong>Choosing the API bundle</strong></td>
+            <td><strong>Settle VPC Service Controls first</strong></td>
+            <td><strong>The endpoint cannot be updated after creation.</strong></td>
+          </tr>
+          <tr>
+            <td>Iterating on endpoint configuration</td>
+            <td>Expect delete and recreate, and watch the quota</td>
+            <td>Each forwarding rule counts toward a per-network quota.</td>
+          </tr>
+          <tr>
+            <td>Endpoint creation fails mentioning Service Directory</td>
+            <td>Look for a leftover p.googleapis.com private zone</td>
+            <td>An existing zone makes creation fail; it must be deleted first.</td>
+          </tr>
+          <tr>
+            <td>Your endpoint connects but the service rejects you</td>
+            <td>Ask the producer about their consumer accept list</td>
+            <td>Access is defined on the attachment, on their side.</td>
+          </tr>
+          <tr>
+            <td>Planning to allow-list by client source IP at the producer</td>
+            <td>Do not</td>
+            <td>Traffic is sourced from a NAT subnet in the producer VPC network.</td>
+          </tr>
+          <tr>
+            <td>Expecting friendly DNS names for a published service</td>
+            <td>Confirm the producer set a DNS domain</td>
+            <td>That field is optional and theirs to set.</td>
+          </tr>
+          <tr>
+            <td>A Google API endpoint for a well-known service</td>
+            <td>Use the automatic p.googleapis.com names</td>
+            <td>Records are created for the bundle's common APIs from the endpoint name.</td>
+          </tr>
+          <tr>
+            <td>The producer must call back into your network</td>
+            <td>Interfaces, alongside the endpoint</td>
+            <td>They are bidirectional and can share the VPC network.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      If you already use endpoints for Google APIs, record which bundle each one was created with, because that is a decision you cannot revise and it will not be obvious later from the endpoint's name or address. And if any endpoint creation has ever failed in an estate, check for an orphaned <code>p.googleapis.com</code> private zone before the next attempt &mdash; it is the single most likely cause and it survives the endpoint that created it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thing that makes this the most satisfying post in the block is that the hard problem simply goes away. Four posts of routing public addresses through networks that were not supposed to reach the internet, of VIPs whose privacy came from a missing route, of regional pinning and wildcard traps &mdash; and then an internal IP address in your own network, with DNS created for you, and the whole routing question answered by the fact that the address is local.
+
+    </p>
+    <p>
+      What replaces it is a boundary of a different kind. The producer decides who may connect, translates your source addresses, and chooses whether you get names. The bundle you pick is permanent. And the layer 4 ceiling is firm enough that half the reasons people want this &mdash; inspect the traffic, terminate TLS, route by path &mdash; require a different resource entirely. Simpler to operate, more to settle in advance.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#94 turns the model around: Private Service Connect published services &mdash; the producer side, the service attachment, and the accept list that decides who gets in.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect" target="_blank" rel="noopener">Private Service Connect</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis" target="_blank" rel="noopener">Access Google APIs through endpoints</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-architecture" target="_blank" rel="noopener">Private Service Connect architecture</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-deployments" target="_blank" rel="noopener">Private Service Connect deployments</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-backends" target="_blank" rel="noopener">Private Service Connect backends</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/about-private-service-connect-interfaces" target="_blank" rel="noopener">About Private Service Connect interfaces</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-services" target="_blank" rel="noopener">Access published services through endpoints</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-compatibility" target="_blank" rel="noopener">Private Service Connect compatibility</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-access-options" target="_blank" rel="noopener">Private access options for services</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-google-access" target="_blank" rel="noopener">Private Google Access overview</a></li>
+      <li><a href="https://docs.cloud.google.com/service-directory/docs/overview" target="_blank" rel="noopener">Service Directory overview</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-image-builder-devops-agent/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #75 - The agent fills the form; you still submit it</span></a><a href="/blog/gcp-weekly-intelligence-9-13-november-2026/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">GCP Weekly Intelligence #14 - 9-13 November 2026</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-private-service-connect-consumer-endpoints/';
+      this.page.identifier = 'gcp-architecture-private-service-connect-consumer-endpoints';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=c039b840"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
