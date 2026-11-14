@@ -1,0 +1,477 @@
+---
+title: "AWS Architecture Series #113 — The index begins when you create it, and ends before your logs do"
+date: '2026-11-14T09:00:00'
+slug: aws-architecture-field-indexes
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-14'
+problem: "A CloudWatch Logs field index reduces the data a Logs Insights query scans, which is what the query is billed on. But an index is a property of ingestion rather than of the log group: CloudWatch indexes only events ingested after the policy is created, and each matching event stays indexed for 30 days from its ingestion time, while the log group's retention can be years. And filterIndex does not merely optimise - it skips un-indexed log groups and returns only results from after the index was created, so the same question asked two ways returns two different answers with nothing to say which was complete."
+builds: "A reading of what a field index actually changes: why it is a property of ingestion time rather than of a log group, how filterIndex trades completeness for scan volume and says nothing about what it skipped, the conditions under which an index is silently not used, how account-level and log-group-level policies override one another, and which fields are indexed for you already."
+verified_claims:
+  - claim: "You can create field indexes of fields in your log events for efficient equality-based searches"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "When you then use a field index in a CloudWatch Logs Insights query, the query attempts to skip processing log events that are known to not include the indexed field"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "This reduces the scan volume of your queries that use field indexes, making it possible to return results faster"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "CloudWatch Logs indexes only the log events ingested after an index policy is created. It doesn't index log events ingested before the policy was created"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "After you create a field index, each matching log event remains indexed for 30 days from the log event's ingestion time"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "Indexed fields are case-sensitive. For example, a field index of RequestId won't match a log event containing requestId"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "Fields indexes are supported only for the structured log formats of JSON and service logs"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "These queries can scan as many as 10,000 log groups which you choose by specifying as many as five log group name prefixes"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "If you create a field index policy in a monitoring account, that policy is not used for log groups in linked source accounts. A field index policy applies only in the account where it is created"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "Default field indexes are in addition to any custom field indexes you define within your policy. Default field indexes are not counted towards your field index quota"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html
+  - claim: "Use filterIndex to return indexed data only, by forcing a query to scan only log groups that are indexed on a field that you specify in the query"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html
+  - claim: "For each indexed log group, it attempts to scan only log events that have the indexed field, and it also returns only results from after the field index was created"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html
+  - claim: "If you use filter instead of filterIndex for a query of the same five log groups, the query will attempt to scan not only the log events that contain the value in the indexed log groups, but will also scan the fifth log group that isn't indexed, and it will scan every log event in that fifth log group"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html
+  - claim: "Within the log groups that are indexed, the query skips log events that have an IPaddress field but not observed 198.51.100.0 as the value for that field"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html
+  - claim: "Use the IN operator to expand the results to any of multiple values for the indexed fields"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html
+  - claim: "As many as 20 fields can be included in the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "Each field name can include as many as 100 characters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "You can have as many as 40 account-level index policies, of these policies 20 can use log group name prefix selection criteria and 20 can use data source based selection criteria"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "The 40 account-level index policies split evenly into two kinds of selection criteria, 20 each"
+    derive: "20 + 20"
+    expect: "40"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "If you have multiple account-level index policies filtered to log group name prefixes, no two of them can use the same or overlapping log group name prefixes"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "If you create log-group level index policy, that log group does not use account-level policies that match at the log group level"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "Account-level policies which match at the log event level (such as, for a given data source name and type combination) will apply in addition to policies which match the log group as a whole"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "If you have an account-level index policy that has no name prefixes and applies to all log groups, then no other account-level index policy with log group name prefix filters can be created"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "To create an index of a custom field in your log groups that starts with @, you must specify the field with an extra @ at the beginning of the field name"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "For account-level index policies with data source name and type based selection criteria an additional restriction applies: all of the fields must be primitive data types, nested primitives are only supported for structs"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html
+  - claim: "The usage type DataScanned-Bytes with API operation StartQuery covers logs data scanned by CloudWatch Logs Insights queries"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html
+catch: "A field index is a property of ingestion, not of a log group: only events ingested after the policy exists are indexed, and each stays indexed for 30 days from ingestion while retention may run for years. So an index created during an incident cannot help with that incident, and a query over older logs cannot use an index that nominally covers the field. Worse for correctness, filterIndex returns indexed data only - it skips log groups with no index on the field and returns only results from after the index was created - so the same question asked with filter and with filterIndex returns different answers, and only one of them is complete."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #113 &middot; Operational Excellence</div>
+  <h1 class="post-title">The index begins when you create it, and ends before your logs do</h1>
+  <p class="post-subtitle">A field index cuts the data a query scans, which is what the query is billed on. But it indexes only what arrives after the policy exists, and only for thirty days &mdash; so an index is a property of ingestion time, not of a log group.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Operational Excellence &middot; Cost Optimization</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #112 ended on the cost of asking a question of your logs: a Logs Insights query is billed on data
+      scanned, under the <em>&ldquo;DataScanned-Bytes&rdquo;</em> usage type against
+      <em>&ldquo;StartQuery&rdquo;</em>. Field indexes are the documented lever on that number &mdash;
+      <em>&ldquo;This reduces the scan volume of your queries that use field indexes, making it possible to
+      return results faster&rdquo;</em> &mdash; and the feature does what it says.
+    </p>
+    <p>
+      It is also the most time-dependent primitive in CloudWatch Logs, and that is not obvious from the
+      configuration. An index policy looks like a property of a log group, in the way that retention is. It
+      is not. It is a property of the events that arrived while it existed.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The index starts at creation and expires in 30 days; retention does neither</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two sentences, next to each other in the documentation, decide most of how this feature behaves:
+        </p>
+        <p>
+          <em>&ldquo;<strong>CloudWatch Logs indexes only the log events ingested after an index policy is
+          created. It doesn't index log events ingested before the policy was created.</strong>&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>After you create a field index, each matching log event remains indexed for 30
+          days from the log event's ingestion time.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Put those together with a log group whose retention is a year, and the log group has three zones:
+          events too old to have been indexed, events indexed and still within their thirty days, and
+          events that were indexed and have since fallen out. One field, one policy, three behaviours,
+          decided entirely by when each event arrived.
+        </p>
+        <p>
+          The operational consequence is the one worth internalising: <strong>adding an index during an
+          incident does nothing for that incident.</strong> The events you are investigating are already
+          ingested. The index you just created begins with the next one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat index policies as capacity planning, not as an incident tool &mdash; they go in whenever the log group is created, alongside retention, and the fields chosen are <em>&ldquo;fields that you often need to query for&rdquo;</em>. AWS also names high-cardinality fields as good candidates, because <em>&ldquo;a query using these field indexes will complete faster because it limits the log events that are being matched to the target value&rdquo;</em>. If you are querying beyond thirty days, assume you are paying the unindexed price and size the query accordingly.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>filterIndex changes the answer, not just the cost</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the finding that matters most, and it is easy to read past because <code>filterIndex</code>
+          is introduced as an optimisation. Its actual contract:
+        </p>
+        <p>
+          <em>&ldquo;Use <code>filterIndex</code> to return indexed data only, by forcing a query to scan
+          only log groups that are indexed on a field that you specify in the query.&rdquo;</em>
+        </p>
+        <p>
+          And then, describing a query across five log groups where four are indexed and one is not:
+          <em>&ldquo;<strong>For each indexed log group, it attempts to scan only log events that have the
+          indexed field, and it also returns only results from after the field index was
+          created.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Two exclusions, both silent. The fifth log group contributes nothing. Events from before the index
+          existed contribute nothing. The query succeeds, returns rows, and does not tell you that a log
+          group was skipped or that a time range was out of reach. Replace <code>filterIndex</code> with
+          <code>filter</code> and the same question gets a different answer:
+          <em>&ldquo;the query will attempt to scan not only the log events that contain the value in the
+          indexed log groups, but will also scan the fifth log group that isn't indexed, and it will scan
+          every log event in that fifth log group.&rdquo;</em>
+        </p>
+        <p>
+          So the two commands are not a fast path and a slow path to one result. They answer different
+          questions: <em>what does the index know about this value</em>, and <em>what is in these log
+          groups</em>. For a dashboard that is a cost decision. For a security investigation asking whether
+          an address appears anywhere, it is the difference between a complete answer and a cheap one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Pick the command from the question, and write the reason next to the saved query. <code>filterIndex</code> for high-volume exploration across <em>&ldquo;as many as 10,000 log groups&rdquo;</em>, where speed is the point and a miss is tolerable. <code>filter</code> for any question whose value depends on completeness &mdash; incident forensics, audit evidence, "did this ever happen". If you need both, run <code>filterIndex</code> first to find the shape and <code>filter</code> to confirm it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Four ways the index is quietly not used, and none of them errors</strong></div>
+      <div class="challenge-body">
+        <p>
+          An index that does not apply is not a failure. The query runs, returns the right rows, and scans
+          everything &mdash; so the only symptom is the bill.
+        </p>
+        <p>
+          <strong>Case.</strong> <em>&ldquo;Indexed fields are case-sensitive. For example, a field index of
+          RequestId won't match a log event containing requestId.&rdquo;</em> One capital letter between an
+          indexed query and a full scan.
+        </p>
+        <p>
+          <strong>Format.</strong> <em>&ldquo;Fields indexes are supported only for the structured log
+          formats of JSON and service logs.&rdquo;</em> An application writing plain-text lines gets
+          nothing from this feature at all, no matter what the policy says.
+        </p>
+        <p>
+          <strong>Query shape.</strong> Indexes are
+          <em>&ldquo;for efficient equality-based searches&rdquo;</em>, and the documented forms are
+          <code>requestId = {{value}}</code> or <code>requestId IN [{{value}}, {{value}}, ...]</code>. A
+          substring match or a range is not an equality search.
+        </p>
+        <p>
+          <strong>Value novelty.</strong> The subtlest one: the skip applies to events
+          <em>&ldquo;that CloudWatch Logs has detected a value for that field in the past&rdquo;</em>, and
+          within indexed log groups the query
+          <em>&ldquo;skips log events that have an IPaddress field but not observed 198.51.100.0 as the
+          value for that field&rdquo;</em>. The index is value-aware, which is what makes it fast &mdash;
+          and is worth knowing when reasoning about what a <code>filterIndex</code> query could have
+          missed.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Copy the field name out of a real log event rather than typing it, and index the field as your application actually writes it. Confirm the log group is JSON before writing a policy for it. And keep the <code>@</code> rule in mind for custom fields: <em>&ldquo;To create an index of a custom field in your log groups that starts with @, you must specify the field with an extra @ at the beginning of the field name&rdquo;</em> &mdash; so <code>@userId</code> is indexed as <code>@@userId</code>, while generated fields like <code>@logStream</code> take no extra <code>@</code>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-113-field-indexes.svg" alt="Diagram: A CloudWatch Logs field index enables efficient equality-based searches, and when a query uses one it attempts to skip processing log events known not to include the indexed field, which reduces the scan volume that Logs Insights queries are billed on under the DataScanned-Bytes usage type. The index is a property of ingestion rather than of a log group: CloudWatch Logs indexes only the log events ingested after an index policy is created and does not index events ingested before, and each matching event remains indexed for 30 days from its ingestion time, while log group retention is independent and may be much longer. An index created during an incident therefore does nothing for that incident. The filterIndex command returns indexed data only, forcing a query to scan only log groups indexed on the specified field, and for each indexed log group it attempts to scan only events that have the indexed field and also returns only results from after the field index was created, so two exclusions are applied silently. Using filter instead scans the un-indexed log groups too, every event in them, which costs more and is complete. Four conditions make an index silently inapplicable with no error: indexed fields are case-sensitive so RequestId does not match requestId, field indexes are supported only for the structured log formats of JSON and service logs, the index serves equality searches of the form field equals value or field IN a list, and the skip applies to values CloudWatch Logs has detected for that field in the past. Quotas are 20 fields per policy, 100 characters per field name, and as many as 40 account-level index policies of which 20 may use log group name prefix selection criteria and 20 may use data source based selection criteria, with no two prefix policies allowed to overlap and only one policy per data source name and type combination. A log-group-level policy overrides account-level policies that match the log group as a whole, while account-level policies matching at the log event level for a data source name and type apply in addition. A filterIndex query can scan as many as 10,000 log groups chosen by as many as five log group name prefixes. Default field indexes exist for all Standard log class log groups and for several AWS data source types, and they do not count towards the quota. A field index policy created in a monitoring account is not used for log groups in linked source accounts, because a policy applies only in the account where it is created.">
+
+    <h3>Three zones in one log group</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>When the event was ingested</th><th>Indexed?</th><th>What a filterIndex query does with it</th></tr>
+      <tr>
+        <td>Before the policy existed</td>
+        <td>No &mdash; <em>&ldquo;It doesn't index log events ingested before the policy was created&rdquo;</em></td>
+        <td>Excluded from results</td>
+      </tr>
+      <tr>
+        <td>After the policy, within 30 days of ingestion</td>
+        <td>Yes</td>
+        <td>Scanned, with non-matching events skipped</td>
+      </tr>
+      <tr>
+        <td>After the policy, more than 30 days ago</td>
+        <td>No longer &mdash; the index lasts <em>&ldquo;30 days from the log event's ingestion time&rdquo;</em></td>
+        <td>Outside what the index can accelerate</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      Retention is not in that table, and that is the point. A log group retaining a year of data has at
+      most thirty days of it indexed at any moment. The index is a moving window over the newest arrivals,
+      not an attribute of the group.
+    </p>
+
+    <h3>filterIndex against filter, on the same question</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th><code>filterIndex</code></th><th><code>filter</code></th></tr>
+      <tr>
+        <td>Log groups with no index on the field</td>
+        <td><strong>Skipped entirely</strong></td>
+        <td>Scanned, every event</td>
+      </tr>
+      <tr>
+        <td>Events from before the index existed</td>
+        <td><strong>Not returned</strong></td>
+        <td>Returned</td>
+      </tr>
+      <tr>
+        <td>Scan volume</td>
+        <td>Reduced, sometimes enormously</td>
+        <td>Whatever the time range holds</td>
+      </tr>
+      <tr>
+        <td>Completeness</td>
+        <td>Only what the index covers</td>
+        <td>Everything in range</td>
+      </tr>
+      <tr>
+        <td>Tells you what it skipped</td>
+        <td>No</td>
+        <td>Nothing to skip</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the architectural problem. #112's hazard was a query that returned a number lower
+      than the truth because the data had not arrived. This is the same shape with rows instead of a count:
+      a result set smaller than the truth, with no state, no warning and no flag.
+    </p>
+
+    <h3>Scope and precedence, which decide what is actually in force</h3>
+    <p>
+      Policies exist at two levels and the interaction is specific:
+      <em>&ldquo;If you create log-group level index policy, that log group does not use account-level
+      policies that match at the log group level.&rdquo;</em> So a log-group policy is a replacement, not an
+      addition &mdash; add one field locally and you lose the twenty the account policy was providing.
+    </p>
+    <p>
+      With one exception that is additive:
+      <em>&ldquo;Account-level policies which match at the log event level (such as, for a given data source
+      name and type combination) will apply in addition to policies which match the log group as a
+      whole.&rdquo;</em>
+    </p>
+    <p>
+      And the account-level namespace has structural rules:
+      <em>&ldquo;no two of them can use the same or overlapping log group name prefixes&rdquo;</em>, only one
+      policy per data source name and type, and the catch-all forecloses the others &mdash;
+      <em>&ldquo;If you have an account-level index policy that has no name prefixes and applies to all log
+      groups, then no other account-level index policy with log group name prefix filters can be
+      created.&rdquo;</em>
+    </p>
+
+    <h3>The quotas worth knowing before you design the policy set</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Limit</th><th>Value</th></tr>
+      <tr><td>Fields per index policy</td><td><em>&ldquo;As many as 20 fields can be included in the policy&rdquo;</em></td></tr>
+      <tr><td>Field name length</td><td><em>&ldquo;as many as 100 characters&rdquo;</em></td></tr>
+      <tr><td>Account-level policies</td><td><em>&ldquo;as many as 40&rdquo;</em> &mdash; 20 by log group name prefix, 20 by data source</td></tr>
+      <tr><td>Log groups a <code>filterIndex</code> query can reach</td><td><em>&ldquo;as many as 10,000 log groups&rdquo;</em>, via <em>&ldquo;as many as five log group name prefixes&rdquo;</em></td></tr>
+      <tr><td>Default field indexes</td><td>Free &mdash; <em>&ldquo;not counted towards your field index quota&rdquo;</em></td></tr>
+    </table>
+    </div>
+    <p>
+      The defaults are more generous than most teams realise. Every Standard-class log group already has
+      indexes on <code>@logStream</code>, <code>@aws.region</code>, <code>@aws.account</code>,
+      <code>traceId</code>, <code>severityText</code> and others; CloudTrail data and management logs come
+      with <code>eventSource</code>, <code>eventName</code>, <code>awsRegion</code>,
+      <code>errorCode</code>, <code>readOnly</code>, <code>requestId</code> and more; VPC flow logs arrive
+      with <code>action</code>, <code>logStatus</code>, <code>region</code>, <code>flowDirection</code> and
+      <code>type</code>. Before writing a policy, check whether the field you want is already free.
+    </p>
+
+    <h3>The cross-account gap</h3>
+    <p>
+      <em>&ldquo;<strong>If you create a field index policy in a monitoring account, that policy is not used
+      for log groups in linked source accounts. A field index policy applies only in the account where it
+      is created.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Which inverts the usual cross-account observability intuition. The monitoring account is where you
+      run the wide queries, and it is the one place a policy written there has no effect on the data you
+      are querying. Indexes have to be created in each source account, by whoever owns it &mdash; a
+      distribution problem rather than a configuration one.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Forward-only indexing is the honest implementation</h3>
+    <p>
+      Indexing historical data would mean reading all of it &mdash; the exact cost the index exists to
+      avoid, paid at policy-creation time instead of query time, on data you may never query. Forward-only
+      means the index costs nothing to create and nothing to backfill. The right response is not to wish it
+      were retroactive but to create policies early, which costs nothing either.
+    </p>
+
+    <h3>A separate command for the lossy behaviour is the correct choice</h3>
+    <p>
+      <code>filterIndex</code> could have been an optimisation inside <code>filter</code>, silently
+      applying the index when available. That would have made every query's completeness depend on
+      configuration nobody querying could see. Making it a distinct keyword means the lossy version is the
+      one you have to ask for by name &mdash; and the documentation states the exclusions plainly. The
+      default is the complete answer.
+    </p>
+
+    <h3>Free defaults aimed at the logs people actually query</h3>
+    <p>
+      Default indexes on CloudTrail's <code>eventName</code> and <code>errorCode</code>, on VPC flow logs'
+      <code>action</code> and <code>logStatus</code>, on WAF's <code>action</code> &mdash; these are the
+      fields in nearly every investigation of those log types, indexed without anyone configuring anything
+      and without consuming quota. That is a well-chosen default set rather than a token one.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>When to create index policies</td>
+        <td>With the log group, next to retention</td>
+        <td>Only events <em>&ldquo;ingested after an index policy is created&rdquo;</em> are indexed &mdash; creating one later cannot reach back</td>
+      </tr>
+      <tr>
+        <td>Queries that must be complete</td>
+        <td><code>filter</code>, never <code>filterIndex</code></td>
+        <td><code>filterIndex</code> skips un-indexed log groups and <em>&ldquo;returns only results from after the field index was created&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Wide exploration across an estate</td>
+        <td><code>filterIndex</code> with prefixes</td>
+        <td>It reaches <em>&ldquo;as many as 10,000 log groups&rdquo;</em> while scanning a fraction of them</td>
+      </tr>
+      <tr>
+        <td>Queries older than 30 days</td>
+        <td>Budget them as unindexed</td>
+        <td>The index lasts <em>&ldquo;30 days from the log event's ingestion time&rdquo;</em>, however long retention runs</td>
+      </tr>
+      <tr>
+        <td>Log-group-level policies</td>
+        <td>Use sparingly, and restate the account fields</td>
+        <td>A log-group policy replaces account-level policies matching the log group as a whole</td>
+      </tr>
+      <tr>
+        <td>Account policy layout</td>
+        <td>Decide prefix-based or catch-all up front</td>
+        <td>A catch-all policy forecloses every prefix-based one, and prefixes may not overlap</td>
+      </tr>
+      <tr>
+        <td>Which fields to index</td>
+        <td>Check the defaults first</td>
+        <td>Defaults cover the usual CloudTrail, VPC flow log and WAF fields and <em>&ldquo;are not counted towards your field index quota&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Cross-account observability</td>
+        <td>Create policies in each source account</td>
+        <td>A monitoring-account policy <em>&ldquo;is not used for log groups in linked source accounts&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Find every saved query and dashboard using <code>filterIndex</code>.</strong> For each one,
+      decide whether an incomplete answer is acceptable. Any that back an audit, a security investigation or
+      a compliance statement should be using <code>filter</code>, and the cost difference is the price of
+      the guarantee.
+    </p>
+    <p>
+      <strong>Compare your index policies' creation dates against the questions you ask.</strong> A policy
+      created last week cannot serve a query over last month, and nothing in the query result says so.
+    </p>
+    <p>
+      <strong>Check case, character for character, against a real log event.</strong>
+      <code>RequestId</code> against <code>requestId</code> is a silent full scan that looks exactly like a
+      working index.
+    </p>
+    <p>
+      <strong>List the log groups you query most and confirm they are JSON.</strong> Field indexes are
+      <em>&ldquo;supported only for the structured log formats of JSON and service logs&rdquo;</em>, so a
+      policy on a plain-text log group is configuration that cannot do anything.
+    </p>
+    <p>
+      <strong>In a monitoring account, verify where your policies live.</strong> The ones that matter for
+      cross-account queries are the ones in the source accounts.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This run of posts keeps arriving at the same structural problem from new directions. #110: an alarm
+      state that means <em>I cannot tell</em>, firing nothing. #111: a signal produced by the watcher, so
+      its silence has two causes. #112: a query that ran before the logs landed and returned a number lower
+      than the truth.
+    </p>
+    <p>
+      Field indexes complete the set, and <code>filterIndex</code> is the sharpest version yet, because the
+      incompleteness is something you asked for. The command does exactly what it documents: returns
+      indexed data only. It skips the log group with no policy, and the week before the policy existed, and
+      it returns rows that look like an answer. Nothing is broken. The question quietly changed from
+      <em>where does this value appear</em> to <em>where does the index know this value appears</em>, and
+      those differ by precisely the configuration and history you were not thinking about when you typed
+      the query.
+    </p>
+    <p>
+      So the rule for this primitive is about which question you are asking. Indexes are a cost control and
+      a speed control, and they are excellent at both. They are not a completeness guarantee, and the
+      keyword that uses them is the one that gives completeness up. Create the policies early, because
+      creation time is the only time that matters; then choose <code>filter</code> or
+      <code>filterIndex</code> by what the answer is for, and write the reason down where the next person
+      will read it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs log classes: what the Infrequent Access class gives up, which features stop working when a log group is not in the Standard class, and why the choice is made at log group creation and is hard to reverse.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html" target="_blank" rel="noopener">Create field indexes to improve query performance and reduce scan volume &#8212; that indexes serve equality-based searches and reduce scan volume, that only events ingested after the policy is created are indexed, the 30-day index life from ingestion time, case sensitivity, the JSON and service-log format restriction, the 10,000 log group and five prefix reach of <code>filterIndex</code>, the default field indexes and that they do not count towards quota, and that a monitoring-account policy does not apply to linked source accounts</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-FilterIndex.html" target="_blank" rel="noopener">filterIndex &#8212; that it returns indexed data only, that it returns only results from after the field index was created, the worked comparison against <code>filter</code> over five log groups where one is un-indexed, the value-level skipping within indexed log groups, and the <code>IN</code> operator</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Syntax.html" target="_blank" rel="noopener">Field index syntax and quotas &#8212; the 20-field and 100-character limits, the 40 account-level policies split 20 by prefix and 20 by data source, the non-overlapping prefix rule and the catch-all restriction, the precedence of log-group-level over account-level policies and the additive data-source exception, the extra <code>@</code> convention for custom fields, and the primitive-type restriction for data-source policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html" target="_blank" rel="noopener">Analyzing, optimizing, and reducing CloudWatch costs &#8212; the <code>DataScanned-Bytes</code> usage type against <code>StartQuery</code> for logs data scanned by Logs Insights queries, which is the number an index reduces</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Deletion.html" target="_blank" rel="noopener">Effects of deleting a field index policy &#8212; further reading on what happens to existing indexed data when a policy is removed; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing-Automatic.html" target="_blank" rel="noopener">Automatically indexed fields &#8212; further reading on the fields CloudWatch Logs indexes without a policy; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
