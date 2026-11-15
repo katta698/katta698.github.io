@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #114 — Cheaper to write, the same price to read, and no index to make reading cheaper | Jayanth Katta Blog</title>
+<meta name="description" content="The Essentials log class, formerly Infrequent Access, lowers the ingestion price per GB and nothing else: storage charges and CloudWatch Logs Insights charges are the same in each log class. What it removes is the reading apparatus. GetLogEvents and FilterLogEvents are unsupported, so every read is a Logs Insights query billed on data scanned - and field indexing, the documented way to reduce scan volume, is also unsupported, along with the filterIndex command. Metric filters and subscription filters are gone too, which closes one of the two routes to alarming on logs. And the decision is permanent: after a log group is created, its log class can't be changed."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Cheaper to write, the same price to read, and no index to make reading cheaper"/>
+<meta property="og:description" content="The Essentials log class, formerly Infrequent Access, lowers the ingestion price per GB and nothing else: storage charges and CloudWatch Logs Insights charges are the same in each log class. What it removes is the reading apparatus. GetLogEvents and FilterLogEvents are unsupported, so every read is a Logs Insights query billed on data scanned - and field indexing, the documented way to reduce scan volume, is also unsupported, along with the filterIndex command. Metric filters and subscription filters are gone too, which closes one of the two routes to alarming on logs. And the decision is permanent: after a log group is created, its log class can't be changed."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-log-classes/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Cheaper to write, the same price to read, and no index to make reading cheaper"/>
+<meta name="twitter:description" content="The Essentials log class, formerly Infrequent Access, lowers the ingestion price per GB and nothing else: storage charges and CloudWatch Logs Insights charges are the same in each log class. What it removes is the reading apparatus. GetLogEvents and FilterLogEvents are unsupported, so every read is a Logs Insights query billed on data scanned - and field indexing, the documented way to reduce scan volume, is also unsupported, along with the filterIndex command. Metric filters and subscription filters are gone too, which closes one of the two routes to alarming on logs. And the decision is permanent: after a log group is created, its log class can't be changed."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-log-classes/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=c039b840" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=c039b840">
+<script src="/blog/assets/site-footer.js?v=c039b840" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #114 — Cheaper to write, the same price to read, and no index to make reading cheaper…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #114 — Cheaper to write, the same price to read, and no index to make reading cheaper</h1>
+      <p class="post-description">The Essentials log class, formerly Infrequent Access, lowers the ingestion price per GB and nothing else: storage charges and CloudWatch Logs Insights charges are the same in each log class. What it removes is the reading apparatus. GetLogEvents and FilterLogEvents are unsupported, so every read is a Logs Insights query billed on data scanned - and field indexing, the documented way to reduce scan volume, is also unsupported, along with the filterIndex command. Metric filters and subscription filters are gone too, which closes one of the two routes to alarming on logs. And the decision is permanent: after a log group is created, its log class can't be changed.</p>
+      <div class="post-info">
+        <span>Nov 15, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>14 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 15 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-log-classes" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      CloudWatch Logs offers two classes of log group. The Standard class is
+      <em>&ldquo;a full-featured option for logs that require real-time monitoring or logs that you access
+      frequently&rdquo;</em>. The other is now called Essentials:
+      <em>&ldquo;CloudWatch Logs Essentials log class (formerly Infrequent Access) is a log class that you
+      can use to cost-effectively consolidate your logs&rdquo;</em>, offering
+      <em>&ldquo;a subset of CloudWatch Logs capabilities including managed ingestion, storage,
+      cross-account log analytics, and encryption with a lower ingestion price per GB&rdquo;</em>.
+    </p>
+    <p>
+      Read quickly, that is a storage-tier decision of the kind S3 trained everyone to make: colder data,
+      cheaper shelf, slower retrieval. Read carefully, it is not that at all. The shelf costs the same, the
+      retrieval costs the same, and what you give up is the equipment.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The saving is at ingestion only &mdash; storage and query cost the same</strong></div>
+      <div class="challenge-body">
+        <p>
+          The documentation is unusually direct about this, in a note rather than in the marketing:
+        </p>
+        <p>
+          <em>&ldquo;<strong>For charges, the Standard and Essentials (formerly Infrequent Access) log
+          classes differ in ingestion costs only. Storage charges and CloudWatch Logs Insights charges are
+          the same in each log class.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So the mental model imported from S3 storage classes is wrong in both directions. There is no
+          storage discount to collect by moving cold logs, and there is no retrieval penalty to fear. The
+          entire economic difference happens once, when the log event arrives, and never again.
+        </p>
+        <p>
+          That reframes which log groups are candidates. The question is not <em>how often will we read
+          this</em> &mdash; reading costs the same either way. It is <em>how much of this arrives</em>,
+          weighed against the features in the next two challenges. A high-volume log group nobody alarms on
+          is the ideal case. A low-volume log group that somebody reads constantly saves almost nothing in
+          Essentials and gives up a great deal.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Rank candidate log groups by ingested volume, not by access frequency, and set the saving against the feature list rather than against a retrieval fee that does not exist. #48 covered the per-gigabyte arithmetic of CloudWatch logging and is the place to take the rates from; this post is about what the cheaper rate costs you in capability.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Every read becomes a billed scan, and the tool for narrowing it is gone</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two rows of the support table interact badly, and neither is obvious in isolation.
+        </p>
+        <p>
+          The first removes the cheap read path:
+          <em>&ldquo;<strong>GetLogEvents</strong>&rdquo;</em> and
+          <em>&ldquo;<strong>FilterLogEvents</strong>&rdquo;</em> are
+          <em>&ldquo;Not supported. Use CloudWatch Logs Insights to view log events stored in log groups in
+          the Essentials (formerly Infrequent Access) log class.&rdquo;</em> Those two APIs are what the
+          console's log-stream view, most CLI one-liners and nearly every home-grown log viewer use. In
+          Essentials they do not exist, so every act of looking at a log line goes through Logs Insights
+          &mdash; which, per #112 and #113, is billed under the
+          <em>&ldquo;DataScanned-Bytes&rdquo;</em> usage type against
+          <em>&ldquo;StartQuery&rdquo;</em>.
+        </p>
+        <p>
+          The second removes the discount on that:
+          <strong>field indexing is listed as supported in Standard and not supported in
+          Essentials</strong>, and the query language follows &mdash;
+          <em>&ldquo;Log groups in the Essentials log class (formerly Infrequent Access) support all query
+          commands except pattern, diff, filterIndex, and unmask.&rdquo;</em>
+        </p>
+        <p>
+          Put the two together. In the cheaper class, every read is a scan you pay for, and #113's entire
+          subject &mdash; the policy that reduces scan volume, and the command that restricts a query to
+          indexed data &mdash; is unavailable. You chose the class to save money on logs you rarely read,
+          and in exchange the reads you do perform are the expensive kind with no optimiser.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make the volume saving large enough to cover unoptimised queries, and keep the log groups you actually investigate in Standard where an index can serve them. Where a log group must be in Essentials, control read cost with the levers that still work: narrow time ranges, fewer log groups per query, and a custom scheduled-query shape rather than ad-hoc exploration.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>One of the two routes to alarming on logs closes, and the class cannot be changed back</strong></div>
+      <div class="challenge-body">
+        <p>
+          #112 described two documented ways to alarm on log data: a metric filter feeding a metric alarm,
+          or a Log Alarm evaluating a scheduled Logs Insights query. In Essentials,
+          <strong>metric filters are listed as supported in Standard and not supported in
+          Essentials</strong> &mdash; so the first route is closed. <strong>Subscription filters are
+          likewise unsupported</strong>, which also removes the escape hatch of streaming events out to
+          Lambda, Firehose or a third party and doing the detection yourself.
+        </p>
+        <p>
+          What survives is the second route: <strong>Scheduled Queries are supported in both
+          classes</strong>, so a Log Alarm still works. Which lands you back in challenge 2, because a Log
+          Alarm's cost is the data its query scans, and the index that would have reduced it does not exist
+          here.
+        </p>
+        <p>
+          Several other real-time features go with them:
+          <strong>Live Tail</strong>, <strong>CloudWatch Logs Anomaly Detection</strong>,
+          <strong>Embedded metrics format</strong>, <strong>Container Insights log ingestion</strong>,
+          <strong>Lambda Insights log ingestion</strong>, <strong>Facets</strong>,
+          <strong>Natural language query assist</strong> and
+          <strong>Compare to previous time range</strong> are all Standard-only. The pattern across the
+          whole list is consistent: Essentials keeps ingestion, storage, encryption, cross-account access,
+          export and querying, and drops everything that watches a log as it arrives.
+        </p>
+        <p>
+          And the decision is not revisitable:
+          <em>&ldquo;<strong>After a log group is created, its log class can't be changed.</strong>&rdquo;</em>
+          There is no transition, no lifecycle rule, no API call. Moving a workload between classes means a
+          new log group, which means every producer's configuration, every IaC reference, every dashboard
+          query and every alarm that names the old group.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide the class in the same change that creates the log group, and record the reason beside it &mdash; the next person cannot infer it and cannot undo it. For anything you are unsure about, create it in Standard: it is the class with every feature, and the only cost of being wrong is ingestion price on data you could have consolidated more cheaply. Being wrong the other way costs a migration.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-114-log-classes.svg" alt="Diagram: CloudWatch Logs offers two log group classes. Standard is a full-featured option for logs that require real-time monitoring or logs you access frequently. Essentials, formerly Infrequent Access, offers a subset of capabilities including managed ingestion, storage, cross-account log analytics and encryption with a lower ingestion price per GB, and is described as ideal for ad-hoc querying and after-the-fact forensic analysis on infrequently accessed logs. The economics are narrower than a storage tier: the documentation states that for charges the two classes differ in ingestion costs only, and that storage charges and CloudWatch Logs Insights charges are the same in each log class, so there is no storage discount and no retrieval penalty. What Essentials removes is the reading and watching apparatus. GetLogEvents and FilterLogEvents are not supported, and the documentation directs you to use CloudWatch Logs Insights instead, which is billed on data scanned under the DataScanned-Bytes usage type against StartQuery. Field indexing is not supported either, and the Logs Insights query language reflects that: log groups in the Essentials class support all query commands except pattern, diff, filterIndex and unmask. So every read is a billed scan and the documented way to reduce scan volume is unavailable. Metric filters and subscription filters are also unsupported, which closes the metric-filter route to alarming on logs and removes the option of streaming events out for your own processing, while Scheduled Queries are supported in both classes so a log alarm remains the surviving route. Live Tail, CloudWatch Logs Anomaly Detection, Embedded metrics format, Container Insights log ingestion, Lambda Insights log ingestion, Facets, Natural language query assist and Compare to previous time range are all Standard only. Both classes keep fully managed ingestion and storage, cross-account features, encryption with AWS KMS, Logs Insights discovered fields, CloudWatch Pipeline transformation, export to Amazon S3, S3 Tables integration, scheduled queries, OpenSearch PPL and SQL querying, and sensitive data protection with masking. The class is permanent: after a log group is created its log class cannot be changed, so migration means a new log group and every reference to it. A third Delivery class exists for delivering AWS Lambda logs to Amazon S3 or Amazon Data Firehose, where log events are kept for two days on a fixed retention period that cannot be changed. The Infrequent Access name has been renamed to Essentials, both INFREQUENT_ACCESS and ESSENTIALS are accepted as input indefinitely, and starting December 2026 read-path API responses return ESSENTIALS, which is a name change only with no changes to functionality or pricing.">
+
+    <h3>What each class keeps and loses</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Capability</th><th>Standard</th><th>Essentials</th></tr>
+      <tr><td>Managed ingestion and storage</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Cross-account features, KMS encryption, masking</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Logs Insights queries and discovered fields</td><td>Yes</td><td>Yes, most commands</td></tr>
+      <tr><td>Scheduled Queries</td><td>Yes</td><td><strong>Yes</strong></td></tr>
+      <tr><td>Export to S3, S3 Tables integration, Pipeline transforms</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td><code>GetLogEvents</code> / <code>FilterLogEvents</code></td><td>Yes</td><td><strong>Not supported</strong></td></tr>
+      <tr><td>Field indexing</td><td>Yes</td><td><strong>No</strong></td></tr>
+      <tr><td>Metric filters</td><td>Yes</td><td><strong>No</strong></td></tr>
+      <tr><td>Subscription filters</td><td>Yes</td><td><strong>No</strong></td></tr>
+      <tr><td>Live Tail, Anomaly Detection, Facets, query assist, time comparison</td><td>Yes</td><td>No</td></tr>
+      <tr><td>Embedded metrics format</td><td>Yes</td><td>No</td></tr>
+      <tr><td>Container Insights and Lambda Insights log ingestion</td><td>Yes</td><td>No</td></tr>
+    </table>
+    </div>
+    <p>
+      Read the <em>No</em> column as a single statement rather than a list of gaps. Everything removed is
+      something that watches a log as it arrives or turns it into something else: a tail, a metric, a
+      stream, an anomaly model, an embedded metric. Everything kept is ingestion, retention, protection and
+      after-the-fact querying. Essentials is a consolidation tier for logs you want to <em>have</em>, not
+      logs you want to <em>act on</em>, which is exactly what
+      <em>&ldquo;ideal for ad-hoc querying and after-the-fact forensic analysis on infrequently accessed
+      logs&rdquo;</em> says.
+    </p>
+
+    <h3>Where the previous three posts land in each class</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>From</th><th>Mechanism</th><th>Standard</th><th>Essentials</th></tr>
+      <tr>
+        <td>#112</td>
+        <td>Metric filter plus metric alarm</td>
+        <td>Available</td>
+        <td><strong>Unavailable</strong> &mdash; metric filters unsupported</td>
+      </tr>
+      <tr>
+        <td>#112</td>
+        <td>Log Alarm on a scheduled query</td>
+        <td>Available</td>
+        <td>Available &mdash; Scheduled Queries are supported</td>
+      </tr>
+      <tr>
+        <td>#113</td>
+        <td>Field index policy</td>
+        <td>Available</td>
+        <td><strong>Unavailable</strong></td>
+      </tr>
+      <tr>
+        <td>#113</td>
+        <td><code>filterIndex</code> command</td>
+        <td>Available</td>
+        <td><strong>Unavailable</strong> &mdash; one of four unsupported commands</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The surviving combination is the one whose cost is proportional to data scanned, in the class where
+      the scan cannot be narrowed by an index. That is not a flaw to report; it is the trade, stated
+      precisely. It is also the single most useful thing to know before putting a log group that alarms on
+      anything into Essentials.
+    </p>
+
+    <h3>The four query commands that stop working</h3>
+    <p>
+      <em>&ldquo;All Logs Insights QL query commands are supported on log groups in the Standard log
+      class&rdquo;</em>, while Essentials supports
+      <em>&ldquo;all query commands except pattern, diff, filterIndex, and unmask&rdquo;</em>.
+    </p>
+    <p>
+      Each absence tells you something. <code>filterIndex</code> follows from field indexing being
+      unsupported. <code>unmask</code> is consistent with masking being supported but the privileged
+      reveal not being &mdash; the data protection applies, and the escape from it does not.
+      <code>pattern</code> and <code>diff</code> are the two commands that do automated analysis across a
+      result set, which is the same category as the anomaly detection and time-comparison features that are
+      also absent.
+    </p>
+
+    <h3>The third class, which is not a tier at all</h3>
+    <p>
+      <em>&ldquo;In addition to these two log classes, there is a Delivery log class. Use the Delivery log
+      class only for delivering AWS Lambda logs to store in Amazon S3 or Amazon Data Firehose.&rdquo;</em>
+      With a retention rule unlike anything else in the service:
+      <em>&ldquo;Log events in log groups in the Delivery class are kept in CloudWatch Logs for two days.
+      This retention period is fixed and cannot be changed.&rdquo;</em> And
+      <em>&ldquo;This log class doesn't offer rich CloudWatch Logs capabilities such as CloudWatch Logs
+      Insights queries.&rdquo;</em>
+    </p>
+    <p>
+      It is a transit buffer with a name that looks like a tier. Worth recognising if you see it in a
+      <code>DescribeLogGroups</code> response and wonder why the log group has no retention setting and
+      cannot be queried.
+    </p>
+
+    <h3>The rename, and what it means for your code</h3>
+    <p>
+      <em>&ldquo;The Infrequent Access log class has been renamed to Essentials. You can now create log
+      groups with either INFREQUENT_ACCESS or ESSENTIALS as the log class value. Both values are accepted
+      as input and will continue to be supported indefinitely.&rdquo;</em>
+    </p>
+    <p>
+      The part with a date on it is the read path:
+      <em>&ldquo;Starting December 2026, API responses from DescribeLogGroups, ListLogGroups, and other
+      read-path APIs will return ESSENTIALS instead of INFREQUENT_ACCESS for the logGroupClass field. This
+      is a name change only. There are no changes to functionality or pricing.&rdquo;</em>
+    </p>
+    <p>
+      So writes are safe indefinitely and reads change next month. Anything that compares
+      <code>logGroupClass</code> to the string <code>INFREQUENT_ACCESS</code> &mdash; a compliance check, a
+      cost-attribution script, a drift detector, a Config rule's custom logic &mdash; stops matching while
+      continuing to run. That is the failure this series keeps finding: not an error, a quiet change in
+      what a comparison returns.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Charging the difference at ingestion is the honest place to charge it</h3>
+    <p>
+      Ingestion is where CloudWatch Logs does the work that distinguishes the classes: parsing, indexing
+      for the features Standard offers, preparing data for real-time consumption. A class that skips most
+      of that should be cheaper exactly there, and identical afterwards. Had AWS discounted storage
+      instead, the saving would have been disconnected from the cost actually avoided.
+    </p>
+
+    <h3>An immutable class is less surprising than a mutable one</h3>
+    <p>
+      A changeable class would raise questions with no good answers: what happens to the metric filters on
+      a log group demoted to Essentials, to the indexes, to the subscription filters other teams attached?
+      Silently breaking those on a class change would be far worse than refusing the change. The
+      documentation's one line &mdash;
+      <em>&ldquo;After a log group is created, its log class can't be changed&rdquo;</em> &mdash; is a
+      guarantee as much as a restriction.
+    </p>
+
+    <h3>Keeping export and cross-account access in both classes is the right call</h3>
+    <p>
+      The cheaper class still supports export to Amazon S3, S3 Tables integration, cross-account features
+      and KMS encryption. A consolidation tier that could not be exported or read across accounts would be
+      a dead end; these are what make it a place to put logs rather than a place to lose them.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Choosing a class</td>
+        <td>At log group creation, with the reason recorded</td>
+        <td><em>&ldquo;After a log group is created, its log class can't be changed&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>When you are unsure</td>
+        <td>Standard</td>
+        <td>Being wrong costs ingestion price; being wrong the other way costs a migration</td>
+      </tr>
+      <tr>
+        <td>Ranking candidates for Essentials</td>
+        <td>By ingested volume</td>
+        <td>The classes <em>&ldquo;differ in ingestion costs only&rdquo;</em> &mdash; access frequency changes nothing</td>
+      </tr>
+      <tr>
+        <td>A log group anything alarms on</td>
+        <td>Standard</td>
+        <td>Metric filters are unsupported in Essentials, leaving only the scan-billed route</td>
+      </tr>
+      <tr>
+        <td>A log group you investigate often</td>
+        <td>Standard</td>
+        <td>Field indexing and <code>filterIndex</code> are unavailable in Essentials, and every read is a Logs Insights scan</td>
+      </tr>
+      <tr>
+        <td>High-volume logs nobody watches live</td>
+        <td>Essentials</td>
+        <td>Exactly the documented use case: <em>&ldquo;ad-hoc querying and after-the-fact forensic analysis&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Logs feeding a third-party SIEM by subscription</td>
+        <td>Standard</td>
+        <td>Subscription filters are unsupported in Essentials; export to S3 is the alternative shape</td>
+      </tr>
+      <tr>
+        <td>Code reading <code>logGroupClass</code></td>
+        <td>Accept both values now</td>
+        <td>Read-path APIs return <code>ESSENTIALS</code> from December 2026</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every log group in the Essentials or Infrequent Access class and check what is attached
+      to it.</strong> A metric filter, subscription filter or index policy that was written for a Standard
+      log group and applied to this one is configuration that cannot work. Nothing will have told you.
+    </p>
+    <p>
+      <strong>Grep your estate for the literal string <code>INFREQUENT_ACCESS</code>.</strong> Comparisons
+      on the read path break in December 2026; inputs are safe. This is a ten-minute search with a dated
+      deadline.
+    </p>
+    <p>
+      <strong>Check whether anything reads logs through <code>GetLogEvents</code> or
+      <code>FilterLogEvents</code> against an Essentials log group.</strong> Those calls are not supported
+      there, so a log viewer, runbook or support tool built on them has a class of log group it silently
+      cannot show.
+    </p>
+    <p>
+      <strong>Reconcile your class choices against ingested volume.</strong> Any Essentials log group with
+      low ingestion is paying the feature price for a saving that rounds to nothing, and the only way to
+      correct it is a new log group.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Four posts in a row have turned on the same kind of discovery: a feature whose documented behaviour
+      is narrower than its name suggests. An alarm state that means <em>I cannot tell</em>. A canary whose
+      silence has two causes. A query that ran before the logs arrived. An index that only covers what
+      arrived after it was created.
+    </p>
+    <p>
+      Log classes are the quietest of the four, because nothing here is hidden at all &mdash; the support
+      table is explicit, the immutability is in bold, and the cost note is one sentence long. The hazard is
+      entirely one of imported intuition. Everyone has made a storage-class decision before, where the
+      trade is price against retrieval speed and the choice can be revised by a lifecycle rule. This looks
+      like that and is not: the saving is only at the door, the reading costs the same, the equipment for
+      reading cheaply is removed, and the door locks behind you.
+    </p>
+    <p>
+      Which makes the rule simple, and worth writing into whatever creates your log groups. Choose
+      Essentials when you want the logs to exist and expect to query them rarely, with nothing watching
+      them live. Choose Standard whenever something alarms, tails, indexes, streams or subscribes &mdash;
+      and whenever you do not yet know, because that is the choice you are allowed to regret.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs subscription filters: how many a log group can carry, what happens to log events when the destination throttles or fails, and why a subscription filter is a different reliability contract from an export.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html" target="_blank" rel="noopener">Log classes &#8212; the definitions of the Standard and Essentials classes, that the classes differ in ingestion costs only while storage and Logs Insights charges are the same, that a log group's class cannot be changed after creation, the full supported-features table including the unsupported <code>GetLogEvents</code> and <code>FilterLogEvents</code> operations and the Standard-only field indexing, metric filters, subscription filters, Live Tail, Anomaly Detection, embedded metrics format and Insights log ingestion, the Infrequent Access to Essentials rename with the December 2026 read-path change, and the Delivery class with its fixed two-day retention</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_AnalyzeLogData_Classes.html" target="_blank" rel="noopener">Logs Insights QL commands supported in log classes &#8212; that all commands are supported in the Standard class, and that the Essentials class supports all commands except <code>pattern</code>, <code>diff</code>, <code>filterIndex</code> and <code>unmask</code></a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_billing.html" target="_blank" rel="noopener">Analyzing, optimizing, and reducing CloudWatch costs &#8212; the <code>DataScanned-Bytes</code> usage type against <code>StartQuery</code>, which is what every read in the Essentials class goes through</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html" target="_blank" rel="noopener">Create field indexes to improve query performance and reduce scan volume &#8212; further reading on the feature that is unavailable in the Essentials class, covered in full in #113; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html" target="_blank" rel="noopener">Real-time processing of log data with subscriptions &#8212; further reading on the subscription filters the Essentials class does not support; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_LogGroup.html" target="_blank" rel="noopener">LogGroup API reference &#8212; further reading on the <code>logGroupClass</code> field whose returned value changes in December 2026; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/week-13-diagnostic-settings-at-scale/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 13 — Diagnostic Settings at Scale, and the Two Resources That Were Never Going to Comply</span></a><a href="/blog/week-13-hybrid-connectivity/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Week 13 — HA VPN and BGP: The Route Nobody Wrote</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-log-classes/';
+      this.page.identifier = 'aws-architecture-log-classes';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=c039b840"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
