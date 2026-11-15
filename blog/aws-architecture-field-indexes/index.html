@@ -263,10 +263,17 @@
           every log event in that fifth log group.&rdquo;</em>
         </p>
         <p>
+          The distinction is not indexed-versus-unindexed. An ordinary <code>filter</code> query can benefit
+          from available field indexes for supported equality searches, while still searching relevant data
+          in log groups or time ranges without index coverage. <code>filterIndex</code> explicitly restricts
+          the query to indexed log groups and indexed data, potentially reducing scan volume further but
+          excluding results outside that coverage.
+        </p>
+        <p>
           So the two commands are not a fast path and a slow path to one result. They answer different
           questions: <em>what does the index know about this value</em>, and <em>what is in these log
           groups</em>. For a dashboard that is a cost decision. For a security investigation asking whether
-          an address appears anywhere, it is the difference between a complete answer and a cheap one.
+          an address appears anywhere, it is the difference between a complete answer and a cheaper one.
         </p>
         <span class="fix-label">Fix</span>
         <p>Pick the command from the question, and write the reason next to the saved query. <code>filterIndex</code> for high-volume exploration across <em>&ldquo;as many as 10,000 log groups&rdquo;</em>, where speed is the point and a miss is tolerable. <code>filter</code> for any question whose value depends on completeness &mdash; incident forensics, audit evidence, "did this ever happen". If you need both, run <code>filterIndex</code> first to find the shape and <code>filter</code> to confirm it.</p>
@@ -277,13 +284,13 @@
       <div class="challenge-header"><span class="num">3</span><strong>Four ways the index is quietly not used, and none of them errors</strong></div>
       <div class="challenge-body">
         <p>
-          An index that does not apply is not a failure. The query runs, returns the right rows, and scans
-          everything &mdash; so the only symptom is the bill.
+          An index that does not apply is not a failure. The query runs and returns the right rows, having
+          scanned more than it would have with the index available &mdash; so the only symptom is the bill.
         </p>
         <p>
           <strong>Case.</strong> <em>&ldquo;Indexed fields are case-sensitive. For example, a field index of
-          RequestId won't match a log event containing requestId.&rdquo;</em> One capital letter between an
-          indexed query and a full scan.
+          RequestId won't match a log event containing requestId.&rdquo;</em> One capital letter decides
+          whether the index can be used at all.
         </p>
         <p>
           <strong>Format.</strong> <em>&ldquo;Fields indexes are supported only for the structured log
@@ -313,7 +320,7 @@
 
   <div class="section" id="architecture">
     <h2>Architecture</h2>
-    <img src="/blog/assets/diagrams/arch-113-field-indexes.svg" alt="Diagram: A CloudWatch Logs field index enables efficient equality-based searches, and when a query uses one it attempts to skip processing log events known not to include the indexed field, which reduces the scan volume that Logs Insights queries are billed on under the DataScanned-Bytes usage type. The index is a property of ingestion rather than of a log group: CloudWatch Logs indexes only the log events ingested after an index policy is created and does not index events ingested before, and each matching event remains indexed for 30 days from its ingestion time, while log group retention is independent and may be much longer. An index created during an incident therefore does nothing for that incident. The filterIndex command returns indexed data only, forcing a query to scan only log groups indexed on the specified field, and for each indexed log group it attempts to scan only events that have the indexed field and also returns only results from after the field index was created, so two exclusions are applied silently. Using filter instead scans the un-indexed log groups too, every event in them, which costs more and is complete. Four conditions make an index silently inapplicable with no error: indexed fields are case-sensitive so RequestId does not match requestId, field indexes are supported only for the structured log formats of JSON and service logs, the index serves equality searches of the form field equals value or field IN a list, and the skip applies to values CloudWatch Logs has detected for that field in the past. Quotas are 20 fields per policy, 100 characters per field name, and as many as 40 account-level index policies of which 20 may use log group name prefix selection criteria and 20 may use data source based selection criteria, with no two prefix policies allowed to overlap and only one policy per data source name and type combination. A log-group-level policy overrides account-level policies that match the log group as a whole, while account-level policies matching at the log event level for a data source name and type apply in addition. A filterIndex query can scan as many as 10,000 log groups chosen by as many as five log group name prefixes. Default field indexes exist for all Standard log class log groups and for several AWS data source types, and they do not count towards the quota. A field index policy created in a monitoring account is not used for log groups in linked source accounts, because a policy applies only in the account where it is created.">
+    <img src="/blog/assets/diagrams/arch-113-field-indexes.svg" alt="Diagram: A CloudWatch Logs field index enables efficient equality-based searches, and when a query uses one it attempts to skip processing log events known not to include the indexed field, which reduces the scan volume that Logs Insights queries are billed on under the DataScanned-Bytes usage type. The index is a property of ingestion rather than of a log group: CloudWatch Logs indexes only the log events ingested after an index policy is created and does not index events ingested before, and each matching event remains indexed for 30 days from its ingestion time, while log group retention is independent and may be much longer. An index created during an incident therefore does nothing for that incident. The filterIndex command returns indexed data only, forcing a query to scan only log groups indexed on the specified field, and for each indexed log group it attempts to scan only events that have the indexed field and also returns only results from after the field index was created, so two exclusions are applied silently. An ordinary filter query can still benefit from available field indexes for supported equality searches while searching relevant data in log groups or time ranges without index coverage, so it costs more than filterIndex but is complete across the selected log groups and time range. Four conditions make an index silently inapplicable with no error: indexed fields are case-sensitive so RequestId does not match requestId, field indexes are supported only for the structured log formats of JSON and service logs, the index serves equality searches of the form field equals value or field IN a list, and the skip applies to values CloudWatch Logs has detected for that field in the past. Quotas are 20 fields per policy, 100 characters per field name, and as many as 40 account-level index policies of which 20 may use log group name prefix selection criteria and 20 may use data source based selection criteria, with no two prefix policies allowed to overlap and only one policy per data source name and type combination. A log-group-level policy overrides account-level policies that match the log group as a whole, while account-level policies matching at the log event level for a data source name and type apply in addition. A filterIndex query can scan as many as 10,000 log groups chosen by as many as five log group name prefixes. Default field indexes exist for all Standard log class log groups and for several AWS data source types, and they do not count towards the quota. A field index policy created in a monitoring account is not used for log groups in linked source accounts, because a policy applies only in the account where it is created.">
 
     <h3>Three zones in one log group</h3>
     <div class="table-scroll">
@@ -349,7 +356,7 @@
       <tr>
         <td>Log groups with no index on the field</td>
         <td><strong>Skipped entirely</strong></td>
-        <td>Scanned, every event</td>
+        <td>Still searched, without index coverage to narrow them</td>
       </tr>
       <tr>
         <td>Events from before the index existed</td>
@@ -358,13 +365,13 @@
       </tr>
       <tr>
         <td>Scan volume</td>
-        <td>Reduced, sometimes enormously</td>
-        <td>Whatever the time range holds</td>
+        <td>Potentially reduced further, by excluding uncovered data</td>
+        <td>Reduced where an index applies to the equality search</td>
       </tr>
       <tr>
         <td>Completeness</td>
         <td>Only what the index covers</td>
-        <td>Everything in range</td>
+        <td>The selected log groups and time range</td>
       </tr>
       <tr>
         <td>Tells you what it skipped</td>
@@ -525,8 +532,8 @@
     </p>
     <p>
       <strong>Check case, character for character, against a real log event.</strong>
-      <code>RequestId</code> against <code>requestId</code> is a silent full scan that looks exactly like a
-      working index.
+      <code>RequestId</code> against <code>requestId</code> is an index that is silently never used, and it
+      looks exactly like one that is.
     </p>
     <p>
       <strong>List the log groups you query most and confirm they are JSON.</strong> Field indexes are
