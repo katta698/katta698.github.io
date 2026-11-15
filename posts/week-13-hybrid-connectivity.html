@@ -1,0 +1,396 @@
+---
+title: 'Week 13 — HA VPN and BGP: The Route Nobody Wrote'
+date: '2026-11-14T20:00:00'
+draft: true
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-13-hybrid-connectivity
+verified: '2026-11-14'
+verified_claims:
+  - claim: "To meet the 99.99% availability SLA on the Google Cloud side, there must be a tunnel from each of the two interfaces on the HA VPN gateway to the corresponding interfaces on the peer gateway"
+    source: https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/topologies
+  - claim: "A single active interface configuration does not provide an availability SLA"
+    source: https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/overview
+  - claim: "Classic VPN is not deprecated and provides a 99.9% SLA"
+    source: https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/overview
+  - claim: "Google documents HA VPN topologies for on-premises gateways, Google Cloud VPC networks and Compute Engine VMs; no topology is documented for a peer gateway belonging to another cloud provider"
+    source: https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/topologies
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 13 of 58</div>
+  <div class="post-title">The route nobody wrote</div>
+  <div class="post-subtitle">Two VPCs, two VPN tunnels, and a route that appears in no Terraform file &mdash; because the routers told each other about it. Then break one tunnel and time how long the other takes to notice.</div>
+  <div class="post-meta">
+    <span>14 November 2026</span>
+    <span>HA VPN &middot; Cloud Router &middot; BGP &middot; Terraform</span>
+    <span>$1.99</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#implementation">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security-cost">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="overview">
+<h2 id="overview">Lab Overview</h2>
+
+<p><strong>The problem.</strong> Building an encrypted tunnel between two
+networks is the easy part. Both ends agree on ciphers, the tunnel comes up, and
+a dashboard turns green. Then a packet leaves a machine on one side headed for
+an address on the other, and the network has to answer a question nobody has
+answered yet: <em>does this go down the tunnel, or out to the internet?</em>
+Something has to put that answer in a route table. Type it by hand and it is
+correct until the day the other side changes &mdash; or until the tunnel dies,
+and the route keeps pointing at it with total confidence.</p>
+
+<p><strong>The objective.</strong> Build HA VPN between two VPCs, let BGP
+populate both route tables, then break one tunnel and measure how long the
+network takes to route around it.</p>
+
+<p><strong>Deployment method.</strong> Terraform on HCP Terraform agents with no
+stored credentials &mdash; the workspace mints an OIDC token per run and
+exchanges it for a short-lived Google token, with separate identities for plan
+and apply. Built in Week 02; every week since rides on it.</p>
+</div>
+
+<div class="section" id="services">
+<h2 id="services">Cloud Services and Concepts</h2>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>HA VPN</td><td>Carries the traffic between the two VPCs</td><td>Google Cloud's managed IPsec VPN. A gateway has <em>two</em> interfaces with their own public IPs; using both is what the availability SLA is defined on.</td></tr>
+<tr><td>Cloud Router</td><td>Runs BGP and programs what it learns into the VPC</td><td>A managed BGP speaker. It holds your ASN and decides what the route table says &mdash; it is <strong>not</strong> in the data path, so traffic never flows through it.</td></tr>
+<tr><td>BGP</td><td>Fills both route tables, and empties them when a tunnel dies</td><td>The protocol networks use to tell each other which address ranges they can reach. The same one that runs the public internet between ISPs.</td></tr>
+<tr><td>VPC and subnets</td><td>The two networks being joined</td><td>A VPC is a private network; a subnet is a range inside it tied to one region. Custom mode means no subnet exists until you declare it.</td></tr>
+<tr><td>Compute Engine</td><td>Two probe VMs, one per side</td><td>Virtual machines. Here they are instruments rather than the subject &mdash; something has to exist at each end for a route to lead to.</td></tr>
+<tr><td>Terraform &amp; HCP Terraform</td><td>Declares all of it and applies it remotely</td><td>Terraform describes infrastructure as code; HCP runs it on hosted agents, authenticating per run through Workload Identity Federation so no key is stored.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Static routes versus BGP, and why it is not a style choice</h3>
+
+<p>A route table says: <em>for addresses in this range, send the packet that
+way.</em> For your own subnets it fills itself in. For anything beyond a tunnel,
+something has to add the entry.</p>
+
+<p>You can type it &mdash; <em>anything for <code>10.30.0.0/24</code>, send down
+tunnel&nbsp;1</em>. Or the two routers can tell each other, continuously, which
+ranges they can reach. That conversation is BGP, and each side identifies itself
+with an <strong>ASN</strong>; there is a private range, 64512&ndash;65534, for
+cases like this.</p>
+
+<p>The difference that matters is not convenience. <strong>BGP also withdraws
+routes.</strong> When a session drops, everything learned through it is removed
+from the table automatically, and traffic shifts to whatever is left. A static
+route cannot do that &mdash; it points at a dead tunnel exactly as confidently
+as a live one, and keeps sending traffic into a hole until a human notices.</p>
+
+<p>So BGP is not an optional extra layered on top of HA VPN. It is the mechanism
+that makes the HA real. Two tunnels with static routes gives you two tunnels and
+an outage.</p>
+
+<h3>What "high availability" actually requires</h3>
+
+<p>Google's wording is specific: for the 99.99% SLA <em>"there must be a tunnel
+from each of the two interfaces on the HA VPN gateway to the corresponding
+interfaces on the peer gateway."</em> Two interfaces, two tunnels, two peer
+addresses.</p>
+
+<p>And a single active interface does not get a reduced SLA &mdash; it gets
+none. That is worth knowing before someone builds one tunnel and calls it
+done.</p>
+
+<p>One correction while checking the current documentation: <strong>Classic VPN
+is not deprecated.</strong> I expected it to be. Google still documents it as
+current, with a 99.9% SLA.</p>
+</div>
+
+<div class="section" id="architecture">
+<h2 id="architecture">Architecture and Workflow</h2>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/week-13-architecture.svg" alt="A hub VPC and a branch VPC joined by two HA VPN tunnels. A Cloud Router on each side runs BGP over the tunnels on different ASNs, so each VPC learns the other's subnet rather than being told it. When one tunnel drops, BGP withdraws the routes learned through it in about three seconds and the surviving tunnel carries the traffic." style="width:100%;height:auto">
+  <figcaption>The branch VPC stands in for a remote site. The protocols do not care whether the peer is another VPC, on-premises hardware, or another cloud.</figcaption>
+</figure>
+
+<ol>
+<li>A second VPC and subnet are created to stand in for a remote site, on a range that cannot overlap the hub's.</li>
+<li>An HA VPN gateway is created on each side, each with two interfaces and their own public IPs.</li>
+<li>A Cloud Router is created on each side, on <em>different</em> ASNs.</li>
+<li>Four tunnel resources are declared &mdash; two logical tunnels, each side declaring its own end &mdash; pairing interface 0 to interface 0 and 1 to 1.</li>
+<li>Each router gets an interface and a BGP peer per tunnel, addressed on link-local <code>169.254.x.x/30</code> ranges.</li>
+<li>The sessions establish, each side advertises its own subnet, and both route tables fill themselves in.</li>
+<li>One BGP peer is disabled. The routes learned through it are withdrawn, and the surviving tunnel carries the prefix.</li>
+</ol>
+
+<h3>Design decisions worth stating</h3>
+
+<p><strong>Different ASNs on each side.</strong> Identical ASNs would make this
+an iBGP session, which does not re-advertise learned routes the way this
+topology needs.</p>
+
+<p><strong>The branch is a VPC, not another cloud.</strong> The roadmap called
+this week "cross-cloud", and the honest version is narrower: Google documents
+HA VPN topologies for on-premises gateways, Google Cloud VPCs and Compute Engine
+VMs, and <em>no</em> topology for a peer belonging to another cloud. A peer in
+the AWS lab is a genuinely different week, and it waits for one both windows can
+build together.</p>
+</div>
+
+<div class="section" id="prerequisites">
+<h2 id="prerequisites">Prerequisites</h2>
+
+<ul>
+<li><strong>A hub VPC</strong> (Week 04) with at least one subnet.</li>
+<li><strong>Keyless CI through Workload Identity Federation</strong> (Week 02).</li>
+<li><strong>Pipeline permissions on the platform folder.</strong> <code>compute.networkAdmin</code> was already there and covers networks, routers and VPN gateways. It does <em>not</em> cover firewall writes or instance creation, so this week added <code>compute.securityAdmin</code> and <code>compute.instanceAdmin.v1</code>.</li>
+<li><strong>Non-overlapping address space.</strong> BGP advertises these ranges; an overlap makes the route ambiguous.</li>
+</ul>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/screenshots/01-repo-structure.png" alt="Repository structure for week 13, showing terraform with main.tf and variables.tf, the scripts directory with measure-failover.py, gen-psk.sh and validate.sh, and docs" style="width:100%;height:auto">
+  <figcaption>Two VPCs, two gateways, two routers, four tunnels &mdash; and one script that breaks a BGP peer and puts it back.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="implementation">
+<h2 id="implementation">Implementation</h2>
+
+<h3>What was deployed</h3>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>What</th><th>How many</th><th>Its job</th></tr></thead>
+<tbody>
+<tr><td>Terraform resource blocks</td><td>16</td><td>Expanding to 22 applied instances, because the tunnels and BGP peers use <code>for_each</code></td></tr>
+<tr><td>HA VPN gateways</td><td>2</td><td>Two interfaces each, one per side</td></tr>
+<tr><td>Cloud Routers</td><td>2</td><td>ASN 64512 and 64513</td></tr>
+<tr><td>VPN tunnels</td><td>4</td><td>Two logical tunnels; each side declares its own end, and each bills</td></tr>
+<tr><td>BGP interfaces and peers</td><td>8</td><td>One pair per tunnel per side, on link-local /30s</td></tr>
+<tr><td>Probe VMs</td><td>2</td><td>Something for a route to lead to</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Step 1 &mdash; Gateways and routers</h3>
+
+<pre><code class="language-hcl">resource "google_compute_router" "hub" {
+  name    = "hub-router"
+  network = data.google_compute_network.hub.id
+  region  = var.region
+
+  bgp {
+    asn = var.hub_asn        # 64512 — must differ from the branch
+  }
+}</code></pre>
+
+<p><strong>Validation:</strong> both gateways report two interfaces with
+distinct public IPs.</p>
+
+<h3>Step 2 &mdash; Four tunnels for two logical tunnels</h3>
+
+<pre><code class="language-hcl">resource "google_compute_vpn_tunnel" "hub" {
+  for_each = { t0 = 0, t1 = 1 }
+
+  name                  = "hub-to-branch-${each.key}"
+  vpn_gateway           = google_compute_ha_vpn_gateway.hub.id
+  peer_gcp_gateway      = google_compute_ha_vpn_gateway.branch.id
+  vpn_gateway_interface = each.value
+  router                = google_compute_router.hub.id
+  ike_version           = 2
+}</code></pre>
+
+<p><strong>Validation:</strong> all four report <code>ESTABLISHED</code>.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/screenshots/02-tunnels-up.png" alt="Terminal output listing four VPN tunnels all with status ESTABLISHED and detailed status Tunnel is up and running, plus the two gateways and their networks" style="width:100%;height:auto">
+  <figcaption>Four tunnel resources for two logical tunnels &mdash; and four is what bills.</figcaption>
+</figure>
+
+<h3>Step 3 &mdash; BGP, and the route that appears from nowhere</h3>
+
+<p>Each router gets one interface and one peer per tunnel, addressed on
+link-local <code>169.254.x.x/30</code> ranges. No workload ever uses those; they
+exist so the routers have somewhere to talk.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/screenshots/04-routes-learned.png" alt="Terminal output showing both BGP peers Established with one learned route each, two best routes to 10.30.0.0/24 via different next hops at equal priority, and a grep showing that CIDR appears in the Terraform only as a subnet variable" style="width:100%;height:auto">
+  <figcaption>Two entries for one prefix, at equal priority. The grep is the point: <code>10.30.0.0/24</code> appears in the Terraform once, as a <em>subnet</em> &mdash; never as a route.</figcaption>
+</figure>
+
+<h3>Step 4 &mdash; Deploy it</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/screenshots/07-hcp-apply.png" alt="HCP Terraform workspace run list for gcp-week-13 showing five runs: three applied and two errored, including the destroy run" style="width:100%;height:auto">
+  <figcaption>Five runs: three applied, two errored. The two failures are in the Troubleshooting section &mdash; both were this lab's own controls.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="validation">
+<h2 id="validation">Validation and Evidence</h2>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Test</th><th>Expected result</th><th>Actual result</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>All four tunnels establish</td><td><code>ESTABLISHED</code></td><td>4 of 4, "Tunnel is up and running"</td><td>Pass</td></tr>
+<tr><td>Both BGP sessions come up</td><td>Two <code>Established</code></td><td>Two, one learned route each</td><td>Pass</td></tr>
+<tr><td>The hub learns the branch prefix</td><td>Learned, not configured</td><td>Two entries for <code>10.30.0.0/24</code>, equal priority, different next hops</td><td><strong>Pass</strong></td></tr>
+<tr><td>That prefix is not a static route</td><td>Absent from the Terraform</td><td>One match, and it is a subnet CIDR variable</td><td>Pass</td></tr>
+<tr><td>Routes withdraw when a peer drops</td><td>Count falls to one</td><td>3.6s, 3.1s, 3.3s across three trials</td><td><strong>Pass</strong></td></tr>
+<tr><td>Routes return when it recovers</td><td>Count returns to two</td><td>3.1s, 3.3s, 3.4s</td><td>Pass</td></tr>
+<tr><td>Final state restored</td><td>Two routes, two sessions</td><td>Two and two</td><td>Pass</td></tr>
+</tbody>
+</table>
+</div>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-13-hybrid-connectivity/docs/blog/screenshots/05-failover.png" alt="Terminal output from measure-failover.py showing a baseline of two routes and two established sessions, then three trials disabling a BGP peer, each showing the route withdrawn in around three seconds and restored in around three seconds" style="width:100%;height:auto">
+  <figcaption>Three trials. Routes withdrawn in 3.1&ndash;3.6 seconds, restored in 3.1&ndash;3.4. Nobody edited a route table.</figcaption>
+</figure>
+
+<p><strong>What the route count actually proves.</strong> Each tunnel advertises
+<code>10.30.0.0/24</code> independently, so two entries means both paths are
+live and one means BGP has withdrawn the dead one. That count <em>is</em> the
+failover signal &mdash; it is the thing a static route could never produce.</p>
+
+<p class="note"><strong>One honest caveat.</strong> Every assertion above was
+run against the live deployment and its output is in the figures. They were not
+run through <code>validate.sh</code> as a single script before teardown &mdash;
+the script exists for reproduction, but it was not executed end to end against
+this deployment, and this post does not claim it was.</p>
+</div>
+
+<div class="section" id="security-cost">
+<h2 id="security-cost">Security and Cost</h2>
+
+<h3>Security</h3>
+
+<ul>
+<li><strong>The pre-shared key is generated, never typed.</strong> <code>gen-psk.sh</code> writes a random key into a gitignored tfvars file; no credential appears in this repository.</li>
+<li><strong>The probe VMs have no external addresses.</strong> They exist to be routed to, not reached from outside.</li>
+<li><strong>Firewall rules name the peer ranges explicitly</strong> rather than opening to anything that arrives over the tunnel. A tunnel being encrypted says nothing about what should be allowed through it.</li>
+<li><strong>Both VMs carry <code>enable-oslogin</code> and <code>block-project-ssh-keys</code></strong>, because the organization's policies refuse to create them otherwise &mdash; see Troubleshooting.</li>
+<li><strong>No service account keys</strong>, as in every week of this lab.</li>
+</ul>
+
+<h3>Cost</h3>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Item</th><th>Rate</th><th>This run</th></tr></thead>
+<tbody>
+<tr><td>VPN tunnels &times; 4</td><td>$0.05 / hour each</td><td>9.95 hours &rarr; <strong>$1.99</strong></td></tr>
+<tr><td>Cloud Routers &times; 2</td><td>no charge for the router itself</td><td>$0</td></tr>
+<tr><td>Probe VMs &times; 2</td><td>e2-micro, us-central1, no external IP</td><td>free tier</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>Four, not two.</strong> This is the number to plan around. Two
+logical tunnels between two Google Cloud VPCs means a tunnel resource on each
+side, and <em>each one bills</em>. Left running, that is about <strong>$146 a
+month</strong> &mdash; against a $25/month budget alert on the whole account.
+This week is affordable only because it was destroyed the same day.</p>
+
+<p class="note">Rate read from this lab's own BigQuery pricing export, built in
+Week 06. The figure above is computed from that rate and the measured runtime;
+it will be reconciled against the posted charges.</p>
+</div>
+
+<div class="section" id="troubleshooting">
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+
+<h3>The pipeline could build the network but not the things in it</h3>
+<p><strong>Problem:</strong> the apply created gateways, routers and all four
+tunnels, then failed with 403 on <code>compute.firewalls.create</code> and
+<code>compute.instances.create</code>.<br>
+<strong>Root cause:</strong> <code>compute.networkAdmin</code> covers networks,
+routers and VPN but not firewall writes; and Week 04 granted
+<code>instanceAdmin</code> on the <em>workloads</em> folder, not
+<em>platform</em>.<br>
+<strong>Lesson:</strong> a role named for a domain does not cover everything in
+that domain. The split between "the network" and "rules applied to the network"
+is a different role, and the same create-versus-modify boundary has now appeared
+in four separate weeks of this lab.</p>
+
+<h3>The organization refused to create the VMs</h3>
+<p><strong>Problem:</strong> <code>Error 412: Operation denied by org policy</code>
+on both <code>requireOsLogin</code> and <code>blockProjectSshKeys</code>.<br>
+<strong>Root cause:</strong> Week 03 set those constraints and Week 04 promoted
+them to enforced. Any VM created afterwards must carry the matching metadata.<br>
+<strong>Why it had never happened before:</strong> the only other VM in this lab
+<em>predates enforcement</em>. It was created while the constraints were still
+in dry run, so nothing had ever been built under them. This was the first.<br>
+<strong>Lesson:</strong> a guardrail promoted after the fact is untested until
+something new arrives. The gap between "enforced" and "exercised" can be
+months.</p>
+
+<h3>The flag is <code>--no-enabled</code>, and there is no <code>--disable</code></h3>
+<p><strong>Problem:</strong> the failover script failed with
+<code>unrecognized arguments: --disable</code>.<br>
+<strong>Root cause:</strong> <code>gcloud compute routers update-bgp-peer</code>
+takes <code>--enabled</code> / <code>--no-enabled</code>.<br>
+<strong>Lesson:</strong> worth recording because the failure was safe by
+construction &mdash; the disable never happened, so nothing was left broken, and
+the restore in the <code>finally</code> block had nothing to undo. A script that
+degrades a control should be written so that failing early leaves the control
+intact.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><code>terraform destroy</code> removed everything this week created and left
+Week 04's hub VPC in place. Verified against the cloud rather than against
+state: zero tunnels, zero routers, zero gateways, zero instances, and the
+<code>branch</code> VPC gone.</p>
+
+<p>Unlike Week 12's Cloud KMS key, nothing here survives a destroy and nothing
+keeps billing afterwards.</p>
+
+<h3>Key takeaways</h3>
+
+<ol>
+<li><strong>BGP is what makes HA VPN highly available.</strong> Two tunnels with static routes gives you two tunnels and an outage. The withdrawal behaviour &mdash; measured here at 3.1&ndash;3.6 seconds &mdash; is the entire difference.</li>
+<li><strong>A single active interface carries no SLA.</strong> Not a reduced one. None.</li>
+<li><strong>Four tunnel resources, not two.</strong> Each side declares its own end and each bills, so the hourly rate is double what the topology diagram suggests.</li>
+<li><strong>A learned route is invisible in your code</strong>, which is the point and also the thing to remember when debugging. If a prefix is reachable and you cannot find it in your Terraform, that is BGP working.</li>
+<li><strong>Enforced is not exercised.</strong> Two org policies set months ago blocked this build on their first real test, because the only VM that existed predated them.</li>
+</ol>
+
+<h3>Repository</h3>
+
+<p><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-13-hybrid-connectivity">week-13-hybrid-connectivity</a>
+&mdash; Terraform, the failover measurement, and the lab guide.</p>
+
+<h3>References</h3>
+
+<ul>
+<li><a href="https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/overview">Cloud VPN overview</a> &mdash; HA VPN, and Classic VPN's continuing 99.9% SLA</li>
+<li><a href="https://docs.cloud.google.com/network-connectivity/docs/vpn/concepts/topologies">HA VPN topologies</a> &mdash; what the 99.99% SLA requires, and which peers are documented</li>
+<li><a href="https://docs.cloud.google.com/network-connectivity/docs/router/concepts/overview">Cloud Router overview</a> &mdash; BGP, ASNs and route advertisement</li>
+</ul>
+</div>
+
+</div>
