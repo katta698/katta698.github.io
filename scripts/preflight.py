@@ -44,6 +44,7 @@ import atexit
 import concurrent.futures
 import io
 import os
+import re
 import subprocess
 import sys
 import time
@@ -422,6 +423,35 @@ def run_once(name):
         return 1, "could not run: %s" % exc, time.time() - t0
 
 
+# A check that examined nothing announces it, and then exits 0.
+# check_figure_order spent six weeks printing "0 lab post(s) checked" after the
+# master standard renamed id="how" to id="implementation". It skipped every
+# post, found no violations because it had read none, and reported green. Three
+# separate defects shipped under that green, each one caught by Jay reading the
+# published page instead.
+#
+# The nouns below are the POPULATION a check examined. "0 issues" and "0
+# problems" are the good news and must never match.
+# "0 <thing>" where <thing> is the population, with no word in between: that
+# keeps "found 0 broken links" out, because zero broken links is good news.
+ZERO_POPULATION = re.compile(
+    r"\b0\s+(?:lab\s+)?"
+    r"(post|week|page|file|figure|diagram|slot|card|item|link|image)s?\b",
+    re.I)
+# The verb may sit on either side of the number: "0 posts checked" and
+# "scanned 0 files" are the same claim.
+EXAMINE_VERB = re.compile(r"\b(check|examin|scan|inspect|read|cover)[a-z]*\b",
+                          re.I)
+
+
+def examined_nothing(out):
+    """The line proving a passing check looked at an empty population."""
+    for line in out.splitlines():
+        if ZERO_POPULATION.search(line) and EXAMINE_VERB.search(line):
+            return line.strip()
+    return None
+
+
 def run_one(name):
     """Run a check, and give a failure one second chance.
 
@@ -443,6 +473,15 @@ def run_one(name):
     """
     code, out, secs = run_once(name)
     if code == 0:
+        blind = examined_nothing(out)
+        if blind:
+            out += (
+                "\n  THIS CHECK EXAMINED NOTHING AND REPORTED SUCCESS:"
+                "\n    " + blind +
+                "\n  A green from a check with an empty population is not a"
+                "\n  result. Find why it matched nothing and fix that, or say"
+                "\n  in the check why zero is legitimate here.\n")
+            return name, 1, out, secs, False
         return name, code, out, secs, False
     if name in ADVISORY:
         return name, code, out, secs, False
