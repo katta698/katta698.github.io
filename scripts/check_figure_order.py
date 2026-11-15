@@ -52,13 +52,29 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAB_POST = re.compile(r"week-\d+-")
 
+# Posts that predate the master standard and use a demo-then-how-to shape:
+# the opening figures show the finished product, and the build lives in a
+# later "Phases" section. Named one by one, with the reason, because a
+# pattern-based skip is exactly how this check came to read zero posts.
+PRE_STANDARD = {
+    "week-1-from-ticket-to-ec2-in-6-minutes-enterprise-self-servi.html":
+        "AWS week 1: Steps 1-2 are a product demo, Phases 1-7 are the build. "
+        "The ServiceNow figure is not pre-deploy state either - that item is "
+        "configured in Phase 5 - so data-prereq would be a false claim. "
+        "Re-check when the post is migrated.",
+}
+
 # The heading that turns a plan into infrastructure. Matching a bare "deploy"
 # is not enough: Week 5 names its deploy step "Push to GitHub and apply via HCP"
 # and its NEXT step "Test immediately after deploy", so a loose match picked the
 # verification step as the boundary and flagged three innocent figures.
 DEPLOY_H3 = re.compile(r"<h3>([^<]*(?:\bdeploy\w*\b|\bapply\b)[^<]*)</h3>", re.I)
 # Headings that talk about the deploy without being it.
-NOT_DEPLOY = re.compile(r"\b(test|verif\w*|confirm|watch|after|once)\b", re.I)
+# "what" was added 2026-11-15: every lab post opens its build section with a
+# "What was deployed" summary table, and that heading matched the deploy verb.
+# The boundary landed at the top of the section, so no figure could ever sit
+# above it and the check passed every post it was pointed at.
+NOT_DEPLOY = re.compile(r"\b(what|test|verif\w*|confirm|watch|after|once)\b", re.I)
 FIGURE = re.compile(r"<figure[^>]*>.*?</figure>", re.S)
 
 
@@ -81,11 +97,14 @@ def build_narrative(html):
     Returns "" when the section cannot be located. Callers must treat that as a
     failure, never as "nothing to check".
     """
-    m_start = re.search(r'id="(?:how|build|how-we-built-it)"', html)
+    # "implementation" was added 2026-11-15: the master standard renamed this
+    # section on 2026-10-25 and this pattern was not updated, so every migrated
+    # post was skipped. The check reported green while examining ZERO posts.
+    m_start = re.search(r'id="(?:how|build|how-we-built-it|implementation)"', html)
     if not m_start:
         return ""
     region = html[m_start.start():]
-    m_end = re.search(r'id="challenges"', region)
+    m_end = re.search(r'id="(?:challenges|validation)"', region)
     return region[:m_end.start()] if m_end else region
 
 
@@ -149,6 +168,14 @@ def self_test():
          premature_figures(build_narrative(nodeploy)) == []),
         ("treats a missing build section as failure",
          build_narrative('<div id="other"><figure></figure></div>') == ""),
+        ("finds the master-standard implementation section",
+         "screenshots/09-x.png" in build_narrative(
+             '<div id="implementation"><h3>Step 1</h3>' + _fig("09")
+             + '<h3>Step 2 &mdash; Deploy it</h3></div>')),
+        ("stops at the validation section",
+         "99-x" not in build_narrative(
+             '<div id="implementation"><h3>Step 1 &mdash; Deploy it</h3></div>'
+             '<div id="validation">' + _fig("99") + '</div>')),
         # Week 5 calls its deploy "Push to GitHub and apply via HCP" and the
         # step after it "Test immediately after deploy". A loose match picked
         # the second one and flagged three innocent figures.
@@ -158,6 +185,11 @@ def self_test():
              + _fig("01") +
              '<h3>Step 9 &mdash; Test immediately after deploy</h3>'
              + _fig("05") + '</div>') == []),
+        ("is not fooled by a 'What was deployed' summary heading",
+         premature_figures(
+             '<div id="implementation"><h3>What was deployed</h3>'
+             + _fig("02") +
+             '<h3>Step 4 &mdash; Deploy it</h3></div>') != []),
         ("still finds the deploy when it is named plainly",
          premature_figures(
              '<div id="how"><h3>Step 1</h3>' + _fig("07") +
@@ -203,10 +235,18 @@ def main():
     failures, checked = [], 0
     for path in paths:
         name = os.path.basename(path)
+        if name in PRE_STANDARD:
+            print("  [excl] %-52s %s" % (name, PRE_STANDARD[name][:60]))
+            continue
         with open(path, encoding="utf-8", errors="replace") as fh:
             narrative = build_narrative(fh.read())
         if not narrative:
-            print('  [skip] %-52s no id="how" section' % name)
+            # Never a skip. A section this cannot locate is a section it cannot
+            # police, and a silent skip is how it passed 53 posts while reading
+            # none of them.
+            failures.append(name)
+            print('  [FAIL] %-52s no build section found (looked for how / '
+                  'build / how-we-built-it / implementation)' % name)
             continue
         checked += 1
         bad = premature_figures(narrative)
