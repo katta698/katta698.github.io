@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #115 — A retryable error waits 24 hours; a permissions error skips the logs | Jayanth Katta Blog</title>
+<meta name="description" content="A subscription filter is a real-time feed of log events to Lambda, Kinesis Data Streams or Firehose, and its delivery contract has two halves that behave in opposite ways. A retryable error - throttling, an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the subscription filter is disabled for up to 10 minutes, and during that period logs are skipped. So the two most common misconfigurations in the service produce silent loss rather than delay, in a loop, while the log group itself keeps every event."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="A retryable error waits 24 hours; a permissions error skips the logs"/>
+<meta property="og:description" content="A subscription filter is a real-time feed of log events to Lambda, Kinesis Data Streams or Firehose, and its delivery contract has two halves that behave in opposite ways. A retryable error - throttling, an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the subscription filter is disabled for up to 10 minutes, and during that period logs are skipped. So the two most common misconfigurations in the service produce silent loss rather than delay, in a loop, while the log group itself keeps every event."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-subscription-filters/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="A retryable error waits 24 hours; a permissions error skips the logs"/>
+<meta name="twitter:description" content="A subscription filter is a real-time feed of log events to Lambda, Kinesis Data Streams or Firehose, and its delivery contract has two halves that behave in opposite ways. A retryable error - throttling, an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the subscription filter is disabled for up to 10 minutes, and during that period logs are skipped. So the two most common misconfigurations in the service produce silent loss rather than delay, in a loop, while the log group itself keeps every event."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-subscription-filters/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #115 — A retryable error waits 24 hours; a permissions error skips the logs…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #115 — A retryable error waits 24 hours; a permissions error skips the logs</h1>
+      <p class="post-description">A subscription filter is a real-time feed of log events to Lambda, Kinesis Data Streams or Firehose, and its delivery contract has two halves that behave in opposite ways. A retryable error - throttling, an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the subscription filter is disabled for up to 10 minutes, and during that period logs are skipped. So the two most common misconfigurations in the service produce silent loss rather than delay, in a loop, while the log group itself keeps every event.</p>
+      <div class="post-info">
+        <span>Nov 16, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>16 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 16 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-subscription-filters" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #114 ended on what the Essentials log class gives up, and subscription filters were on that list.
+      They are the mechanism for getting log events out of CloudWatch Logs as they arrive:
+      <em>&ldquo;You can use subscriptions to get access to a real-time feed of log events from CloudWatch
+      Logs and have it delivered to other services such as an Amazon Kinesis stream, an Amazon Data
+      Firehose stream, or AWS Lambda for custom processing, analysis, or loading to other
+      systems&rdquo;</em>, usually within
+      <em>&ldquo;less than three minutes&rdquo;</em> of ingestion.
+    </p>
+    <p>
+      Most estates have one feeding a SIEM, a data lake or a detection pipeline, and treat it as plumbing
+      that either works or obviously does not. The documented behaviour is more specific than that, and the
+      specifics decide whether a bad day costs you latency or costs you events.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Two error classes, opposite outcomes, and only one of them is visible as a delay</strong></div>
+      <div class="challenge-body">
+        <p>
+          The whole reliability contract is in one note, and it has two halves that behave in opposite
+          directions.
+        </p>
+        <p>
+          <em>&ldquo;If the destination service returns a retryable error such as a throttling exception or
+          a retryable service exception (HTTP 5xx for example), CloudWatch Logs continues to retry delivery
+          for up to 24 hours.&rdquo;</em>
+        </p>
+        <p>
+          That is generous. A Kinesis stream at capacity, a Lambda being throttled, a Firehose having a bad
+          hour &mdash; the events wait, and arrive late. Twenty-four hours of retry is more patience than
+          most hand-written forwarders have.
+        </p>
+        <p>
+          Then the other half:
+        </p>
+        <p>
+          <em>&ldquo;<strong>CloudWatch Logs doesn't try to re-deliver if the error is a non-retryable
+          error, such as AccessDeniedException or ResourceNotFoundException. In these cases the
+          subscription filter is disabled for up to 10 minutes, and then CloudWatch Logs retries sending
+          logs to the destination. During this disabled period, logs are
+          skipped.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Read the two named examples again, because they are not exotic.
+          <code>AccessDeniedException</code> is a role whose policy was tightened, a destination resource
+          policy that stopped trusting your account, a KMS key whose grant changed.
+          <code>ResourceNotFoundException</code> is a stream deleted and recreated by a redeploy, or an
+          environment torn down and rebuilt. These are the two most ordinary mistakes in the whole
+          mechanism, and they are the ones with no retry.
+        </p>
+        <p>
+          The failure is also cyclical rather than terminal. Disabled for up to ten minutes, retried,
+          failing again, disabled again &mdash; a permissions problem left unnoticed for a day is a day of
+          ten-minute holes. And the log group itself is unaffected: every event is still in CloudWatch
+          Logs, queryable, exactly as if nothing happened. Only the copy that was supposed to reach your
+          SIEM is missing.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on <code>DeliveryErrors</code> per subscription filter, treating any sustained non-zero value as an incident rather than a blip &mdash; it is <em>&ldquo;the number of log events for which CloudWatch Logs received an error when forwarding data to the subscription destination&rdquo;</em>, and it carries a <code>FilterName</code> dimension so one alarm can name the broken filter. Then make the destination's permissions part of whatever change process touches the destination, because the failure mode of getting that wrong is loss rather than a backlog.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>At-least-once, duplicates possible, batching unguaranteed &mdash; the consumer carries all three</strong></div>
+      <div class="challenge-body">
+        <p>
+          The delivery guarantee is stated plainly and is easy to skim past:
+          <em>&ldquo;<strong>Subscription filters ensure at least one time delivery of events, while
+          duplicate events may occasionally occur.</strong>&rdquo;</em>
+        </p>
+        <p>
+          At-least-once is the right guarantee for this job, and it has consequences the consumer owns.
+          Anything counting events out of a subscription is counting an upper bound. Anything keyed on
+          <em>this log line arrived, therefore do X</em> must tolerate doing X twice. A detection rule
+          that pages on the third occurrence of a pattern can page on a redelivery.
+        </p>
+        <p>
+          The shape of delivery is unguaranteed too:
+          <em>&ldquo;Subscription filters might batch log events to optimize transmission and reduce the
+          amount of calls made to the destination. Batching is not guaranteed but is used when
+          possible.&rdquo;</em> So a Lambda destination may receive one event or many, and a consumer that
+          was tested against batches will one day see singletons, and vice versa.
+        </p>
+        <p>
+          And the payload has a fixed, slightly awkward encoding:
+          <em>&ldquo;When log events are sent to the receiving service, they are compressed with the gzip
+          format. AWS Lambda receives the data base64 encoded in the awslogs.data field.&rdquo;</em> Worth
+          knowing before writing the handler, and worth remembering when the destination's own size limits
+          are measured on the compressed payload &mdash; <code>ForwardedBytes</code> is
+          <em>&ldquo;the volume of log events in compressed bytes forwarded to the subscription
+          destination&rdquo;</em>.
+        </p>
+        <p>
+          One more interaction that changes what gets matched at all: with transformation in play,
+          <em>&ldquo;the filter pattern is compared to the transformed versions of the log events&rdquo;</em>.
+          A filter pattern written against the raw log will quietly match nothing once a transformer
+          reshapes the events.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the consumer to be idempotent on a stable key from the log event rather than on arrival, and handle one-to-many batch sizes in the same code path. Treat the subscription's event count as an upper bound, and reconcile against <code>IncomingLogEvents</code> on the log group when a number has to be defensible. If the log group has a transformer, write and test filter patterns against transformed output.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A filter on the wrong log group is an infinite loop with a bill attached</strong></div>
+      <div class="challenge-body">
+        <p>
+          This one is not a subtlety; AWS leads its own page with it:
+          <em>&ldquo;<strong>There is a risk of causing an infinite log recursion with subscription filters
+          that can lead to a large increase in ingestion billing in both CloudWatch Logs and your
+          destination, if not prevented.</strong>&rdquo;</em>
+        </p>
+        <p>
+          The mechanism:
+          <em>&ldquo;This can occur when a subscription filter is associated with a log group that receives
+          log events as a result of your subscription delivery workflow.&rdquo;</em> The documented example
+          is a Firehose destination writing to S3, a Lambda triggered by those S3 objects, and a
+          subscription filter applied to that Lambda's own log group &mdash; each invocation producing logs
+          that are forwarded, landing in S3, invoking the function again.
+        </p>
+        <p>
+          The second-order case is the one that catches careful people:
+          <em>&ldquo;If the Lambda function is attached to a VPC with flow logs enabled for CloudWatch Logs,
+          then the VPC's log group can cause a log recursion as well.&rdquo;</em> Nobody thinks of a VPC
+          flow log group as part of a log delivery pipeline, and in that topology it is.
+        </p>
+        <p>
+          The remedy is exclusion rather than detection:
+          <em>&ldquo;We recommend that you don't apply subscription filters to log groups that are a part of
+          your subscription delivery workflow. For account-level subscription filters, use the
+          selectionCriteria parameter in the PutAccountPolicy API to exclude these log groups from the
+          policy.&rdquo;</em> With one piece of help built in:
+          <em>&ldquo;Log events produced by a Lambda destination's log group will not be forwarded back to
+          the Lambda function for an account-level subscription filter policy.&rdquo;</em>
+        </p>
+        <p>
+          Note the scope of that protection. It covers the Lambda destination's own log group, under an
+          account-level policy. It does not cover the Firehose-to-S3-to-Lambda topology above, and it does
+          not cover the VPC flow log case.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Before attaching an account-level subscription filter, write down every log group your delivery path itself produces &mdash; the destination function, anything it invokes, and the VPC flow logs of the network it runs in &mdash; and exclude them with <code>selectionCriteria</code>. AWS names the service categories to check: <em>&ldquo;Amazon EC2 with Fargate&rdquo;</em>, <em>&ldquo;Lambda&rdquo;</em>, <em>&ldquo;AWS Step Functions&rdquo;</em> and <em>&ldquo;Amazon VPC flow logs that are enabled for CloudWatch Logs&rdquo;</em>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-115-subscription-filters.svg" alt="Diagram: A CloudWatch Logs subscription filter provides a real-time feed of log events to AWS Lambda, Amazon Kinesis Data Streams or Amazon Data Firehose, delivered soon after ingestion and usually in less than three minutes, with events compressed in gzip format and Lambda receiving them base64 encoded in the awslogs.data field. Each account can have one account-level subscription filter per Region and each log group can have up to five subscription filters, and subscriptions are supported only for log groups in the Standard log class. The delivery contract has two halves that behave in opposite directions. If the destination returns a retryable error such as a throttling exception or a retryable service exception like an HTTP 5xx, CloudWatch Logs continues to retry delivery for up to 24 hours, so events arrive late. If the error is non-retryable, such as AccessDeniedException or ResourceNotFoundException, CloudWatch Logs does not try to re-deliver: the subscription filter is disabled for up to 10 minutes and then retried, and during that disabled period logs are skipped, so the two most common misconfigurations produce silent loss in a repeating cycle while the log group itself still holds every event. On the good path the guarantee is at-least-once delivery with duplicate events possible, and batching may be used to optimise transmission but is not guaranteed, so a consumer must be idempotent and must handle both single events and batches. With log transformation in place the filter pattern is compared to the transformed versions of the log events. Visibility comes from per-minute metrics in the AWS slash Logs namespace: DeliveryErrors counts log events for which an error was received when forwarding, DeliveryThrottling counts events for which forwarding was throttled, ForwardedLogEvents and ForwardedBytes count what did arrive, and all carry LogGroupName, DestinationType, FilterName and PolicyLevel dimensions so an alarm can name the broken filter. Finally there is a recursion hazard: a subscription filter on a log group that receives events as a result of the subscription delivery workflow creates an infinite loop with a large increase in ingestion billing, the documented example being Firehose to S3 to a Lambda whose own log group is subscribed, and a VPC flow log group can cause the same loop. The remedy is excluding those log groups with the selectionCriteria parameter of PutAccountPolicy, though log events produced by a Lambda destination's own log group are already not forwarded back for an account-level policy.">
+
+    <h3>The two error paths</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Retryable</th><th>Non-retryable</th></tr>
+      <tr>
+        <td>Examples</td>
+        <td>Throttling, <em>&ldquo;HTTP 5xx for example&rdquo;</em></td>
+        <td><code>AccessDeniedException</code>, <code>ResourceNotFoundException</code></td>
+      </tr>
+      <tr>
+        <td>What CloudWatch Logs does</td>
+        <td>Retries <em>&ldquo;for up to 24 hours&rdquo;</em></td>
+        <td>Disables the filter <em>&ldquo;for up to 10 minutes&rdquo;</em>, then retries</td>
+      </tr>
+      <tr>
+        <td>What happens to events in the meantime</td>
+        <td>They wait</td>
+        <td><strong>&ldquo;logs are skipped&rdquo;</strong></td>
+      </tr>
+      <tr>
+        <td>Outcome if you fix it in an hour</td>
+        <td>Everything arrives, late</td>
+        <td>An hour of holes, permanently</td>
+      </tr>
+      <tr>
+        <td>Typical cause</td>
+        <td>The destination is busy</td>
+        <td>You changed something</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the uncomfortable one. The patient path handles the failure you do not control; the
+      lossy path handles the failure you caused. That is not perverse &mdash; retrying an
+      <code>AccessDeniedException</code> in a tight loop would be worse for everyone &mdash; but it does
+      mean the blast radius of a routine IAM or deployment change is measured in missing log events.
+    </p>
+
+    <h3>What the metrics can tell you, and how fast</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Metric</th><th>What it counts</th></tr>
+      <tr><td><code>DeliveryErrors</code></td><td><em>&ldquo;log events for which CloudWatch Logs received an error when forwarding data to the subscription destination&rdquo;</em></td></tr>
+      <tr><td><code>DeliveryThrottling</code></td><td><em>&ldquo;log events for which CloudWatch Logs was throttled when forwarding data&rdquo;</em></td></tr>
+      <tr><td><code>ForwardedLogEvents</code></td><td><em>&ldquo;log events forwarded to the subscription destination&rdquo;</em></td></tr>
+      <tr><td><code>ForwardedBytes</code></td><td><em>&ldquo;log events in compressed bytes forwarded&rdquo;</em></td></tr>
+      <tr><td><code>IncomingLogEvents</code></td><td><em>&ldquo;log events uploaded to CloudWatch Logs&rdquo;</em></td></tr>
+    </table>
+    </div>
+    <p>
+      All of them arrive at a usable cadence &mdash; CloudWatch Logs
+      <em>&ldquo;sends to Amazon CloudWatch every minute&rdquo;</em> &mdash; and the delivery
+      metrics carry
+      <em>&ldquo;LogGroupName, DestinationType, FilterName, PolicyLevel&rdquo;</em>, so an alarm can
+      identify the individual filter rather than telling you that something somewhere is failing.
+    </p>
+    <p>
+      The pairing worth building is <code>ForwardedLogEvents</code> against
+      <code>IncomingLogEvents</code>. One is what the log group received, the other is what left for the
+      destination. A gap between them is the shape of a delivery problem even when no error is being
+      recorded, and it is the only view that treats skipped events as an absence rather than as an event
+      that was never counted. One caution on precision: a subscription filter's whole job is to select a
+      subset, so the two numbers are not meant to be equal &mdash; it is the <em>ratio over time</em> that
+      is informative, not the difference.
+    </p>
+    <p>
+      One operational gotcha in the dimension itself:
+      <em>&ldquo;The subscription filter name is automatically converted by CloudWatch to ASCII and any
+      unsupported characters get replaced with a question mark&rdquo;</em>. A filter named with anything
+      outside ASCII will not be findable in metrics by the name you gave it.
+    </p>
+
+    <h3>How many, and where they can exist</h3>
+    <p>
+      <em>&ldquo;Each account can have one account-level subscription filter per Region. Each log group can
+      have up to five subscription filters associated with it.&rdquo;</em> And the class restriction from
+      #114: <em>&ldquo;Subscriptions are supported only for log groups in the Standard log class.&rdquo;</em>
+    </p>
+    <p>
+      Five per log group is a fan-out budget, and each one is an independent delivery with its own
+      destination, its own permissions and its own failure state. One filter being disabled for ten minutes
+      says nothing about the other four. That is a feature when a SIEM feed and a data lake feed are meant
+      to be independent, and a trap when a team assumes <em>the subscription</em> is fine because the
+      dashboard they looked at belongs to a different filter.
+    </p>
+    <p>
+      The single account-level filter per Region is the opposite shape: one policy reaching many log
+      groups, which is why its exclusion list is the thing that matters most about it.
+    </p>
+
+    <h3>Subscription, export, or scheduled query</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Subscription filter</th><th>Export to S3</th><th>Scheduled query</th></tr>
+      <tr>
+        <td>Timing</td>
+        <td><em>&ldquo;usually less than three minutes&rdquo;</em></td>
+        <td>A job you run</td>
+        <td>On your schedule</td>
+      </tr>
+      <tr>
+        <td>Failure of a run</td>
+        <td>Retry for 24 hours, or skipped</td>
+        <td>Re-run it</td>
+        <td>Next execution</td>
+      </tr>
+      <tr>
+        <td>Guarantee</td>
+        <td>At-least-once, duplicates possible</td>
+        <td>Whatever the range holds</td>
+        <td>The query's result set</td>
+      </tr>
+      <tr>
+        <td>Essentials log class</td>
+        <td>Unsupported</td>
+        <td>Supported</td>
+        <td>Supported</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The reliability difference is the one worth internalising. An export is a job over a range: if it
+      fails, the data is still in the log group and you run it again. A subscription is a stream: a window
+      it skipped is a window you cannot re-request through the subscription at all. The documentation
+      points at the alternative directly &mdash;
+      <em>&ldquo;For batch processing and analysis of log data on a schedule, consider using Automating log
+      analysis with scheduled queries&rdquo;</em>.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Not retrying a non-retryable error is correct, even though it loses data</h3>
+    <p>
+      An <code>AccessDeniedException</code> will not succeed on the next attempt, and a service that
+      hammered a destination it has no permission to call would turn one misconfiguration into a
+      denial-of-service against your own account. Backing off for ten minutes and trying again is the right
+      engineering answer. What the design asks of you in return is that you watch the error metric, which
+      is why that metric exists with a per-filter dimension.
+    </p>
+
+    <h3>At-least-once is the honest guarantee for a real-time feed</h3>
+    <p>
+      Exactly-once across a service boundary requires coordination that would cost the latency the feature
+      exists to provide. Saying <em>&ldquo;at least one time delivery &hellip; while duplicate events may
+      occasionally occur&rdquo;</em> puts the deduplication where it can actually be done, in a consumer
+      that knows what its own idempotency key is.
+    </p>
+
+    <h3>Documenting the recursion risk beats detecting it</h3>
+    <p>
+      A loop between a log group and its own delivery path is indistinguishable, from inside the service,
+      from a genuinely chatty workload. Rather than guess, AWS documents the topology, names the services
+      that commonly sit in delivery paths, and provides <code>selectionCriteria</code> to exclude them. The
+      one case it can detect unambiguously &mdash; a Lambda destination's own log group under an
+      account-level policy &mdash; it handles for you.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Monitoring the feed</td>
+        <td>Alarm on <code>DeliveryErrors</code> per <code>FilterName</code></td>
+        <td>Non-retryable errors skip logs rather than queueing them, and nothing else reports it</td>
+      </tr>
+      <tr>
+        <td>Second signal</td>
+        <td>Track <code>ForwardedLogEvents</code> against <code>IncomingLogEvents</code></td>
+        <td>A collapsing ratio shows delivery stopping even when errors are not being recorded</td>
+      </tr>
+      <tr>
+        <td>Changing a destination's permissions or name</td>
+        <td>Treat it as a change to the log pipeline</td>
+        <td><code>AccessDeniedException</code> and <code>ResourceNotFoundException</code> are the two documented lossy cases</td>
+      </tr>
+      <tr>
+        <td>Consumer design</td>
+        <td>Idempotent, batch-size agnostic</td>
+        <td>At-least-once with duplicates, and <em>&ldquo;Batching is not guaranteed&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Evidence that must be complete</td>
+        <td>Export or scheduled query, not a subscription</td>
+        <td>A skipped window cannot be re-requested through the subscription</td>
+      </tr>
+      <tr>
+        <td>Account-level filters</td>
+        <td>Write the <code>selectionCriteria</code> exclusions first</td>
+        <td>Recursion is a billing event, and the built-in protection covers only the Lambda destination's own log group</td>
+      </tr>
+      <tr>
+        <td>Fan-out beyond five destinations</td>
+        <td>Fan out at the destination instead</td>
+        <td>A log group supports up to five subscription filters</td>
+      </tr>
+      <tr>
+        <td>Filter names</td>
+        <td>ASCII only</td>
+        <td>Unsupported characters become a question mark in the metric dimension</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every subscription filter in the account and check each has an alarm naming it.</strong>
+      This is the highest-value item here. A filter with no <code>DeliveryErrors</code> alarm is a feed
+      whose silence you cannot distinguish from a quiet log group.
+    </p>
+    <p>
+      <strong>Check whether any filter's destination has been recreated since the filter was
+      written.</strong> A deleted and recreated stream or function is the <code>ResourceNotFoundException</code>
+      case, and it fails in ten-minute cycles indefinitely.
+    </p>
+    <p>
+      <strong>Map your delivery path and compare it against your account-level filter's exclusions.</strong>
+      Specifically: the destination function's log group, anything it invokes, and the flow logs of the VPC
+      it runs in.
+    </p>
+    <p>
+      <strong>Confirm every consumer tolerates duplicates and variable batch sizes.</strong> Both are
+      documented behaviours, not edge cases, and a consumer that assumes otherwise is correct only until
+      the day it is not.
+    </p>
+    <p>
+      <strong>Check filter names for non-ASCII characters.</strong> A five-minute check that decides
+      whether your alarms can find the filter at all.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Five posts have now circled the same question from different sides: when a monitoring system says
+      nothing, what does that mean? An alarm in <code>INSUFFICIENT_DATA</code>. A canary whose silence has
+      two causes. A query that ran before the logs arrived. An index that only covers what came after it.
+      A log class that removes the reading apparatus.
+    </p>
+    <p>
+      Subscription filters give the sharpest version of it, because here the silence is somewhere else
+      entirely. The log group is perfect &mdash; every event present, queryable, complete. The gap is in
+      the copy that went to the SIEM, and the thing that produced the gap was a permissions change
+      somewhere outside the logging system. The two systems disagree, neither is broken, and the one that
+      is wrong is the one your detections run on.
+    </p>
+    <p>
+      So the rule for this primitive is about where the truth lives. CloudWatch Logs holds the record; the
+      subscription holds a copy that is at-least-once on a good day and lossy in ten-minute cycles on a bad
+      one. Alarm on the delivery, not on the log group. Treat destination permissions as part of the log
+      pipeline's change surface. And when the question is <em>can we prove this happened</em>, go back to
+      the log group, which never skipped anything.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs account-level policies: how one policy reaches every log group in a Region, what <code>selectionCriteria</code> can and cannot express, which policy wins when an account-level and a log-group-level policy disagree, and why the exclusions are the part you have to write yourself.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html" target="_blank" rel="noopener">Real-time processing of log data with subscriptions &#8212; the destinations and the under-three-minute delivery, the one account-level filter per Region and five filters per log group, the 24-hour retry for retryable errors against the up-to-10-minute disable during which logs are skipped for non-retryable ones, the at-least-once guarantee with possible duplicates, the unguaranteed batching, gzip and base64 encoding, the transformation interaction, the Standard log class restriction, and the pointer to scheduled queries for batch analysis</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html" target="_blank" rel="noopener">Monitoring with CloudWatch metrics &#8212; the <code>DeliveryErrors</code>, <code>DeliveryThrottling</code>, <code>ForwardedLogEvents</code>, <code>ForwardedBytes</code> and <code>IncomingLogEvents</code> definitions, their <code>LogGroupName</code>, <code>DestinationType</code>, <code>FilterName</code> and <code>PolicyLevel</code> dimensions, the per-minute publication, and the ASCII conversion of filter names in the dimension</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html" target="_blank" rel="noopener">Log recursion prevention &#8212; the infinite recursion risk and its billing consequence, the Firehose-to-S3-to-Lambda example, the VPC flow log case, the recommendation not to subscribe log groups in the delivery path, the <code>selectionCriteria</code> exclusion mechanism, the services to consider excluding, and the built-in protection for a Lambda destination's own log group under an account-level policy</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html" target="_blank" rel="noopener">Log classes &#8212; further reading on the Standard class requirement for subscriptions, covered in full in #114; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-confused-deputy.html" target="_blank" rel="noopener">Confused deputy prevention &#8212; further reading on the source account and ARN conditions for cross-account subscription destinations; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CrossAccountSubscriptions.html" target="_blank" rel="noopener">Cross-account cross-Region subscriptions &#8212; further reading on delivering a subscription to a destination in another account or Region; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/week-13-hybrid-connectivity/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 13 — HA VPN and BGP: The Route Nobody Wrote</span></a><a href="/blog/azure-architecture-load-balancer-skus-rules-and-health-probes/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #95 — Load Balancer: SKUs, Rules and Health Probes</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-subscription-filters/';
+      this.page.identifier = 'aws-architecture-subscription-filters';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

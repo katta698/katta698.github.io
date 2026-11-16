@@ -1,0 +1,512 @@
+---
+title: "AWS Architecture Series #115 — A retryable error waits 24 hours; a permissions error skips the logs"
+date: '2026-11-16T09:00:00'
+slug: aws-architecture-subscription-filters
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-16'
+problem: "A subscription filter is a real-time feed of log events to Lambda, Kinesis Data Streams or Firehose, and its delivery contract has two halves that behave in opposite ways. A retryable error - throttling, an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the subscription filter is disabled for up to 10 minutes, and during that period logs are skipped. So the two most common misconfigurations in the service produce silent loss rather than delay, in a loop, while the log group itself keeps every event."
+builds: "A reading of what a subscription filter actually promises: the two error paths and which one loses data, why the delivery guarantee is at-least-once with duplicates and unguaranteed batching, how the per-filter metrics let you see delivery failing, the five-filter fan-out and the account-level filter that sits beside it, and the recursion loop that turns a misplaced filter into a billing event."
+verified_claims:
+  - claim: "You can use subscriptions to get access to a real-time feed of log events from CloudWatch Logs and have it delivered to other services such as an Amazon Kinesis stream, an Amazon Data Firehose stream, or AWS Lambda for custom processing, analysis, or loading to other systems"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "Log events are sent to the receiving resource soon after being ingested, usually less than three minutes"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "Each account can have one account-level subscription filter per Region. Each log group can have up to five subscription filters associated with it"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "If the destination service returns a retryable error such as a throttling exception or a retryable service exception (HTTP 5xx for example), CloudWatch Logs continues to retry delivery for up to 24 hours"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "CloudWatch Logs doesn't try to re-deliver if the error is a non-retryable error, such as AccessDeniedException or ResourceNotFoundException. In these cases the subscription filter is disabled for up to 10 minutes, and then CloudWatch Logs retries sending logs to the destination. During this disabled period, logs are skipped"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "Subscription filters ensure at least one time delivery of events, while duplicate events may occasionally occur"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "Subscription filters might batch log events to optimize transmission and reduce the amount of calls made to the destination. Batching is not guaranteed but is used when possible"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "Subscriptions are supported only for log groups in the Standard log class"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "When log events are sent to the receiving service, they are compressed with the gzip format. AWS Lambda receives the data base64 encoded in the awslogs.data field"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "If a log group with a subscription uses log transformation, the filter pattern is compared to the transformed versions of the log events"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "For batch processing and analysis of log data on a schedule, consider using Automating log analysis with scheduled queries"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+  - claim: "DeliveryErrors is the number of log events for which CloudWatch Logs received an error when forwarding data to the subscription destination"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "DeliveryThrottling is the number of log events for which CloudWatch Logs was throttled when forwarding data to the subscription destination"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "ForwardedLogEvents is the number of log events forwarded to the subscription destination"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "ForwardedBytes is the volume of log events in compressed bytes forwarded to the subscription destination"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "Valid Dimensions for DeliveryErrors are LogGroupName, DestinationType, FilterName, PolicyLevel"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "IncomingLogEvents is the number of log events uploaded to CloudWatch Logs"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "The DestinationType dimension is the subscription destination for the CloudWatch Logs data, which can be AWS Lambda, Amazon Kinesis Data Streams, or Amazon Data Firehose"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "The subscription filter name is automatically converted by CloudWatch to ASCII and any unsupported characters get replaced with a question mark"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "CloudWatch Logs sends metrics to Amazon CloudWatch every minute"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html
+  - claim: "There is a risk of causing an infinite log recursion with subscription filters that can lead to a large increase in ingestion billing in both CloudWatch Logs and your destination, if not prevented"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html
+  - claim: "This can occur when a subscription filter is associated with a log group that receives log events as a result of your subscription delivery workflow"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html
+  - claim: "We recommend that you don't apply subscription filters to log groups that are a part of your subscription delivery workflow. For account-level subscription filters, use the selectionCriteria parameter in the PutAccountPolicy API to exclude these log groups from the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html
+  - claim: "If the Lambda function is attached to a VPC with flow logs enabled for CloudWatch Logs, then the VPC's log group can cause a log recursion as well"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html
+  - claim: "Log events produced by a Lambda destination's log group will not be forwarded back to the Lambda function for an account-level subscription filter policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html
+  - claim: "A retryable error is retried for up to 24 hours, which is 1,440 minutes, against a non-retryable error's disable window of up to 10 minutes"
+    derive: "24 * 60"
+    expect: "1440"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html
+catch: "The delivery contract has two halves that behave in opposite directions. A retryable error - throttling or an HTTP 5xx - is retried for up to 24 hours. A non-retryable error such as AccessDeniedException or ResourceNotFoundException is not retried at all: the filter is disabled for up to 10 minutes and during that period logs are skipped, then it tries again. So a broken IAM policy or a deleted destination produces silent loss in a repeating cycle, while the log group itself still holds every event. The guarantee on the good path is at-least-once with duplicates possible, and the per-filter DeliveryErrors metric is what makes any of this visible."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #115 &middot; Reliability</div>
+  <h1 class="post-title">A retryable error waits 24 hours; a permissions error skips the logs</h1>
+  <p class="post-subtitle">A subscription filter is the real-time feed out of CloudWatch Logs. Its two documented failure paths lead to opposite outcomes, and the one that loses data is the one your misconfigurations will hit.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #114 ended on what the Essentials log class gives up, and subscription filters were on that list.
+      They are the mechanism for getting log events out of CloudWatch Logs as they arrive:
+      <em>&ldquo;You can use subscriptions to get access to a real-time feed of log events from CloudWatch
+      Logs and have it delivered to other services such as an Amazon Kinesis stream, an Amazon Data
+      Firehose stream, or AWS Lambda for custom processing, analysis, or loading to other
+      systems&rdquo;</em>, usually within
+      <em>&ldquo;less than three minutes&rdquo;</em> of ingestion.
+    </p>
+    <p>
+      Most estates have one feeding a SIEM, a data lake or a detection pipeline, and treat it as plumbing
+      that either works or obviously does not. The documented behaviour is more specific than that, and the
+      specifics decide whether a bad day costs you latency or costs you events.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Two error classes, opposite outcomes, and only one of them is visible as a delay</strong></div>
+      <div class="challenge-body">
+        <p>
+          The whole reliability contract is in one note, and it has two halves that behave in opposite
+          directions.
+        </p>
+        <p>
+          <em>&ldquo;If the destination service returns a retryable error such as a throttling exception or
+          a retryable service exception (HTTP 5xx for example), CloudWatch Logs continues to retry delivery
+          for up to 24 hours.&rdquo;</em>
+        </p>
+        <p>
+          That is generous. A Kinesis stream at capacity, a Lambda being throttled, a Firehose having a bad
+          hour &mdash; the events wait, and arrive late. Twenty-four hours of retry is more patience than
+          most hand-written forwarders have.
+        </p>
+        <p>
+          Then the other half:
+        </p>
+        <p>
+          <em>&ldquo;<strong>CloudWatch Logs doesn't try to re-deliver if the error is a non-retryable
+          error, such as AccessDeniedException or ResourceNotFoundException. In these cases the
+          subscription filter is disabled for up to 10 minutes, and then CloudWatch Logs retries sending
+          logs to the destination. During this disabled period, logs are
+          skipped.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Read the two named examples again, because they are not exotic.
+          <code>AccessDeniedException</code> is a role whose policy was tightened, a destination resource
+          policy that stopped trusting your account, a KMS key whose grant changed.
+          <code>ResourceNotFoundException</code> is a stream deleted and recreated by a redeploy, or an
+          environment torn down and rebuilt. These are the two most ordinary mistakes in the whole
+          mechanism, and they are the ones with no retry.
+        </p>
+        <p>
+          The failure is also cyclical rather than terminal. Disabled for up to ten minutes, retried,
+          failing again, disabled again &mdash; a permissions problem left unnoticed for a day is a day of
+          ten-minute holes. And the log group itself is unaffected: every event is still in CloudWatch
+          Logs, queryable, exactly as if nothing happened. Only the copy that was supposed to reach your
+          SIEM is missing.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on <code>DeliveryErrors</code> per subscription filter, treating any sustained non-zero value as an incident rather than a blip &mdash; it is <em>&ldquo;the number of log events for which CloudWatch Logs received an error when forwarding data to the subscription destination&rdquo;</em>, and it carries a <code>FilterName</code> dimension so one alarm can name the broken filter. Then make the destination's permissions part of whatever change process touches the destination, because the failure mode of getting that wrong is loss rather than a backlog.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>At-least-once, duplicates possible, batching unguaranteed &mdash; the consumer carries all three</strong></div>
+      <div class="challenge-body">
+        <p>
+          The delivery guarantee is stated plainly and is easy to skim past:
+          <em>&ldquo;<strong>Subscription filters ensure at least one time delivery of events, while
+          duplicate events may occasionally occur.</strong>&rdquo;</em>
+        </p>
+        <p>
+          At-least-once is the right guarantee for this job, and it has consequences the consumer owns.
+          Anything counting events out of a subscription is counting an upper bound. Anything keyed on
+          <em>this log line arrived, therefore do X</em> must tolerate doing X twice. A detection rule
+          that pages on the third occurrence of a pattern can page on a redelivery.
+        </p>
+        <p>
+          The shape of delivery is unguaranteed too:
+          <em>&ldquo;Subscription filters might batch log events to optimize transmission and reduce the
+          amount of calls made to the destination. Batching is not guaranteed but is used when
+          possible.&rdquo;</em> So a Lambda destination may receive one event or many, and a consumer that
+          was tested against batches will one day see singletons, and vice versa.
+        </p>
+        <p>
+          And the payload has a fixed, slightly awkward encoding:
+          <em>&ldquo;When log events are sent to the receiving service, they are compressed with the gzip
+          format. AWS Lambda receives the data base64 encoded in the awslogs.data field.&rdquo;</em> Worth
+          knowing before writing the handler, and worth remembering when the destination's own size limits
+          are measured on the compressed payload &mdash; <code>ForwardedBytes</code> is
+          <em>&ldquo;the volume of log events in compressed bytes forwarded to the subscription
+          destination&rdquo;</em>.
+        </p>
+        <p>
+          One more interaction that changes what gets matched at all: with transformation in play,
+          <em>&ldquo;the filter pattern is compared to the transformed versions of the log events&rdquo;</em>.
+          A filter pattern written against the raw log will quietly match nothing once a transformer
+          reshapes the events.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the consumer to be idempotent on a stable key from the log event rather than on arrival, and handle one-to-many batch sizes in the same code path. Treat the subscription's event count as an upper bound, and reconcile against <code>IncomingLogEvents</code> on the log group when a number has to be defensible. If the log group has a transformer, write and test filter patterns against transformed output.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A filter on the wrong log group is an infinite loop with a bill attached</strong></div>
+      <div class="challenge-body">
+        <p>
+          This one is not a subtlety; AWS leads its own page with it:
+          <em>&ldquo;<strong>There is a risk of causing an infinite log recursion with subscription filters
+          that can lead to a large increase in ingestion billing in both CloudWatch Logs and your
+          destination, if not prevented.</strong>&rdquo;</em>
+        </p>
+        <p>
+          The mechanism:
+          <em>&ldquo;This can occur when a subscription filter is associated with a log group that receives
+          log events as a result of your subscription delivery workflow.&rdquo;</em> The documented example
+          is a Firehose destination writing to S3, a Lambda triggered by those S3 objects, and a
+          subscription filter applied to that Lambda's own log group &mdash; each invocation producing logs
+          that are forwarded, landing in S3, invoking the function again.
+        </p>
+        <p>
+          The second-order case is the one that catches careful people:
+          <em>&ldquo;If the Lambda function is attached to a VPC with flow logs enabled for CloudWatch Logs,
+          then the VPC's log group can cause a log recursion as well.&rdquo;</em> Nobody thinks of a VPC
+          flow log group as part of a log delivery pipeline, and in that topology it is.
+        </p>
+        <p>
+          The remedy is exclusion rather than detection:
+          <em>&ldquo;We recommend that you don't apply subscription filters to log groups that are a part of
+          your subscription delivery workflow. For account-level subscription filters, use the
+          selectionCriteria parameter in the PutAccountPolicy API to exclude these log groups from the
+          policy.&rdquo;</em> With one piece of help built in:
+          <em>&ldquo;Log events produced by a Lambda destination's log group will not be forwarded back to
+          the Lambda function for an account-level subscription filter policy.&rdquo;</em>
+        </p>
+        <p>
+          Note the scope of that protection. It covers the Lambda destination's own log group, under an
+          account-level policy. It does not cover the Firehose-to-S3-to-Lambda topology above, and it does
+          not cover the VPC flow log case.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Before attaching an account-level subscription filter, write down every log group your delivery path itself produces &mdash; the destination function, anything it invokes, and the VPC flow logs of the network it runs in &mdash; and exclude them with <code>selectionCriteria</code>. AWS names the service categories to check: <em>&ldquo;Amazon EC2 with Fargate&rdquo;</em>, <em>&ldquo;Lambda&rdquo;</em>, <em>&ldquo;AWS Step Functions&rdquo;</em> and <em>&ldquo;Amazon VPC flow logs that are enabled for CloudWatch Logs&rdquo;</em>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-115-subscription-filters.svg" alt="Diagram: A CloudWatch Logs subscription filter provides a real-time feed of log events to AWS Lambda, Amazon Kinesis Data Streams or Amazon Data Firehose, delivered soon after ingestion and usually in less than three minutes, with events compressed in gzip format and Lambda receiving them base64 encoded in the awslogs.data field. Each account can have one account-level subscription filter per Region and each log group can have up to five subscription filters, and subscriptions are supported only for log groups in the Standard log class. The delivery contract has two halves that behave in opposite directions. If the destination returns a retryable error such as a throttling exception or a retryable service exception like an HTTP 5xx, CloudWatch Logs continues to retry delivery for up to 24 hours, so events arrive late. If the error is non-retryable, such as AccessDeniedException or ResourceNotFoundException, CloudWatch Logs does not try to re-deliver: the subscription filter is disabled for up to 10 minutes and then retried, and during that disabled period logs are skipped, so the two most common misconfigurations produce silent loss in a repeating cycle while the log group itself still holds every event. On the good path the guarantee is at-least-once delivery with duplicate events possible, and batching may be used to optimise transmission but is not guaranteed, so a consumer must be idempotent and must handle both single events and batches. With log transformation in place the filter pattern is compared to the transformed versions of the log events. Visibility comes from per-minute metrics in the AWS slash Logs namespace: DeliveryErrors counts log events for which an error was received when forwarding, DeliveryThrottling counts events for which forwarding was throttled, ForwardedLogEvents and ForwardedBytes count what did arrive, and all carry LogGroupName, DestinationType, FilterName and PolicyLevel dimensions so an alarm can name the broken filter. Finally there is a recursion hazard: a subscription filter on a log group that receives events as a result of the subscription delivery workflow creates an infinite loop with a large increase in ingestion billing, the documented example being Firehose to S3 to a Lambda whose own log group is subscribed, and a VPC flow log group can cause the same loop. The remedy is excluding those log groups with the selectionCriteria parameter of PutAccountPolicy, though log events produced by a Lambda destination's own log group are already not forwarded back for an account-level policy.">
+
+    <h3>The two error paths</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Retryable</th><th>Non-retryable</th></tr>
+      <tr>
+        <td>Examples</td>
+        <td>Throttling, <em>&ldquo;HTTP 5xx for example&rdquo;</em></td>
+        <td><code>AccessDeniedException</code>, <code>ResourceNotFoundException</code></td>
+      </tr>
+      <tr>
+        <td>What CloudWatch Logs does</td>
+        <td>Retries <em>&ldquo;for up to 24 hours&rdquo;</em></td>
+        <td>Disables the filter <em>&ldquo;for up to 10 minutes&rdquo;</em>, then retries</td>
+      </tr>
+      <tr>
+        <td>What happens to events in the meantime</td>
+        <td>They wait</td>
+        <td><strong>&ldquo;logs are skipped&rdquo;</strong></td>
+      </tr>
+      <tr>
+        <td>Outcome if you fix it in an hour</td>
+        <td>Everything arrives, late</td>
+        <td>An hour of holes, permanently</td>
+      </tr>
+      <tr>
+        <td>Typical cause</td>
+        <td>The destination is busy</td>
+        <td>You changed something</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the uncomfortable one. The patient path handles the failure you do not control; the
+      lossy path handles the failure you caused. That is not perverse &mdash; retrying an
+      <code>AccessDeniedException</code> in a tight loop would be worse for everyone &mdash; but it does
+      mean the blast radius of a routine IAM or deployment change is measured in missing log events.
+    </p>
+
+    <h3>What the metrics can tell you, and how fast</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Metric</th><th>What it counts</th></tr>
+      <tr><td><code>DeliveryErrors</code></td><td><em>&ldquo;log events for which CloudWatch Logs received an error when forwarding data to the subscription destination&rdquo;</em></td></tr>
+      <tr><td><code>DeliveryThrottling</code></td><td><em>&ldquo;log events for which CloudWatch Logs was throttled when forwarding data&rdquo;</em></td></tr>
+      <tr><td><code>ForwardedLogEvents</code></td><td><em>&ldquo;log events forwarded to the subscription destination&rdquo;</em></td></tr>
+      <tr><td><code>ForwardedBytes</code></td><td><em>&ldquo;log events in compressed bytes forwarded&rdquo;</em></td></tr>
+      <tr><td><code>IncomingLogEvents</code></td><td><em>&ldquo;log events uploaded to CloudWatch Logs&rdquo;</em></td></tr>
+    </table>
+    </div>
+    <p>
+      All of them arrive at a usable cadence &mdash; CloudWatch Logs
+      <em>&ldquo;sends to Amazon CloudWatch every minute&rdquo;</em> &mdash; and the delivery
+      metrics carry
+      <em>&ldquo;LogGroupName, DestinationType, FilterName, PolicyLevel&rdquo;</em>, so an alarm can
+      identify the individual filter rather than telling you that something somewhere is failing.
+    </p>
+    <p>
+      The pairing worth building is <code>ForwardedLogEvents</code> against
+      <code>IncomingLogEvents</code>. One is what the log group received, the other is what left for the
+      destination. A gap between them is the shape of a delivery problem even when no error is being
+      recorded, and it is the only view that treats skipped events as an absence rather than as an event
+      that was never counted. One caution on precision: a subscription filter's whole job is to select a
+      subset, so the two numbers are not meant to be equal &mdash; it is the <em>ratio over time</em> that
+      is informative, not the difference.
+    </p>
+    <p>
+      One operational gotcha in the dimension itself:
+      <em>&ldquo;The subscription filter name is automatically converted by CloudWatch to ASCII and any
+      unsupported characters get replaced with a question mark&rdquo;</em>. A filter named with anything
+      outside ASCII will not be findable in metrics by the name you gave it.
+    </p>
+
+    <h3>How many, and where they can exist</h3>
+    <p>
+      <em>&ldquo;Each account can have one account-level subscription filter per Region. Each log group can
+      have up to five subscription filters associated with it.&rdquo;</em> And the class restriction from
+      #114: <em>&ldquo;Subscriptions are supported only for log groups in the Standard log class.&rdquo;</em>
+    </p>
+    <p>
+      Five per log group is a fan-out budget, and each one is an independent delivery with its own
+      destination, its own permissions and its own failure state. One filter being disabled for ten minutes
+      says nothing about the other four. That is a feature when a SIEM feed and a data lake feed are meant
+      to be independent, and a trap when a team assumes <em>the subscription</em> is fine because the
+      dashboard they looked at belongs to a different filter.
+    </p>
+    <p>
+      The single account-level filter per Region is the opposite shape: one policy reaching many log
+      groups, which is why its exclusion list is the thing that matters most about it.
+    </p>
+
+    <h3>Subscription, export, or scheduled query</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Subscription filter</th><th>Export to S3</th><th>Scheduled query</th></tr>
+      <tr>
+        <td>Timing</td>
+        <td><em>&ldquo;usually less than three minutes&rdquo;</em></td>
+        <td>A job you run</td>
+        <td>On your schedule</td>
+      </tr>
+      <tr>
+        <td>Failure of a run</td>
+        <td>Retry for 24 hours, or skipped</td>
+        <td>Re-run it</td>
+        <td>Next execution</td>
+      </tr>
+      <tr>
+        <td>Guarantee</td>
+        <td>At-least-once, duplicates possible</td>
+        <td>Whatever the range holds</td>
+        <td>The query's result set</td>
+      </tr>
+      <tr>
+        <td>Essentials log class</td>
+        <td>Unsupported</td>
+        <td>Supported</td>
+        <td>Supported</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The reliability difference is the one worth internalising. An export is a job over a range: if it
+      fails, the data is still in the log group and you run it again. A subscription is a stream: a window
+      it skipped is a window you cannot re-request through the subscription at all. The documentation
+      points at the alternative directly &mdash;
+      <em>&ldquo;For batch processing and analysis of log data on a schedule, consider using Automating log
+      analysis with scheduled queries&rdquo;</em>.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Not retrying a non-retryable error is correct, even though it loses data</h3>
+    <p>
+      An <code>AccessDeniedException</code> will not succeed on the next attempt, and a service that
+      hammered a destination it has no permission to call would turn one misconfiguration into a
+      denial-of-service against your own account. Backing off for ten minutes and trying again is the right
+      engineering answer. What the design asks of you in return is that you watch the error metric, which
+      is why that metric exists with a per-filter dimension.
+    </p>
+
+    <h3>At-least-once is the honest guarantee for a real-time feed</h3>
+    <p>
+      Exactly-once across a service boundary requires coordination that would cost the latency the feature
+      exists to provide. Saying <em>&ldquo;at least one time delivery &hellip; while duplicate events may
+      occasionally occur&rdquo;</em> puts the deduplication where it can actually be done, in a consumer
+      that knows what its own idempotency key is.
+    </p>
+
+    <h3>Documenting the recursion risk beats detecting it</h3>
+    <p>
+      A loop between a log group and its own delivery path is indistinguishable, from inside the service,
+      from a genuinely chatty workload. Rather than guess, AWS documents the topology, names the services
+      that commonly sit in delivery paths, and provides <code>selectionCriteria</code> to exclude them. The
+      one case it can detect unambiguously &mdash; a Lambda destination's own log group under an
+      account-level policy &mdash; it handles for you.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Monitoring the feed</td>
+        <td>Alarm on <code>DeliveryErrors</code> per <code>FilterName</code></td>
+        <td>Non-retryable errors skip logs rather than queueing them, and nothing else reports it</td>
+      </tr>
+      <tr>
+        <td>Second signal</td>
+        <td>Track <code>ForwardedLogEvents</code> against <code>IncomingLogEvents</code></td>
+        <td>A collapsing ratio shows delivery stopping even when errors are not being recorded</td>
+      </tr>
+      <tr>
+        <td>Changing a destination's permissions or name</td>
+        <td>Treat it as a change to the log pipeline</td>
+        <td><code>AccessDeniedException</code> and <code>ResourceNotFoundException</code> are the two documented lossy cases</td>
+      </tr>
+      <tr>
+        <td>Consumer design</td>
+        <td>Idempotent, batch-size agnostic</td>
+        <td>At-least-once with duplicates, and <em>&ldquo;Batching is not guaranteed&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Evidence that must be complete</td>
+        <td>Export or scheduled query, not a subscription</td>
+        <td>A skipped window cannot be re-requested through the subscription</td>
+      </tr>
+      <tr>
+        <td>Account-level filters</td>
+        <td>Write the <code>selectionCriteria</code> exclusions first</td>
+        <td>Recursion is a billing event, and the built-in protection covers only the Lambda destination's own log group</td>
+      </tr>
+      <tr>
+        <td>Fan-out beyond five destinations</td>
+        <td>Fan out at the destination instead</td>
+        <td>A log group supports up to five subscription filters</td>
+      </tr>
+      <tr>
+        <td>Filter names</td>
+        <td>ASCII only</td>
+        <td>Unsupported characters become a question mark in the metric dimension</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every subscription filter in the account and check each has an alarm naming it.</strong>
+      This is the highest-value item here. A filter with no <code>DeliveryErrors</code> alarm is a feed
+      whose silence you cannot distinguish from a quiet log group.
+    </p>
+    <p>
+      <strong>Check whether any filter's destination has been recreated since the filter was
+      written.</strong> A deleted and recreated stream or function is the <code>ResourceNotFoundException</code>
+      case, and it fails in ten-minute cycles indefinitely.
+    </p>
+    <p>
+      <strong>Map your delivery path and compare it against your account-level filter's exclusions.</strong>
+      Specifically: the destination function's log group, anything it invokes, and the flow logs of the VPC
+      it runs in.
+    </p>
+    <p>
+      <strong>Confirm every consumer tolerates duplicates and variable batch sizes.</strong> Both are
+      documented behaviours, not edge cases, and a consumer that assumes otherwise is correct only until
+      the day it is not.
+    </p>
+    <p>
+      <strong>Check filter names for non-ASCII characters.</strong> A five-minute check that decides
+      whether your alarms can find the filter at all.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Five posts have now circled the same question from different sides: when a monitoring system says
+      nothing, what does that mean? An alarm in <code>INSUFFICIENT_DATA</code>. A canary whose silence has
+      two causes. A query that ran before the logs arrived. An index that only covers what came after it.
+      A log class that removes the reading apparatus.
+    </p>
+    <p>
+      Subscription filters give the sharpest version of it, because here the silence is somewhere else
+      entirely. The log group is perfect &mdash; every event present, queryable, complete. The gap is in
+      the copy that went to the SIEM, and the thing that produced the gap was a permissions change
+      somewhere outside the logging system. The two systems disagree, neither is broken, and the one that
+      is wrong is the one your detections run on.
+    </p>
+    <p>
+      So the rule for this primitive is about where the truth lives. CloudWatch Logs holds the record; the
+      subscription holds a copy that is at-least-once on a good day and lossy in ten-minute cycles on a bad
+      one. Alarm on the delivery, not on the log group. Treat destination permissions as part of the log
+      pipeline's change surface. And when the question is <em>can we prove this happened</em>, go back to
+      the log group, which never skipped anything.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs account-level policies: how one policy reaches every log group in a Region, what <code>selectionCriteria</code> can and cannot express, which policy wins when an account-level and a log-group-level policy disagree, and why the exclusions are the part you have to write yourself.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html" target="_blank" rel="noopener">Real-time processing of log data with subscriptions &#8212; the destinations and the under-three-minute delivery, the one account-level filter per Region and five filters per log group, the 24-hour retry for retryable errors against the up-to-10-minute disable during which logs are skipped for non-retryable ones, the at-least-once guarantee with possible duplicates, the unguaranteed batching, gzip and base64 encoding, the transformation interaction, the Standard log class restriction, and the pointer to scheduled queries for batch analysis</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch-Logs-Monitoring-CloudWatch-Metrics.html" target="_blank" rel="noopener">Monitoring with CloudWatch metrics &#8212; the <code>DeliveryErrors</code>, <code>DeliveryThrottling</code>, <code>ForwardedLogEvents</code>, <code>ForwardedBytes</code> and <code>IncomingLogEvents</code> definitions, their <code>LogGroupName</code>, <code>DestinationType</code>, <code>FilterName</code> and <code>PolicyLevel</code> dimensions, the per-minute publication, and the ASCII conversion of filter names in the dimension</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html" target="_blank" rel="noopener">Log recursion prevention &#8212; the infinite recursion risk and its billing consequence, the Firehose-to-S3-to-Lambda example, the VPC flow log case, the recommendation not to subscribe log groups in the delivery path, the <code>selectionCriteria</code> exclusion mechanism, the services to consider excluding, and the built-in protection for a Lambda destination's own log group under an account-level policy</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html" target="_blank" rel="noopener">Log classes &#8212; further reading on the Standard class requirement for subscriptions, covered in full in #114; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-confused-deputy.html" target="_blank" rel="noopener">Confused deputy prevention &#8212; further reading on the source account and ARN conditions for cross-account subscription destinations; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CrossAccountSubscriptions.html" target="_blank" rel="noopener">Cross-account cross-Region subscriptions &#8212; further reading on delivering a subscription to a destination in another account or Region; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
