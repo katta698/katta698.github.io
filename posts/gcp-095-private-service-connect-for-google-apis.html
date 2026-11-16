@@ -1,0 +1,327 @@
+---
+title: "GCP Architecture Series #95 — Private Service Connect for Google APIs"
+date: '2026-11-16T09:00:00'
+slug: gcp-architecture-private-service-connect-for-google-apis
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-11-16'
+verified_claims:
+  - claim: "Instead of sending API requests to the publicly available IP addresses for service endpoints such as storage.googleapis.com , you can send the requests to the internal IP address of an endpoint"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "You can also use Private Service Connect to access services in another VPC network and to publish services"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "Reserve a global internal IP address to assign to the endpoint"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "--purpose=PRIVATE_SERVICE_CONNECT"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "NETWORK_NAME : the name of the VPC network for the endpoint"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "All endpoints that are used to access Google APIs and services in a given VPC network use the same Service Directory region"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "All endpoints that you use to access Google APIs and services in a given VPC network use the same Service Directory namespace"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "If a region is not configured, the region is set to us-central1"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "If you omit NAMESPACE , and a namespace is already configured for this VPC network, that namespace is used"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "If a namespace is not configured, a system-generated namespace is assigned"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "Create, view, and delete endpoints: Compute Network Admin ( roles/compute.networkAdmin ) on your project"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "Google Cloud resources or on-premises systems, with or without external IP addresses"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to an endpoint in your VPC network, which forwards requests to Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Supports all Google Cloud APIs and most other Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to a load balancer in your VPC network, which forwards requests to Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Supports selected locational and global Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Google Cloud resources without external IP addresses"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to the standard external IP addresses or Private Google Access domains and VIPs for Google APIs and services through the VPC network's default internet gateway"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Supports most Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "On-premises hosts with or without external IP addresses"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to Google APIs and services from your on-premises network through a Cloud VPN tunnel or VLAN attachment by using one of the Private Google Access-specific domains and VIPs"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "The Google services that you can access depend on which Private Google Access-specific domain you use"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Google Cloud VM instances with or without external IP addresses"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to services in another VPC network through an endpoint"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Connect to services in another VPC network through a load balancer"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Supports services that are published using Private Service Connect for service producers"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+problem: "Six posts have produced four ways to reach a Google API privately, each introduced on its own terms, and the question nobody has answered is which to use. The comparison table settles it more sharply than expected: one option has no precondition on the client at all and the widest API coverage, and the other three each give something up. Reading them side by side also exposes that two of the four are constrained by decisions made several posts earlier."
+builds: "What a Private Service Connect endpoint for Google APIs replaces and how its address differs from every other address in this block; why Service Directory region and namespace are network-wide rather than per endpoint, and what the defaults are; and the four-option comparison in full — who may use each, what path each takes, and what each one reaches — read as a decision rather than a reference."
+catch: "Service Directory region and namespace are properties of the VPC network, not the endpoint. The first Google API endpoint anyone creates fixes both for every endpoint that follows in that network, and if no region was configured the default is us-central1. So a team creating their endpoint second inherits a region and a namespace chosen by whoever went first, usually without either team realising a shared setting existed."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #095 &middot; Networking</div>
+  <h1 class="post-title">Private Service Connect for Google APIs</h1>
+  <p class="post-subtitle">The fourth way to reach an API privately &mdash; and, read against the other three, the one with no precondition.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>Google Cloud &middot; Networking &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      This block has now produced four mechanisms for the same requirement, each introduced on its own terms: a subnet flag, two VIP domains reached over routing you supply, an internal endpoint, and a load balancer in front of one. What none of those posts could do is say which to use, because the comparison only makes sense once all four exist.
+    </p>
+    <p>
+      The mechanism itself is a sentence: <em>instead of sending API requests to the publicly available IP addresses for service endpoints such as storage.googleapis.com , you can send the requests to the internal IP address of an endpoint.</em> The interesting part is what the comparison table says once you line all four up.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Private Google Access is the standard way, so we use that"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It has the narrowest client set of the four. Private Google Access serves <em>Google Cloud resources without external IP addresses</em> &mdash; that is the entire eligible population. Private Service Connect endpoints serve <em>Google Cloud resources or on-premises systems, with or without external IP addresses.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check the client precondition before the mechanism. If any client has an external address, or is on-premises, Private Google Access either does nothing for it (#90 established the flag is inert on VMs with external addresses) or needs the separate hybrid variant. An endpoint covers all of them with one construct, which is usually worth more than the subnet flag's simplicity.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We will use backends so we can put our own load balancer in front"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Reasonable, and it costs coverage. Endpoints <em>support all Google Cloud APIs and most other Google APIs and services</em>; backends <em>support selected locational and global Google APIs and services.</em> Selected, against all.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Confirm the specific APIs you need are on the backend-supported list before committing to that path, because the reason to choose backends &mdash; your own certificates, policies and observability, from #93 &mdash; is real but is paid for in reach. The combination that catches people is an estate that standardises on backends for inspection and then finds one team's API is not among the selected set.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Each team can configure their own endpoint however they like"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Two settings are not theirs to choose. <em>All endpoints that are used to access Google APIs and services in a given VPC network use the same Service Directory region</em>, and <em>all endpoints that you use to access Google APIs and services in a given VPC network use the same Service Directory namespace.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide the region and namespace once, at network level, before the first endpoint exists &mdash; because the first endpoint fixes both. And know the defaults, which are easy to inherit by accident: <em>if a region is not configured, the region is set to us-central1</em>, and <em>if a namespace is not configured, a system-generated namespace is assigned.</em> A team creating the second endpoint gets whatever the first team chose, or whatever the defaults gave them.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      One address, two network-wide settings, and a four-way comparison.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-095-private-service-connect-for-google-apis.svg" alt="Diagram: Private Service Connect for Google APIs and how all four private access options compare; an endpoint replaces the public addresses of services such as storage.googleapis.com with an internal address built on a global internal IP reserved with purpose PRIVATE_SERVICE_CONNECT; Service Directory region and namespace are shared by every Google API endpoint in a VPC network rather than set per endpoint, defaulting to us-central1 and to a system-generated namespace; and the four options compared, where endpoints serve Google Cloud resources or on-premises systems with or without external addresses and support all Google Cloud APIs, backends serve the same clients through a load balancer but support only selected APIs, Private Google Access serves only resources without external addresses through the default internet gateway, and the on-premises variant works over a Cloud VPN tunnel or VLAN attachment with coverage depending on the chosen VIP domain" />
+      <figcaption>Four options. Only one has no precondition on the client.</figcaption>
+    </figure>
+
+    <h3>An address unlike the others in this block</h3>
+    <p>
+      The endpoint is built on a reservation, and two details distinguish it. First: <em>reserve a global internal IP address to assign to the endpoint.</em> Global, not regional &mdash; which is unusual for an internal address and means one address serves the whole network rather than a region of it.
+    </p>
+    <p>
+      Second, the reservation is tagged for this use: the command carries <em>--purpose=PRIVATE_SERVICE_CONNECT</em>, alongside the address itself and <em>NETWORK_NAME : the name of the VPC network for the endpoint.</em> The purpose flag is what makes it an endpoint address rather than an ordinary internal reservation, which matters when auditing &mdash; the addresses are distinguishable from everything else in the project.
+    </p>
+    <p>
+      Worth pausing on how different this is from the rest of the block. #90's mechanism had no address of its own at all. #92's VIPs were Google's public addresses with no public route. #91 required you to advertise someone else's range into your own network. Here you pick an address out of your own space and tag it.
+    </p>
+
+    <div class="callout">
+      <strong>Two settings that belong to the network, not the endpoint</strong>
+      <p>This is the sharpest operational detail in the post and it is easy to read past, because it appears as a note in a procedure rather than as a constraint. Every Google API endpoint in a VPC network shares one Service Directory region and one namespace.</p>
+      <p>The consequence is ordering-dependent. Whoever creates the first endpoint sets both, deliberately or by default &mdash; and the defaults are specific: no region configured means <em>us-central1</em>, no namespace configured means a system-generated one. Everyone after inherits. In a Shared VPC estate, where #80's split puts network administration in a different team from the workloads, that means a property of every team's endpoint was fixed by whichever team deployed first, in a resource most of them will never look at.</p>
+      <p>The permission is the ordinary network one &mdash; <em>create, view, and delete endpoints: Compute Network Admin ( roles/compute.networkAdmin ) on your project</em> &mdash; so this is not even a specially privileged action. It is the normal network admin role, doing something with network-wide consequences.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>The Four Options, Read as a Decision</h2>
+    <p>
+      The comparison has three columns worth reading together &mdash; who may use it, what path it takes, and what it reaches. Laid out, the asymmetry is larger than the individual posts suggested.
+    </p>
+    <p>
+      <strong>Private Service Connect endpoints for Google APIs.</strong> Clients: <em>Google Cloud resources or on-premises systems, with or without external IP addresses.</em> Path: <em>connect to an endpoint in your VPC network, which forwards requests to Google APIs and services.</em> Reach: <em>supports all Google Cloud APIs and most other Google APIs and services.</em>
+    </p>
+    <p>
+      <strong>Private Service Connect backends for Google APIs.</strong> Same clients. Path: <em>connect to a load balancer in your VPC network, which forwards requests to Google APIs and services.</em> Reach: <em>supports selected locational and global Google APIs and services.</em>
+    </p>
+    <p>
+      <strong>Private Google Access.</strong> Clients: <em>Google Cloud resources without external IP addresses.</em> Path: <em>connect to the standard external IP addresses or Private Google Access domains and VIPs for Google APIs and services through the VPC network's default internet gateway.</em> Reach: <em>supports most Google APIs and services.</em>
+    </p>
+    <p>
+      <strong>Private Google Access for on-premises hosts.</strong> Clients: <em>on-premises hosts with or without external IP addresses.</em> Path: <em>connect to Google APIs and services from your on-premises network through a Cloud VPN tunnel or VLAN attachment by using one of the Private Google Access-specific domains and VIPs.</em> Reach: <em>the Google services that you can access depend on which Private Google Access-specific domain you use.</em>
+    </p>
+
+    <div class="callout">
+      <strong>What falls out of reading them together</strong>
+      <p><strong>Only one has no client precondition.</strong> Endpoints and backends both take any client; Private Google Access requires the absence of an external address; the on-premises variant requires being on-premises. If an estate has a mix &mdash; and most do &mdash; the endpoint is the only single answer.</p>
+      <p><strong>Coverage and control trade against each other.</strong> Endpoints reach all Google Cloud APIs. Backends, which exist to give you a load balancer, reach a selected set. You cannot have maximum reach and your own inspection point in the same construct.</p>
+      <p><strong>Two of the four inherit a decision from three posts ago.</strong> Private Google Access's path runs through the default internet gateway &mdash; #90's apparent contradiction, restated here as a one-line fact. And the on-premises variant's coverage is explicitly a function of which VIP domain you chose, which is #92's decision still binding.</p>
+    </div>
+
+    <h3>The one thing the table does not say</h3>
+    <p>
+      Cost and operational weight are absent from it, and they run the other way. Private Google Access is a flag on a subnet; an endpoint is a reserved address, a forwarding rule, a Service Directory namespace and a quota entry, and from #93 it cannot be updated after creation. For a single-project estate whose VMs have no external addresses and whose APIs are all in the "most" category, the flag genuinely is the right answer and the endpoint is over-engineering.
+    </p>
+    <p>
+      The table is a capability comparison, not a recommendation, and reading it as one leads to building endpoints everywhere. The honest decision rule is: start from the client set, because that eliminates options without debate; then check reach against the specific APIs you call; then pick the lightest mechanism still standing.
+    </p>
+
+    <h3>For completeness: consuming other people's services</h3>
+    <p>
+      The same page covers the published-service side from #93 and #94, with the same endpoint-versus-backend split. Clients there are narrower &mdash; <em>Google Cloud VM instances with or without external IP addresses</em>, so no on-premises row &mdash; and the two paths are <em>connect to services in another VPC network through an endpoint</em> or <em>connect to services in another VPC network through a load balancer</em>, both of which <em>support services that are published using Private Service Connect for service producers.</em>
+    </p>
+    <p>
+      Worth noting that the client set is narrower for published services than for Google APIs. An on-premises host can reach Google APIs through an endpoint; reaching a third party's published service is listed for Google Cloud VM instances. If a design assumes on-premises systems will consume a partner's published service directly, that assumption deserves checking against the specific case rather than inferred from the Google API row.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Mixed clients: some with external addresses, some on-premises</td>
+            <td>Private Service Connect endpoints</td>
+            <td>It is the only option with no precondition on the client.</td>
+          </tr>
+          <tr>
+            <td>Single project, VMs with no external addresses, common APIs</td>
+            <td>Private Google Access</td>
+            <td>A subnet flag against an endpoint's several resources.</td>
+          </tr>
+          <tr>
+            <td>Needing your own certificates, policies or observability</td>
+            <td>Backends, after checking API coverage</td>
+            <td>They reach only selected locational and global APIs.</td>
+          </tr>
+          <tr>
+            <td>Calling an API not on the backend-supported list</td>
+            <td>Endpoints</td>
+            <td>They support all Google Cloud APIs and most others.</td>
+          </tr>
+          <tr>
+            <td>On-premises clients only, already on a hybrid link</td>
+            <td>Either the on-premises variant or an endpoint</td>
+            <td>Both serve on-premises hosts; the endpoint avoids the VIP choice.</td>
+          </tr>
+          <tr>
+            <td><strong>Before the first endpoint in a network</strong></td>
+            <td><strong>Decide the Service Directory region and namespace</strong></td>
+            <td><strong>The first endpoint fixes both for every endpoint that follows.</strong></td>
+          </tr>
+          <tr>
+            <td>Endpoints appearing in an unexpected region</td>
+            <td>Check whether a region was ever configured</td>
+            <td>With none configured the default is us-central1.</td>
+          </tr>
+          <tr>
+            <td>Shared VPC with several workload teams</td>
+            <td>Treat the namespace as a platform decision</td>
+            <td>Network admins can set it, and everyone inherits it.</td>
+          </tr>
+          <tr>
+            <td>Auditing which addresses are endpoints</td>
+            <td>Filter on the PRIVATE_SERVICE_CONNECT purpose</td>
+            <td>The reservation is tagged, so they are distinguishable.</td>
+          </tr>
+          <tr>
+            <td>Expecting a regional address</td>
+            <td>Expect a global one</td>
+            <td>The reservation is a global internal IP address.</td>
+          </tr>
+          <tr>
+            <td>Choosing between all four</td>
+            <td>Client set, then reach, then weight</td>
+            <td>The client set eliminates options without argument.</td>
+          </tr>
+          <tr>
+            <td>On-premises hosts consuming a partner's published service</td>
+            <td>Verify it against that case specifically</td>
+            <td>Published services are listed for Google Cloud VM instances.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      If any Private Service Connect endpoint for Google APIs exists in your estate, find out what Service Directory region and namespace it set, and whether that was a decision or a default. Then write it down somewhere the next team will see it, because they will inherit it without being asked and the setting is not visible from their own endpoint. If the answer is us-central1 and nobody chose it, that is worth knowing before it becomes the answer for everyone.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Six posts in, the private-access block resolves into something simpler than it looked. There is one mechanism that works for every client and reaches almost everything, and three that are narrower in exchange for being lighter, more inspectable, or already built. That is a reasonable product line, and the only reason it reads as confusing is that the documentation introduces each one separately and the comparison lives on a page none of them link to prominently.
+    </p>
+    <p>
+      The detail I will carry forward is the Service Directory one, because it is the shape of problem this series keeps finding: a setting that looks local, is actually network-wide, is fixed by whoever moves first, and has a default nobody chose. #90 had the subnet flag that answers at the wrong level. #87 had the dynamic routing mode that turns out to be contractual. This is the same class &mdash; and the common remedy is the same too, which is to find out what the first team set before you become the second.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#96 goes underneath all of this to the thing managed services actually create on your behalf: service networking, and the peering that appears in your VPC network when you provision one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis" target="_blank" rel="noopener">Access Google APIs through endpoints</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-access-options" target="_blank" rel="noopener">Private access options for services</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-backends" target="_blank" rel="noopener">Private Service Connect backends</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/access-apis-managed-services-private-service-connect-backends" target="_blank" rel="noopener">Access Google APIs through backends</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect" target="_blank" rel="noopener">Private Service Connect</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-service-connect-compatibility" target="_blank" rel="noopener">Private Service Connect compatibility</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-google-access" target="_blank" rel="noopener">Private Google Access overview</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-google-access" target="_blank" rel="noopener">Configure Private Google Access</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/private-google-access-hybrid" target="_blank" rel="noopener">Private Google Access for on-premises hosts</a></li>
+      <li><a href="https://docs.cloud.google.com/service-directory/docs/overview" target="_blank" rel="noopener">Service Directory overview</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/ip-addresses" target="_blank" rel="noopener">IP addresses</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/subnets" target="_blank" rel="noopener">Subnets</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
