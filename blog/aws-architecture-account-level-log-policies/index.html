@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #116 — Six policies, one API, and only one of them deletes data | Jayanth Katta Blog</title>
+<meta name="description" content="PutAccountPolicy creates six different policy types with one call, and the rule for what happens when an account-level policy meets a log-group-level policy is different for every one of them. Data protection is cumulative, subscription filters are additive, transformers and field indexes defer to the log group, metric extraction has no log-group equivalent - and retention inverts all of it: an account-level retention policy replaces the log group's own setting even when the log group's period is longer, which deletes log events older than the new period. The selection criteria are different per type too, so the exclusion you need is expressible for some policy types and not for others."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Six policies, one API, and only one of them deletes data"/>
+<meta property="og:description" content="PutAccountPolicy creates six different policy types with one call, and the rule for what happens when an account-level policy meets a log-group-level policy is different for every one of them. Data protection is cumulative, subscription filters are additive, transformers and field indexes defer to the log group, metric extraction has no log-group equivalent - and retention inverts all of it: an account-level retention policy replaces the log group's own setting even when the log group's period is longer, which deletes log events older than the new period. The selection criteria are different per type too, so the exclusion you need is expressible for some policy types and not for others."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-account-level-log-policies/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Six policies, one API, and only one of them deletes data"/>
+<meta name="twitter:description" content="PutAccountPolicy creates six different policy types with one call, and the rule for what happens when an account-level policy meets a log-group-level policy is different for every one of them. Data protection is cumulative, subscription filters are additive, transformers and field indexes defer to the log group, metric extraction has no log-group equivalent - and retention inverts all of it: an account-level retention policy replaces the log group's own setting even when the log group's period is longer, which deletes log events older than the new period. The selection criteria are different per type too, so the exclusion you need is expressible for some policy types and not for others."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-account-level-log-policies/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #116 — Six policies, one API, and only one of them deletes data…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #116 — Six policies, one API, and only one of them deletes data</h1>
+      <p class="post-description">PutAccountPolicy creates six different policy types with one call, and the rule for what happens when an account-level policy meets a log-group-level policy is different for every one of them. Data protection is cumulative, subscription filters are additive, transformers and field indexes defer to the log group, metric extraction has no log-group equivalent - and retention inverts all of it: an account-level retention policy replaces the log group's own setting even when the log group's period is longer, which deletes log events older than the new period. The selection criteria are different per type too, so the exclusion you need is expressible for some policy types and not for others.</p>
+      <div class="post-info">
+        <span>Nov 17, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>15 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 17 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-account-level-log-policies" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last three posts each ended at the same door. #113's field indexes have an account-level form.
+      #114's log classes are set per log group but governed in bulk. #115's subscription filters are
+      account-level or log-group-level, and the exclusions that prevent a recursion loop live in
+      <code>selectionCriteria</code>. All of it runs through one API:
+    </p>
+    <p>
+      <em>&ldquo;Creates an account-level data protection policy, subscription filter policy, field index
+      policy, transformer policy, metric extraction policy, or retention policy that applies to all log
+      groups, a subset of log groups, or a data source name and type combination in the
+      account.&rdquo;</em>
+    </p>
+    <p>
+      Six nouns in one sentence, behind one operation, with one <code>policyType</code> parameter. The
+      shape invites you to learn it once. The documentation then spends several screens explaining that
+      almost nothing generalises between them.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Five policy types defer to the log group. Retention overrides it, and that means deletion</strong></div>
+      <div class="challenge-body">
+        <p>
+          Every other type resolves a conflict in the log group's favour, or in favour of doing more rather
+          than less:
+          for data protection, <em>&ldquo;The two policies are cumulative. Any sensitive term specified in
+          either the account-level or the log-group-level policy is masked&rdquo;</em>;
+          <em>&ldquo;Account-level and log-group-level subscription filters are additive&rdquo;</em>;
+          <em>&ldquo;A log-group-level transformer overrides the account-level transformer&rdquo;</em>; and
+          for indexes, a log-group policy causes prefix-scoped account policies to be
+          <em>&ldquo;ignored for that log group&rdquo;</em>.
+        </p>
+        <p>
+          Then retention:
+        </p>
+        <p>
+          <em>&ldquo;<strong>An account-level retention policy replaces the retention period set on a log
+          group, including when the log group's own retention period is longer.</strong>&rdquo;</em>
+        </p>
+        <p>
+          With AWS supplying the worked example, in bold type on its own page:
+          <em>&ldquo;<strong>For example, if a log group is set to retain log events for 10 years and you
+          create a retention policy that sets a 90-day retention period for that log group, CloudWatch Logs
+          deletes the log events in that log group that are older than 90 days.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Nothing else in this API removes data. A transformer reshapes new events, a subscription copies
+          them, an index speeds up queries, a data protection policy masks on ingestion. Retention is the
+          one that reaches backwards into what you already have, and it does so by overriding the explicit
+          choice a log group's owner made. A team that set ten years because a regulator asked for ten
+          years has that overruled by a prefix match written by someone else.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use the dry run, which exists for precisely this type and no other: <em>&ldquo;Specifying dryRun is valid only when you specify RETENTION_POLICY for policyType&rdquo;</em>, and it reports <code>decreasedRetentionLogGroupCount</code>, <code>increasedRetentionLogGroupCount</code>, <code>totalMatchedLogGroups</code> and the top log groups impacted. Read the decreased count as the number of log groups about to lose data. And consider <code>NEW_ONLY</code> rather than <code>RETROACTIVE</code>: it <em>&ldquo;applies the policy only to log groups that are created after you create the policy&rdquo;</em>, which sets a default for the future without rewriting the past.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>selectionCriteria is a different language for every policy type</strong></div>
+      <div class="challenge-body">
+        <p>
+          The parameter has one name and one type, and what it accepts depends entirely on what you are
+          creating. First, it does not always exist:
+          <em>&ldquo;Specifying selectionCriteria is valid only when you specify SUBSCRIPTION_FILTER_POLICY,
+          FIELD_INDEX_POLICY, TRANSFORMER_POLICY, or RETENTION_POLICY for policyType.&rdquo;</em> Data
+          protection takes none &mdash; it is all log groups or nothing.
+        </p>
+        <p>
+          Then each supported type accepts something different:
+        </p>
+        <p>
+          <em>&ldquo;If policyType is SUBSCRIPTION_FILTER_POLICY, the only supported selectionCriteria
+          filter is LogGroupName NOT IN []&rdquo;</em> &mdash; exclusion by exact name only. You cannot
+          subscribe a prefix; you can only subscribe everything and name what to leave out.
+        </p>
+        <p>
+          <em>&ldquo;If policyType is TRANSFORMER_POLICY, the only supported selectionCriteria filter is
+          LogGroupNamePrefix&rdquo;</em> &mdash; inclusion by prefix only, with no way to exclude.
+        </p>
+        <p>
+          Field index policies take a prefix <em>or</em> a data source name and type. Retention takes a
+          prefix only. Metric extraction, which cannot use <code>selectionCriteria</code> by the rule above,
+          is documented with its own criteria supporting <code>LogGroupName</code> and
+          <code>LogGroupNamePrefix</code> with <code>IN</code> and <code>NOT IN</code> &mdash; the richest
+          of the lot, with <em>&ldquo;up to 50 values in each IN or NOT IN list&rdquo;</em> and a limit of
+          one <code>NOT IN</code> policy per account.
+        </p>
+        <p>
+          The consequence is practical and sharp: <strong>whether you can exclude a log group depends on
+          which policy you are writing.</strong> #115's recursion loop is prevented by excluding the
+          delivery path's own log groups, and the documentation points there directly &mdash;
+          <em>&ldquo;Using the selectionCriteria parameter with SUBSCRIPTION_FILTER_POLICY is useful to help
+          prevent infinite loops&rdquo;</em>. That works because subscription filters support
+          <code>NOT IN</code>. A transformer policy, which supports only a prefix, cannot express the same
+          exclusion at all.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the exclusion list first and check it is expressible in the policy type you need, before designing around it. Where a type supports only prefixes, the naming convention of your log groups becomes the access-control mechanism, which is worth knowing before you need to carve one out. And keep <code>selectionCriteria</code> within <em>&ldquo;up to 25KB in length&rdquo;</em>, which is generous for prefixes and finite for an explicit name list.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The counts and the overlap rules are per type, and retention breaks that pattern too</strong></div>
+      <div class="challenge-body">
+        <p>
+          How many policies you can have is not one number. Data protection:
+          <em>&ldquo;Each account can have only one account-level data protection policy.&rdquo;</em>
+          Subscription filters: <em>&ldquo;one account-level subscription filter policy per
+          Region&rdquo;</em>. Transformers: one for everything, or
+          <em>&ldquo;as many as 20 account-level transformer policies that are each scoped to a subset of
+          log groups&rdquo;</em>. Metric extraction:
+          <em>&ldquo;either one account-level metric extraction policy that applies to all log groups, or up
+          to 5 policies&rdquo;</em>. Field indexes: 20 by prefix plus another 20 by data source. Retention:
+          <em>&ldquo;up to 20 account-level retention policies in each Region&rdquo;</em>.
+        </p>
+        <p>
+          More consequential than the counts is the overlap rule, which is the same for every type except
+          one. For transformers, field indexes and metric extraction, overlapping scopes are rejected
+          &mdash; <em>&ldquo;no two of them can use the same or overlapping log group name
+          prefixes&rdquo;</em>. Then:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Unlike other account-level policy types, retention policies can have
+          overlapping selection criteria. When more than one retention policy applies to a log group, the
+          policy with the longest retention period is used.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That is a deliberate and well-chosen design &mdash; a baseline for the account, longer periods for
+          specific prefixes, and <code>NEVER_EXPIRE</code>
+          <em>&ldquo;treated as the longest retention period&rdquo;</em> to exempt what must not be deleted.
+          But it means retention is the one type where you cannot reason about a log group by finding
+          <em>the</em> policy that matches it. You have to find all of them and take the maximum.
+        </p>
+        <p>
+          Two more retention-only behaviours worth holding: the floor, since
+          <em>&ldquo;Account-level retention policies require a minimum retention period of 30
+          days&rdquo;</em>, and the delay &mdash;
+          <em>&ldquo;A retention policy takes effect 24 hours after you create it&rdquo;</em>, during which
+          <code>DescribeLogGroups</code> still reports the old period.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>For retention, enumerate every policy that matches a log group rather than the first, and remember the longest wins. For every other type, treat an overlap error as the service telling you two policies disagree about who owns a log group &mdash; that is a design question, not a syntax problem.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-116-account-level-policies.svg" alt="Diagram: CloudWatch Logs PutAccountPolicy creates six kinds of account-level policy with one API call: data protection, subscription filter, field index, transformer, metric extraction and retention. Account-level policies are Region-specific, applying only to log groups in the Region where they are created. The conflict-resolution rule between an account-level policy and a log-group-level policy is different for each type. Data protection policies are cumulative, so any sensitive term specified in either policy is masked. Account-level and log-group-level subscription filters are additive, with up to one account-level and up to five log-group-level filters on a log group. A log-group-level transformer overrides the account-level transformer entirely. For field indexes, a log-group-level policy causes any account-level policy using log group name prefix criteria or no criteria to be ignored for that log group, while account-level policies using data source name and type criteria still apply alongside it. Metric extraction policies are account-level only and have no log-group equivalent. Retention inverts the pattern: an account-level retention policy replaces the retention period set on a log group, including when the log group's own period is longer, so a log group set to ten years under a new ninety-day policy has its older events deleted. Retention is also the only type with a dry run, which reports how many log groups would have decreased, increased or unchanged retention and the top log groups impacted, and the only type whose selection criteria may overlap, where the longest retention period wins and never-expire counts as longest. Selection criteria differ per type: subscription filters support only log group name NOT IN a list, transformers only a log group name prefix, field indexes a prefix or a data source name and type, retention a prefix only, and data protection none at all, while metric extraction supports names and prefixes with IN and NOT IN operators, up to fifty values per list and only one NOT IN policy per account. Policy counts also differ: one data protection policy per account, one subscription filter policy per Region, one transformer policy for everything or up to twenty scoped, up to five metric extraction policies, twenty field index policies by prefix plus twenty by data source, and up to twenty retention policies per Region. Account retention policies require a minimum of thirty days, take effect twenty-four hours after creation, and support a retroactive or new-only enforcement mode. Disabling embedded metric format through a metric extraction policy also disables Container Insights and Application Signals metrics, so the documentation recommends excluding those log groups. The permission to call this API should go only to administrators who manage logging configuration across the account.">
+
+    <h3>Six types, six rules</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Policy type</th><th>When a log-group policy also applies</th><th>Account-level count</th></tr>
+      <tr>
+        <td>Data protection</td>
+        <td><em>&ldquo;The two policies are cumulative&rdquo;</em> &mdash; terms from both are masked</td>
+        <td>One per account</td>
+      </tr>
+      <tr>
+        <td>Subscription filter</td>
+        <td><em>&ldquo;additive&rdquo;</em> &mdash; 1 account-level plus up to 5 log-group-level</td>
+        <td>One per Region</td>
+      </tr>
+      <tr>
+        <td>Transformer</td>
+        <td>The log group's own transformer wins; the account one is ignored</td>
+        <td>One for all, or up to 20 scoped</td>
+      </tr>
+      <tr>
+        <td>Field index</td>
+        <td>Prefix-scoped account policies ignored; data-source ones still apply</td>
+        <td>20 by prefix + 20 by data source</td>
+      </tr>
+      <tr>
+        <td>Metric extraction</td>
+        <td>No log-group equivalent exists</td>
+        <td>One for all, or up to 5 scoped</td>
+      </tr>
+      <tr>
+        <td><strong>Retention</strong></td>
+        <td><strong>The account policy replaces the log group's setting</strong></td>
+        <td>Up to 20 per Region</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      Reading down the middle column is the whole point of this post. Five rows say <em>the log group keeps
+      what it has, or gets more</em>. The last row says the opposite, and the thing it takes away is data.
+    </p>
+
+    <h3>What each type lets you select</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Policy type</th><th>selectionCriteria</th><th>Can you exclude a log group?</th></tr>
+      <tr><td>Data protection</td><td>Not supported</td><td>No &mdash; all log groups</td></tr>
+      <tr><td>Subscription filter</td><td><code>LogGroupName NOT IN []</code></td><td><strong>Yes, by exact name only</strong></td></tr>
+      <tr><td>Transformer</td><td><code>LogGroupNamePrefix</code></td><td>No &mdash; inclusion by prefix only</td></tr>
+      <tr><td>Field index</td><td><code>LogGroupNamePrefix</code>, or <code>DataSourceName</code> + <code>DataSourceType</code></td><td>No &mdash; inclusion only</td></tr>
+      <tr><td>Metric extraction</td><td><code>LogGroupName</code> / <code>LogGroupNamePrefix</code> with <code>IN</code> and <code>NOT IN</code></td><td>Yes, and only one <code>NOT IN</code> policy per account</td></tr>
+      <tr><td>Retention</td><td><code>LogGroupNamePrefix</code></td><td>No &mdash; but overlapping policies let a longer period win</td></tr>
+    </table>
+    </div>
+    <p>
+      The asymmetry between the second and third rows is the one that bites. A subscription filter can only
+      be written as <em>everything except these names</em>; a transformer can only be written as
+      <em>these prefixes</em>. Neither can express the other's shape. If your mental model is that an account
+      policy simply takes a scope, both will surprise you, in opposite directions.
+    </p>
+    <p>
+      Retention's row is subtler. It cannot exclude, but because overlapping is permitted and
+      <em>&ldquo;the policy with the longest retention period is used&rdquo;</em>, a second policy with a
+      longer period over a narrower prefix is how you carve an exception out of a baseline &mdash;
+      exclusion expressed as precedence rather than as a filter.
+    </p>
+
+    <h3>The retention lifecycle, which has three timing rules</h3>
+    <p>
+      <strong>A floor:</strong> <em>&ldquo;Account-level retention policies require a minimum retention
+      period of 30 days.&rdquo;</em> You cannot use this API to impose a one-week retention across an
+      account.
+    </p>
+    <p>
+      <strong>A delay:</strong> <em>&ldquo;A retention policy takes effect 24 hours after you create
+      it&rdquo;</em>, and during that window the previously effective period still governs both
+      <code>DescribeLogGroups</code> and expiration &mdash; though a dry run
+      <em>&ldquo;reports the impact as if the policy were already in effect&rdquo;</em>. So the console can
+      disagree with your intent for a day, correctly.
+    </p>
+    <p>
+      <strong>A choice about the past:</strong> <code>RETROACTIVE</code>
+      <em>&ldquo;applies the policy to every log group that matches the selection criteria, including log
+      groups that existed before you created the policy&rdquo;</em>, while <code>NEW_ONLY</code>
+      <em>&ldquo;applies the policy only to log groups that are created after you create the
+      policy&rdquo;</em>. This is the single most important field in the request, because it decides whether
+      the policy is a standard for the future or an edit to the past.
+    </p>
+
+    <h3>The one type that can switch other services off</h3>
+    <p>
+      Metric extraction policies control whether EMF produces metrics, and the warning is explicit:
+      <em>&ldquo;<strong>Creating a policy disables metrics for AWS features that use EMF to create
+      metrics, such as CloudWatch Container Insights and CloudWatch Application
+      Signals.</strong>&rdquo;</em>
+    </p>
+    <p>
+      With the remedy given as a literal exclusion list to copy &mdash;
+      <code>LogGroupNamePrefix NOT IN ["/aws/containerinsights", "/aws/ecs/containerinsights",
+      "/aws/application-signals/data"]</code>. This is the clearest case in the API of a cost-control action
+      silently removing an observability capability two layers away, and #114's note that embedded metrics
+      format is unsupported in the Essentials class is the same capability disappearing for a different
+      reason.
+    </p>
+
+    <h3>Region scope, and the cross-account inversion</h3>
+    <p>
+      <em>&ldquo;Account-level policies are Region-specific: a policy applies only to log groups in the
+      Region where you create it. To apply a policy across multiple Regions, create the policy separately
+      in each Region.&rdquo;</em> Every count above is therefore per Region, and so is every gap.
+    </p>
+    <p>
+      And the same cross-account inversion #113 found for index policies is stated here too:
+      <em>&ldquo;If you create an account-level field index policy in a monitoring account in cross-account
+      observability, the policy is applied only to the monitoring account and not to any source
+      accounts.&rdquo;</em> The account where you run the wide queries is the one where the policy does not
+      reach the data.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Retention overriding the log group is the only way a retention standard can work</h3>
+    <p>
+      A governance control that any log group owner could opt out of by setting a longer period would not be
+      a control. If the organisation's rule is ninety days, the rule has to beat the local setting. The
+      design is right; what it owes you in exchange is a way to see the consequence first, and that is
+      exactly what the dry run is &mdash; available for this type alone, because this is the only type whose
+      application destroys something.
+    </p>
+
+    <h3>Different conflict rules are the honest answer, not an inconsistency</h3>
+    <p>
+      Masking two sets of sensitive terms is meaningfully cumulative. Running two transformers over one
+      event is not &mdash; one of them has to win. Two subscription filters delivering to two destinations is
+      genuinely additive. The rules differ because the underlying operations differ, and a uniform rule
+      would have been wrong for four of the six.
+    </p>
+
+    <h3>Restricting the permission is the right first control</h3>
+    <p>
+      <em>&ldquo;You should grant logs:PutAccountPolicy permissions only to administrators who manage
+      logging configuration across the account, not to application teams or individual log group
+      owners.&rdquo;</em> Given that one call can delete ten years of logs across every matching log group,
+      naming the audience in the API reference is a reasonable place to start.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Any retention policy, ever</td>
+        <td>Dry run first, read <code>decreasedRetentionLogGroupCount</code></td>
+        <td>It is the only type that deletes, and the only type with a dry run</td>
+      </tr>
+      <tr>
+        <td>Setting an account retention standard</td>
+        <td><code>NEW_ONLY</code> unless you intend to edit history</td>
+        <td><code>RETROACTIVE</code> reaches log groups that predate the policy</td>
+      </tr>
+      <tr>
+        <td>Protecting a log group from a retention baseline</td>
+        <td>A second, longer policy on a narrower prefix</td>
+        <td>Overlap is allowed for retention and the longest period wins</td>
+      </tr>
+      <tr>
+        <td>Excluding log groups from a subscription</td>
+        <td><code>LogGroupName NOT IN []</code> with exact names</td>
+        <td>It is the only criteria this type accepts, and it prevents recursion loops</td>
+      </tr>
+      <tr>
+        <td>Scoping a transformer</td>
+        <td>Design the log group naming convention first</td>
+        <td>Prefix is the only selector, so names are the scope</td>
+      </tr>
+      <tr>
+        <td>Disabling EMF to cut metric cost</td>
+        <td>Exclude the Container Insights and Application Signals prefixes</td>
+        <td>Otherwise the policy silently switches those features off</td>
+      </tr>
+      <tr>
+        <td>Who holds <code>logs:PutAccountPolicy</code></td>
+        <td>Logging administrators only</td>
+        <td>AWS says so explicitly, and one call can delete data account-wide</td>
+      </tr>
+      <tr>
+        <td>Multi-Region estates</td>
+        <td>Create every policy in every Region, and audit per Region</td>
+        <td>Account-level means account-and-Region</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every account-level retention policy in every Region, with its enforcement mode.</strong>
+      For each, ask which log groups have a longer local setting. That set is the data the policy is
+      deleting or will delete, and no other policy type in this API has an equivalent question.
+    </p>
+    <p>
+      <strong>Check whether any metric extraction policy omits the Container Insights and Application
+      Signals exclusions.</strong> If so, those features are off, and nothing about their dashboards will
+      say why.
+    </p>
+    <p>
+      <strong>Compare your subscription filter policy's <code>NOT IN</code> list against your delivery
+      path.</strong> This is #115's recursion check, and it lives here because
+      <code>selectionCriteria</code> is where it is expressed.
+    </p>
+    <p>
+      <strong>Confirm the policies exist in every Region you log in.</strong> A policy created once, in the
+      Region someone happened to be looking at, covers exactly that Region.
+    </p>
+    <p>
+      <strong>In a monitoring account, check what your field index policies actually reach.</strong> They do
+      not apply to source accounts.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The last four posts have been about monitoring that says nothing when something is wrong. This one is
+      the opposite failure: a mechanism that does exactly what it says, loudly and account-wide, where the
+      risk is that you generalised from the wrong example.
+    </p>
+    <p>
+      Learn account-level policies through data protection and they are cumulative and safe. Learn them
+      through subscription filters and they are additive. Learn them through transformers and the log group
+      always wins. Every one of those lessons is correct, and every one of them is wrong about retention
+      &mdash; which is the type that overrides the log group's own choice and deletes what is older than the
+      new period, including from log groups whose owners deliberately set ten years.
+    </p>
+    <p>
+      So the rule for this API is to treat <code>policyType</code> as selecting a different product rather
+      than a different mode. Read that type's conflict rule, its selection language and its counts before
+      writing anything. And for retention specifically, run the dry run &mdash; it exists for exactly one of
+      the six types, which is AWS telling you which one is different.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &mdash; CloudWatch Logs data protection policies: what the audit and deidentify blocks each do, why masking applies only to events ingested after the policy exists, who can read through a mask with <code>logs:Unmask</code>, and where the audit findings go.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html" target="_blank" rel="noopener">PutAccountPolicy &#8212; the six policy types and the conflict-resolution rule for each, the retention policy that replaces a log group's own period and deletes older events, the per-type <code>selectionCriteria</code> support and the 25KB limit, every policy count including the 20 transformer, 20 plus 20 field index, 5 metric extraction and 20 retention policies, the 30-day minimum and 24-hour delay and the <code>RETROACTIVE</code> and <code>NEW_ONLY</code> enforcement modes, the dry run available only for retention, the EMF warning about Container Insights and Application Signals, the Region scoping, the monitoring-account limitation, and the guidance on who should hold the permission</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html" target="_blank" rel="noopener">Log recursion prevention &#8212; further reading on why a subscription filter policy's <code>NOT IN</code> exclusions matter, covered in full in #115; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html" target="_blank" rel="noopener">Create field indexes to improve query performance and reduce scan volume &#8212; further reading on the log-group-level form of index policies, covered in full in #113; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html" target="_blank" rel="noopener">Protect sensitive log data with masking &#8212; further reading on data protection policies and the <code>logs:Unmask</code> permission; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DryRunResult.html" target="_blank" rel="noopener">DryRunResult &#8212; further reading on the fields a retention dry run returns; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-private-service-connect-for-google-apis/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #95 — Private Service Connect for Google APIs</span></a><a href="/blog/aws-daily-intelligence-ebs-associated-kms-keys/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #77 - A second key on the snapshot, and the data never moves</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-account-level-log-policies/';
+      this.page.identifier = 'aws-architecture-account-level-log-policies';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

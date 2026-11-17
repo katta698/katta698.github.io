@@ -1,0 +1,509 @@
+---
+title: "AWS Architecture Series #116 — Six policies, one API, and only one of them deletes data"
+date: '2026-11-17T09:00:00'
+slug: aws-architecture-account-level-log-policies
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-17'
+problem: "PutAccountPolicy creates six different policy types with one call, and the rule for what happens when an account-level policy meets a log-group-level policy is different for every one of them. Data protection is cumulative, subscription filters are additive, transformers and field indexes defer to the log group, metric extraction has no log-group equivalent - and retention inverts all of it: an account-level retention policy replaces the log group's own setting even when the log group's period is longer, which deletes log events older than the new period. The selection criteria are different per type too, so the exclusion you need is expressible for some policy types and not for others."
+builds: "A reading of what account-level log policies actually do: the six types behind one API, the six different conflict-resolution rules, which selection criteria each type accepts and why that decides whether you can exclude anything, the retention policy that overrides a log group and removes data, and the dry run that exists for exactly one of the six."
+verified_claims:
+  - claim: "Creates an account-level data protection policy, subscription filter policy, field index policy, transformer policy, metric extraction policy, or retention policy that applies to all log groups, a subset of log groups, or a data source name and type combination in the account"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Account-level policies are Region-specific: a policy applies only to log groups in the Region where you create it"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Valid Values for policyType are DATA_PROTECTION_POLICY, SUBSCRIPTION_FILTER_POLICY, FIELD_INDEX_POLICY, TRANSFORMER_POLICY, METRIC_EXTRACTION_POLICY and RETENTION_POLICY"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "PutAccountPolicy supports exactly 6 policy types"
+    derive: "1 + 1 + 1 + 1 + 1 + 1"
+    expect: "6"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "An account-level retention policy replaces the retention period set on a log group, including when the log group's own retention period is longer"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "For example, if a log group is set to retain log events for 10 years and you create a retention policy that sets a 90-day retention period for that log group, CloudWatch Logs deletes the log events in that log group that are older than 90 days"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The two policies are cumulative. Any sensitive term specified in either the account-level or the log-group-level policy is masked"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Account-level and log-group-level subscription filters are additive. A log group can have up to 1 account-level and up to 5 log-group-level subscription filters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "A log-group-level transformer overrides the account-level transformer. If a log group has its own transformer, it ignores the account-level transformer policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "If a log group has its own field index policy, any account-level policy that uses LogGroupNamePrefix selection criteria or has no selection criteria is ignored for that log group. However, account-level policies that use DataSourceName and DataSourceType selection criteria still apply alongside the log-group-level policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Metric extraction policies are account-level only and have no log-group-level equivalent, so no conflict resolution applies"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Specifying selectionCriteria is valid only when you specify SUBSCRIPTION_FILTER_POLICY, FIELD_INDEX_POLICY, TRANSFORMER_POLICY, or RETENTION_POLICY for policyType"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "If policyType is SUBSCRIPTION_FILTER_POLICY, the only supported selectionCriteria filter is LogGroupName NOT IN []"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "If policyType is TRANSFORMER_POLICY, the only supported selectionCriteria filter is LogGroupNamePrefix"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "If policyType is RETENTION_POLICY, the only supported selectionCriteria filter is LogGroupNamePrefix. If you omit selectionCriteria, the retention policy applies to all log groups in the account"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The selectionCriteria string can be up to 25KB in length"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Each account can have only one account-level data protection policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Each account can have one account-level subscription filter policy per Region"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "You can have one account-level transformer policy that applies to all log groups in the account. Or you can create as many as 20 account-level transformer policies that are each scoped to a subset of log groups with the selectionCriteria parameter"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Each account can have either one account-level metric extraction policy that applies to all log groups, or up to 5 policies that are each scoped to a subset of log groups with the selectionCriteria parameter"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "You can specify up to 50 values in each IN or NOT IN list"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "When using NOT IN, only one policy with this operator is allowed per account"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Each account can have up to 20 account-level retention policies in each Region"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Unlike other account-level policy types, retention policies can have overlapping selection criteria. When more than one retention policy applies to a log group, the policy with the longest retention period is used"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Account-level retention policies require a minimum retention period of 30 days"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "A retention policy takes effect 24 hours after you create it"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "RETROACTIVE applies the policy to every log group that matches the selection criteria, including log groups that existed before you created the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "NEW_ONLY applies the policy only to log groups that are created after you create the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Specifying dryRun is valid only when you specify RETENTION_POLICY for policyType. Only one dry run can be in progress for an account at a time"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Creating a policy disables metrics for AWS features that use EMF to create metrics, such as CloudWatch Container Insights and CloudWatch Application Signals"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "You should grant logs:PutAccountPolicy permissions only to administrators who manage logging configuration across the account, not to application teams or individual log group owners"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "If you create an account-level field index policy in a monitoring account in cross-account observability, the policy is applied only to the monitoring account and not to any source accounts"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "Using the selectionCriteria parameter with SUBSCRIPTION_FILTER_POLICY is useful to help prevent infinite loops"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+catch: "One API creates six kinds of account-level policy, and the conflict-resolution rule differs for every one. Data protection is cumulative, subscription filters are additive, transformers and prefix-scoped field index policies defer to the log group, metric extraction has no log-group form - and retention inverts the pattern: the account-level policy replaces the log group's setting even when the log group's period is longer, which deletes everything older. Retention is also the only type with a dry run, and the only one allowed to have overlapping selection criteria, where the longest period wins."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #116 &middot; Operational Excellence</div>
+  <h1 class="post-title">Six policies, one API, and only one of them deletes data</h1>
+  <p class="post-subtitle">PutAccountPolicy looks like one mechanism with a type parameter. It is six mechanisms, each with its own precedence rule, its own selection language and its own blast radius.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Operational Excellence &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last three posts each ended at the same door. #113's field indexes have an account-level form.
+      #114's log classes are set per log group but governed in bulk. #115's subscription filters are
+      account-level or log-group-level, and the exclusions that prevent a recursion loop live in
+      <code>selectionCriteria</code>. All of it runs through one API:
+    </p>
+    <p>
+      <em>&ldquo;Creates an account-level data protection policy, subscription filter policy, field index
+      policy, transformer policy, metric extraction policy, or retention policy that applies to all log
+      groups, a subset of log groups, or a data source name and type combination in the
+      account.&rdquo;</em>
+    </p>
+    <p>
+      Six nouns in one sentence, behind one operation, with one <code>policyType</code> parameter. The
+      shape invites you to learn it once. The documentation then spends several screens explaining that
+      almost nothing generalises between them.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Five policy types defer to the log group. Retention overrides it, and that means deletion</strong></div>
+      <div class="challenge-body">
+        <p>
+          Every other type resolves a conflict in the log group's favour, or in favour of doing more rather
+          than less:
+          for data protection, <em>&ldquo;The two policies are cumulative. Any sensitive term specified in
+          either the account-level or the log-group-level policy is masked&rdquo;</em>;
+          <em>&ldquo;Account-level and log-group-level subscription filters are additive&rdquo;</em>;
+          <em>&ldquo;A log-group-level transformer overrides the account-level transformer&rdquo;</em>; and
+          for indexes, a log-group policy causes prefix-scoped account policies to be
+          <em>&ldquo;ignored for that log group&rdquo;</em>.
+        </p>
+        <p>
+          Then retention:
+        </p>
+        <p>
+          <em>&ldquo;<strong>An account-level retention policy replaces the retention period set on a log
+          group, including when the log group's own retention period is longer.</strong>&rdquo;</em>
+        </p>
+        <p>
+          With AWS supplying the worked example, in bold type on its own page:
+          <em>&ldquo;<strong>For example, if a log group is set to retain log events for 10 years and you
+          create a retention policy that sets a 90-day retention period for that log group, CloudWatch Logs
+          deletes the log events in that log group that are older than 90 days.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Nothing else in this API removes data. A transformer reshapes new events, a subscription copies
+          them, an index speeds up queries, a data protection policy masks on ingestion. Retention is the
+          one that reaches backwards into what you already have, and it does so by overriding the explicit
+          choice a log group's owner made. A team that set ten years because a regulator asked for ten
+          years has that overruled by a prefix match written by someone else.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use the dry run, which exists for precisely this type and no other: <em>&ldquo;Specifying dryRun is valid only when you specify RETENTION_POLICY for policyType&rdquo;</em>, and it reports <code>decreasedRetentionLogGroupCount</code>, <code>increasedRetentionLogGroupCount</code>, <code>totalMatchedLogGroups</code> and the top log groups impacted. Read the decreased count as the number of log groups about to lose data. And consider <code>NEW_ONLY</code> rather than <code>RETROACTIVE</code>: it <em>&ldquo;applies the policy only to log groups that are created after you create the policy&rdquo;</em>, which sets a default for the future without rewriting the past.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>selectionCriteria is a different language for every policy type</strong></div>
+      <div class="challenge-body">
+        <p>
+          The parameter has one name and one type, and what it accepts depends entirely on what you are
+          creating. First, it does not always exist:
+          <em>&ldquo;Specifying selectionCriteria is valid only when you specify SUBSCRIPTION_FILTER_POLICY,
+          FIELD_INDEX_POLICY, TRANSFORMER_POLICY, or RETENTION_POLICY for policyType.&rdquo;</em> Data
+          protection takes none &mdash; it is all log groups or nothing.
+        </p>
+        <p>
+          Then each supported type accepts something different:
+        </p>
+        <p>
+          <em>&ldquo;If policyType is SUBSCRIPTION_FILTER_POLICY, the only supported selectionCriteria
+          filter is LogGroupName NOT IN []&rdquo;</em> &mdash; exclusion by exact name only. You cannot
+          subscribe a prefix; you can only subscribe everything and name what to leave out.
+        </p>
+        <p>
+          <em>&ldquo;If policyType is TRANSFORMER_POLICY, the only supported selectionCriteria filter is
+          LogGroupNamePrefix&rdquo;</em> &mdash; inclusion by prefix only, with no way to exclude.
+        </p>
+        <p>
+          Field index policies take a prefix <em>or</em> a data source name and type. Retention takes a
+          prefix only. Metric extraction, which cannot use <code>selectionCriteria</code> by the rule above,
+          is documented with its own criteria supporting <code>LogGroupName</code> and
+          <code>LogGroupNamePrefix</code> with <code>IN</code> and <code>NOT IN</code> &mdash; the richest
+          of the lot, with <em>&ldquo;up to 50 values in each IN or NOT IN list&rdquo;</em> and a limit of
+          one <code>NOT IN</code> policy per account.
+        </p>
+        <p>
+          The consequence is practical and sharp: <strong>whether you can exclude a log group depends on
+          which policy you are writing.</strong> #115's recursion loop is prevented by excluding the
+          delivery path's own log groups, and the documentation points there directly &mdash;
+          <em>&ldquo;Using the selectionCriteria parameter with SUBSCRIPTION_FILTER_POLICY is useful to help
+          prevent infinite loops&rdquo;</em>. That works because subscription filters support
+          <code>NOT IN</code>. A transformer policy, which supports only a prefix, cannot express the same
+          exclusion at all.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the exclusion list first and check it is expressible in the policy type you need, before designing around it. Where a type supports only prefixes, the naming convention of your log groups becomes the access-control mechanism, which is worth knowing before you need to carve one out. And keep <code>selectionCriteria</code> within <em>&ldquo;up to 25KB in length&rdquo;</em>, which is generous for prefixes and finite for an explicit name list.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The counts and the overlap rules are per type, and retention breaks that pattern too</strong></div>
+      <div class="challenge-body">
+        <p>
+          How many policies you can have is not one number. Data protection:
+          <em>&ldquo;Each account can have only one account-level data protection policy.&rdquo;</em>
+          Subscription filters: <em>&ldquo;one account-level subscription filter policy per
+          Region&rdquo;</em>. Transformers: one for everything, or
+          <em>&ldquo;as many as 20 account-level transformer policies that are each scoped to a subset of
+          log groups&rdquo;</em>. Metric extraction:
+          <em>&ldquo;either one account-level metric extraction policy that applies to all log groups, or up
+          to 5 policies&rdquo;</em>. Field indexes: 20 by prefix plus another 20 by data source. Retention:
+          <em>&ldquo;up to 20 account-level retention policies in each Region&rdquo;</em>.
+        </p>
+        <p>
+          More consequential than the counts is the overlap rule, which is the same for every type except
+          one. For transformers, field indexes and metric extraction, overlapping scopes are rejected
+          &mdash; <em>&ldquo;no two of them can use the same or overlapping log group name
+          prefixes&rdquo;</em>. Then:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Unlike other account-level policy types, retention policies can have
+          overlapping selection criteria. When more than one retention policy applies to a log group, the
+          policy with the longest retention period is used.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That is a deliberate and well-chosen design &mdash; a baseline for the account, longer periods for
+          specific prefixes, and <code>NEVER_EXPIRE</code>
+          <em>&ldquo;treated as the longest retention period&rdquo;</em> to exempt what must not be deleted.
+          But it means retention is the one type where you cannot reason about a log group by finding
+          <em>the</em> policy that matches it. You have to find all of them and take the maximum.
+        </p>
+        <p>
+          Two more retention-only behaviours worth holding: the floor, since
+          <em>&ldquo;Account-level retention policies require a minimum retention period of 30
+          days&rdquo;</em>, and the delay &mdash;
+          <em>&ldquo;A retention policy takes effect 24 hours after you create it&rdquo;</em>, during which
+          <code>DescribeLogGroups</code> still reports the old period.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>For retention, enumerate every policy that matches a log group rather than the first, and remember the longest wins. For every other type, treat an overlap error as the service telling you two policies disagree about who owns a log group &mdash; that is a design question, not a syntax problem.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-116-account-level-policies.svg" alt="Diagram: CloudWatch Logs PutAccountPolicy creates six kinds of account-level policy with one API call: data protection, subscription filter, field index, transformer, metric extraction and retention. Account-level policies are Region-specific, applying only to log groups in the Region where they are created. The conflict-resolution rule between an account-level policy and a log-group-level policy is different for each type. Data protection policies are cumulative, so any sensitive term specified in either policy is masked. Account-level and log-group-level subscription filters are additive, with up to one account-level and up to five log-group-level filters on a log group. A log-group-level transformer overrides the account-level transformer entirely. For field indexes, a log-group-level policy causes any account-level policy using log group name prefix criteria or no criteria to be ignored for that log group, while account-level policies using data source name and type criteria still apply alongside it. Metric extraction policies are account-level only and have no log-group equivalent. Retention inverts the pattern: an account-level retention policy replaces the retention period set on a log group, including when the log group's own period is longer, so a log group set to ten years under a new ninety-day policy has its older events deleted. Retention is also the only type with a dry run, which reports how many log groups would have decreased, increased or unchanged retention and the top log groups impacted, and the only type whose selection criteria may overlap, where the longest retention period wins and never-expire counts as longest. Selection criteria differ per type: subscription filters support only log group name NOT IN a list, transformers only a log group name prefix, field indexes a prefix or a data source name and type, retention a prefix only, and data protection none at all, while metric extraction supports names and prefixes with IN and NOT IN operators, up to fifty values per list and only one NOT IN policy per account. Policy counts also differ: one data protection policy per account, one subscription filter policy per Region, one transformer policy for everything or up to twenty scoped, up to five metric extraction policies, twenty field index policies by prefix plus twenty by data source, and up to twenty retention policies per Region. Account retention policies require a minimum of thirty days, take effect twenty-four hours after creation, and support a retroactive or new-only enforcement mode. Disabling embedded metric format through a metric extraction policy also disables Container Insights and Application Signals metrics, so the documentation recommends excluding those log groups. The permission to call this API should go only to administrators who manage logging configuration across the account.">
+
+    <h3>Six types, six rules</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Policy type</th><th>When a log-group policy also applies</th><th>Account-level count</th></tr>
+      <tr>
+        <td>Data protection</td>
+        <td><em>&ldquo;The two policies are cumulative&rdquo;</em> &mdash; terms from both are masked</td>
+        <td>One per account</td>
+      </tr>
+      <tr>
+        <td>Subscription filter</td>
+        <td><em>&ldquo;additive&rdquo;</em> &mdash; 1 account-level plus up to 5 log-group-level</td>
+        <td>One per Region</td>
+      </tr>
+      <tr>
+        <td>Transformer</td>
+        <td>The log group's own transformer wins; the account one is ignored</td>
+        <td>One for all, or up to 20 scoped</td>
+      </tr>
+      <tr>
+        <td>Field index</td>
+        <td>Prefix-scoped account policies ignored; data-source ones still apply</td>
+        <td>20 by prefix + 20 by data source</td>
+      </tr>
+      <tr>
+        <td>Metric extraction</td>
+        <td>No log-group equivalent exists</td>
+        <td>One for all, or up to 5 scoped</td>
+      </tr>
+      <tr>
+        <td><strong>Retention</strong></td>
+        <td><strong>The account policy replaces the log group's setting</strong></td>
+        <td>Up to 20 per Region</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      Reading down the middle column is the whole point of this post. Five rows say <em>the log group keeps
+      what it has, or gets more</em>. The last row says the opposite, and the thing it takes away is data.
+    </p>
+
+    <h3>What each type lets you select</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Policy type</th><th>selectionCriteria</th><th>Can you exclude a log group?</th></tr>
+      <tr><td>Data protection</td><td>Not supported</td><td>No &mdash; all log groups</td></tr>
+      <tr><td>Subscription filter</td><td><code>LogGroupName NOT IN []</code></td><td><strong>Yes, by exact name only</strong></td></tr>
+      <tr><td>Transformer</td><td><code>LogGroupNamePrefix</code></td><td>No &mdash; inclusion by prefix only</td></tr>
+      <tr><td>Field index</td><td><code>LogGroupNamePrefix</code>, or <code>DataSourceName</code> + <code>DataSourceType</code></td><td>No &mdash; inclusion only</td></tr>
+      <tr><td>Metric extraction</td><td><code>LogGroupName</code> / <code>LogGroupNamePrefix</code> with <code>IN</code> and <code>NOT IN</code></td><td>Yes, and only one <code>NOT IN</code> policy per account</td></tr>
+      <tr><td>Retention</td><td><code>LogGroupNamePrefix</code></td><td>No &mdash; but overlapping policies let a longer period win</td></tr>
+    </table>
+    </div>
+    <p>
+      The asymmetry between the second and third rows is the one that bites. A subscription filter can only
+      be written as <em>everything except these names</em>; a transformer can only be written as
+      <em>these prefixes</em>. Neither can express the other's shape. If your mental model is that an account
+      policy simply takes a scope, both will surprise you, in opposite directions.
+    </p>
+    <p>
+      Retention's row is subtler. It cannot exclude, but because overlapping is permitted and
+      <em>&ldquo;the policy with the longest retention period is used&rdquo;</em>, a second policy with a
+      longer period over a narrower prefix is how you carve an exception out of a baseline &mdash;
+      exclusion expressed as precedence rather than as a filter.
+    </p>
+
+    <h3>The retention lifecycle, which has three timing rules</h3>
+    <p>
+      <strong>A floor:</strong> <em>&ldquo;Account-level retention policies require a minimum retention
+      period of 30 days.&rdquo;</em> You cannot use this API to impose a one-week retention across an
+      account.
+    </p>
+    <p>
+      <strong>A delay:</strong> <em>&ldquo;A retention policy takes effect 24 hours after you create
+      it&rdquo;</em>, and during that window the previously effective period still governs both
+      <code>DescribeLogGroups</code> and expiration &mdash; though a dry run
+      <em>&ldquo;reports the impact as if the policy were already in effect&rdquo;</em>. So the console can
+      disagree with your intent for a day, correctly.
+    </p>
+    <p>
+      <strong>A choice about the past:</strong> <code>RETROACTIVE</code>
+      <em>&ldquo;applies the policy to every log group that matches the selection criteria, including log
+      groups that existed before you created the policy&rdquo;</em>, while <code>NEW_ONLY</code>
+      <em>&ldquo;applies the policy only to log groups that are created after you create the
+      policy&rdquo;</em>. This is the single most important field in the request, because it decides whether
+      the policy is a standard for the future or an edit to the past.
+    </p>
+
+    <h3>The one type that can switch other services off</h3>
+    <p>
+      Metric extraction policies control whether EMF produces metrics, and the warning is explicit:
+      <em>&ldquo;<strong>Creating a policy disables metrics for AWS features that use EMF to create
+      metrics, such as CloudWatch Container Insights and CloudWatch Application
+      Signals.</strong>&rdquo;</em>
+    </p>
+    <p>
+      With the remedy given as a literal exclusion list to copy &mdash;
+      <code>LogGroupNamePrefix NOT IN ["/aws/containerinsights", "/aws/ecs/containerinsights",
+      "/aws/application-signals/data"]</code>. This is the clearest case in the API of a cost-control action
+      silently removing an observability capability two layers away, and #114's note that embedded metrics
+      format is unsupported in the Essentials class is the same capability disappearing for a different
+      reason.
+    </p>
+
+    <h3>Region scope, and the cross-account inversion</h3>
+    <p>
+      <em>&ldquo;Account-level policies are Region-specific: a policy applies only to log groups in the
+      Region where you create it. To apply a policy across multiple Regions, create the policy separately
+      in each Region.&rdquo;</em> Every count above is therefore per Region, and so is every gap.
+    </p>
+    <p>
+      And the same cross-account inversion #113 found for index policies is stated here too:
+      <em>&ldquo;If you create an account-level field index policy in a monitoring account in cross-account
+      observability, the policy is applied only to the monitoring account and not to any source
+      accounts.&rdquo;</em> The account where you run the wide queries is the one where the policy does not
+      reach the data.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Retention overriding the log group is the only way a retention standard can work</h3>
+    <p>
+      A governance control that any log group owner could opt out of by setting a longer period would not be
+      a control. If the organisation's rule is ninety days, the rule has to beat the local setting. The
+      design is right; what it owes you in exchange is a way to see the consequence first, and that is
+      exactly what the dry run is &mdash; available for this type alone, because this is the only type whose
+      application destroys something.
+    </p>
+
+    <h3>Different conflict rules are the honest answer, not an inconsistency</h3>
+    <p>
+      Masking two sets of sensitive terms is meaningfully cumulative. Running two transformers over one
+      event is not &mdash; one of them has to win. Two subscription filters delivering to two destinations is
+      genuinely additive. The rules differ because the underlying operations differ, and a uniform rule
+      would have been wrong for four of the six.
+    </p>
+
+    <h3>Restricting the permission is the right first control</h3>
+    <p>
+      <em>&ldquo;You should grant logs:PutAccountPolicy permissions only to administrators who manage
+      logging configuration across the account, not to application teams or individual log group
+      owners.&rdquo;</em> Given that one call can delete ten years of logs across every matching log group,
+      naming the audience in the API reference is a reasonable place to start.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Any retention policy, ever</td>
+        <td>Dry run first, read <code>decreasedRetentionLogGroupCount</code></td>
+        <td>It is the only type that deletes, and the only type with a dry run</td>
+      </tr>
+      <tr>
+        <td>Setting an account retention standard</td>
+        <td><code>NEW_ONLY</code> unless you intend to edit history</td>
+        <td><code>RETROACTIVE</code> reaches log groups that predate the policy</td>
+      </tr>
+      <tr>
+        <td>Protecting a log group from a retention baseline</td>
+        <td>A second, longer policy on a narrower prefix</td>
+        <td>Overlap is allowed for retention and the longest period wins</td>
+      </tr>
+      <tr>
+        <td>Excluding log groups from a subscription</td>
+        <td><code>LogGroupName NOT IN []</code> with exact names</td>
+        <td>It is the only criteria this type accepts, and it prevents recursion loops</td>
+      </tr>
+      <tr>
+        <td>Scoping a transformer</td>
+        <td>Design the log group naming convention first</td>
+        <td>Prefix is the only selector, so names are the scope</td>
+      </tr>
+      <tr>
+        <td>Disabling EMF to cut metric cost</td>
+        <td>Exclude the Container Insights and Application Signals prefixes</td>
+        <td>Otherwise the policy silently switches those features off</td>
+      </tr>
+      <tr>
+        <td>Who holds <code>logs:PutAccountPolicy</code></td>
+        <td>Logging administrators only</td>
+        <td>AWS says so explicitly, and one call can delete data account-wide</td>
+      </tr>
+      <tr>
+        <td>Multi-Region estates</td>
+        <td>Create every policy in every Region, and audit per Region</td>
+        <td>Account-level means account-and-Region</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every account-level retention policy in every Region, with its enforcement mode.</strong>
+      For each, ask which log groups have a longer local setting. That set is the data the policy is
+      deleting or will delete, and no other policy type in this API has an equivalent question.
+    </p>
+    <p>
+      <strong>Check whether any metric extraction policy omits the Container Insights and Application
+      Signals exclusions.</strong> If so, those features are off, and nothing about their dashboards will
+      say why.
+    </p>
+    <p>
+      <strong>Compare your subscription filter policy's <code>NOT IN</code> list against your delivery
+      path.</strong> This is #115's recursion check, and it lives here because
+      <code>selectionCriteria</code> is where it is expressed.
+    </p>
+    <p>
+      <strong>Confirm the policies exist in every Region you log in.</strong> A policy created once, in the
+      Region someone happened to be looking at, covers exactly that Region.
+    </p>
+    <p>
+      <strong>In a monitoring account, check what your field index policies actually reach.</strong> They do
+      not apply to source accounts.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The last four posts have been about monitoring that says nothing when something is wrong. This one is
+      the opposite failure: a mechanism that does exactly what it says, loudly and account-wide, where the
+      risk is that you generalised from the wrong example.
+    </p>
+    <p>
+      Learn account-level policies through data protection and they are cumulative and safe. Learn them
+      through subscription filters and they are additive. Learn them through transformers and the log group
+      always wins. Every one of those lessons is correct, and every one of them is wrong about retention
+      &mdash; which is the type that overrides the log group's own choice and deletes what is older than the
+      new period, including from log groups whose owners deliberately set ten years.
+    </p>
+    <p>
+      So the rule for this API is to treat <code>policyType</code> as selecting a different product rather
+      than a different mode. Read that type's conflict rule, its selection language and its counts before
+      writing anything. And for retention specifically, run the dry run &mdash; it exists for exactly one of
+      the six types, which is AWS telling you which one is different.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &mdash; CloudWatch Logs data protection policies: what the audit and deidentify blocks each do, why masking applies only to events ingested after the policy exists, who can read through a mask with <code>logs:Unmask</code>, and where the audit findings go.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html" target="_blank" rel="noopener">PutAccountPolicy &#8212; the six policy types and the conflict-resolution rule for each, the retention policy that replaces a log group's own period and deletes older events, the per-type <code>selectionCriteria</code> support and the 25KB limit, every policy count including the 20 transformer, 20 plus 20 field index, 5 metric extraction and 20 retention policies, the 30-day minimum and 24-hour delay and the <code>RETROACTIVE</code> and <code>NEW_ONLY</code> enforcement modes, the dry run available only for retention, the EMF warning about Container Insights and Application Signals, the Region scoping, the monitoring-account limitation, and the guidance on who should hold the permission</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions-recursion-prevention.html" target="_blank" rel="noopener">Log recursion prevention &#8212; further reading on why a subscription filter policy's <code>NOT IN</code> exclusions matter, covered in full in #115; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatchLogs-Field-Indexing.html" target="_blank" rel="noopener">Create field indexes to improve query performance and reduce scan volume &#8212; further reading on the log-group-level form of index policies, covered in full in #113; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html" target="_blank" rel="noopener">Protect sensitive log data with masking &#8212; further reading on data protection policies and the <code>logs:Unmask</code> permission; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DryRunResult.html" target="_blank" rel="noopener">DryRunResult &#8212; further reading on the fields a retention dry run returns; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
