@@ -444,8 +444,40 @@ EXAMINE_VERB = re.compile(r"\b(check|examin|scan|inspect|read|cover)[a-z]*\b",
                           re.I)
 
 
+# A check may declare that its zero is correct, and this guard honours it.
+#
+# The failure message below tells a check to "say in the check why zero is
+# legitimate here", and until 2026-11-16 there was no way to say it. Two checks
+# had already worked out that zero was right and printed so, and were failed
+# anyway: check_lab_post_shape prints NOT APPLICABLE when the post it was handed
+# is real but belongs to no series it covers, and check_built_pages_current
+# reports a skipped count when every post in scope is externally built -- which
+# every arch-, az- and gcp- page is, by design.
+#
+# prepublish.py scopes per-post checks to the changed posts regardless of series,
+# so a push carrying one architecture post hands a lab-only check an arch slug,
+# and hands the built-pages check a page nothing rebuilds. Both are "not
+# applicable", not "inspected nothing", and conflating them blocked every
+# architecture post push from all three cloud windows. check_lab_post_shape
+# carries the same note about the same conflation being fixed inside the check;
+# this is the caller side of it.
+#
+# The declaration must be explicit and must come from the check, so a mistyped
+# filename still fails: NOT APPLICABLE names what it matched, and a skipped count
+# only counts when something was actually skipped.
+NOT_APPLICABLE = re.compile(r"\bNOT APPLICABLE\b", re.I)
+SKIPPED_SOMETHING = re.compile(r"\b(?!0\b)\d+\s+[a-z-]*\s*skipped\b", re.I)
+
+
+def declares_zero_legitimate(out):
+    """True when the check itself said its empty population is correct."""
+    return bool(NOT_APPLICABLE.search(out) or SKIPPED_SOMETHING.search(out))
+
+
 def examined_nothing(out):
     """The line proving a passing check looked at an empty population."""
+    if declares_zero_legitimate(out):
+        return None
     for line in out.splitlines():
         if ZERO_POPULATION.search(line) and EXAMINE_VERB.search(line):
             return line.strip()
