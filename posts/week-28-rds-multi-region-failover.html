@@ -1,0 +1,398 @@
+---
+title: 'Week 28 - The Failover Nobody Runs: Twelve Minutes, Measured'
+date: '2026-11-18T16:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-28-rds-multi-region-failover
+draft: true
+verified: '2026-11-18'
+verified_claims:
+  - claim: "For PostgreSQL, the ReplicaLag metric returns the value of SELECT extract(epoch from now() - pg_last_xact_replay_timestamp()) AS reader_lag"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.Monitoring.html
+  - claim: "Region switch is priced at $70 per plan per month, and prices are prorated for partial months"
+    source: https://aws.amazon.com/application-recovery-controller/pricing/
+  - claim: "The Amazon RDS Promote Read Replica execution block only supports active/passive plans, and after promotion the instance will no longer replicate from the original primary database"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/rds-promote-read-replica-block.html
+  - claim: "ARC readiness checks will no longer be available to new customers starting April 30, 2026"
+    source: https://aws.amazon.com/application-recovery-controller/pricing/
+  - claim: "Region switch has a data plane in each AWS Region, so that you can execute your Region switch plan without taking a dependency on the Region that you are deactivating"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/region-switch.html
+  - claim: "The sample IAM policy AWS publishes for the Amazon RDS execution block contains only rds:DescribeDBInstances, rds:PromoteReadReplica, rds:CreateDBInstanceReadReplica and rds:ModifyDBInstance"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/security_iam_region_switch_rds.html
+  - claim: "A Region switch plan execution measured 726 seconds end to end, with the database reporting no replication source after 715 seconds"
+    source: "Measured 2026-11-18 from execution us-west-2/93de3f35793a4ed6; recorded in week-28-rds-multi-region-failover/results/failover.json"
+  - claim: "ReplicaLag on an idle primary rose by exactly 60 seconds each minute: 218, 278, 38, 98, 158, 218, 278, 38"
+    source: "Measured 2026-11-18, CloudWatch AWS/RDS ReplicaLag for week28-failover-replica, 60-second periods"
+---
+
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 28 of 52</div>
+  <div class="post-title">The failover nobody runs</div>
+  <div class="post-subtitle">Every disaster recovery document contains a recovery time. Almost none of them contain a measurement, because the only way to test a read replica is to destroy it.</div>
+  <div class="post-meta">
+    <span>18 November 2026</span>
+    <span>Terraform &middot; HCP &middot; RDS &middot; PostgreSQL &middot; ARC Region switch</span>
+    <span>726 s measured</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#overview">Lab Overview</a></li>
+      <li><a href="#services">Cloud Services and Concepts</a></li>
+      <li><a href="#architecture">Architecture and Workflow</a></li>
+      <li><a href="#prerequisites">Prerequisites</a></li>
+      <li><a href="#implementation">Implementation</a></li>
+      <li><a href="#validation">Validation and Evidence</a></li>
+      <li><a href="#security-cost">Security and Cost</a></li>
+      <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+      <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
+
+    <p>A building has a fire drill because walking to the exit is free. You
+    can do it on a Tuesday, twice, and nothing is lost but ten minutes.</p>
+
+    <p>Database failover has no equivalent. Promoting a read replica turns it
+    into a standalone database that no longer replicates, and there is no way
+    back. Rehearsing the procedure destroys the thing the procedure
+    protects. So the recovery time in the document is almost always a guess
+    that nobody has ever been able to afford to check.</p>
+
+    <p>This week I built the setup, wrote the failover as code rather than as
+    a wiki page, and then ran it for real: a PostgreSQL primary in Virginia,
+    a cross-region read replica in Oregon, and an AWS Application Recovery
+    Controller Region switch plan that promotes the replica. Then I measured
+    two numbers nobody can tell you without running it &mdash; how far behind
+    the replica actually was, and how long the failover actually took.</p>
+  </div>
+
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
+
+    <p><strong>Cross-region read replica.</strong> A second database in
+    another region that receives changes asynchronously. It can serve reads,
+    and it can be promoted to a primary. "Asynchronously" is the whole
+    story: whatever has not arrived when the first region fails is gone.</p>
+
+    <p><strong>ARC Region switch.</strong> A plan is a recovery runbook
+    expressed as workflows and execution blocks. AWS added RDS orchestration
+    and Terraform support in February 2026, which is what makes the runbook
+    reviewable in a pull request instead of a document that rots.</p>
+
+    <h3>What ReplicaLag actually measures</h3>
+
+    <p>This is the trap, and I walked straight into it. For PostgreSQL, AWS
+    documents the metric as exactly this query:</p>
+
+    <pre><code>SELECT extract(epoch from now() - pg_last_xact_replay_timestamp())</code></pre>
+
+    <p>Read it carefully. <code>now()</code> keeps moving.
+    <code>pg_last_xact_replay_timestamp()</code> does not, because there is
+    nothing to replay. So on an <em>idle</em> primary the metric climbs by
+    sixty seconds every minute while the replica is perfectly caught up, and
+    collapses the instant a write lands.</p>
+
+    <p>My first readings were 218, 278, 38, 98, 158, 218, 278, 38. That looks
+    like a database minutes behind. It means the opposite: nobody was
+    writing. A dashboard alarm on that metric fires hardest when the system
+    is doing nothing at all.</p>
+
+    <h3>Promotion is one-way</h3>
+
+    <p>The Promote Read Replica execution block supports active/passive
+    plans only, and AWS states plainly that after promotion "the promoted
+    instance will no longer replicate from the original primary database".
+    Failing back is not a button. It means building a new replica in the
+    other direction and promoting that.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture and Workflow</h2>
+
+    <svg viewBox="0 0 960 450" xmlns="http://www.w3.org/2000/svg" role="img"
+           aria-label="A PostgreSQL primary in us-east-1 replicates asynchronously to a cross-region read replica in us-west-2. A Lambda function in the primary's VPC writes load to the primary. An Amazon Application Recovery Controller Region switch plan, executed in us-west-2, promotes the replica to a standalone primary. Measured: replication lag of 4.2 seconds on average and 20 seconds at peak under load, and a promotion that completed in 726 seconds. After promotion the replica no longer replicates and cannot be returned to being a replica."
+           style="width:100%;height:auto;background:#fff;border:1px solid #e6e8eb;border-radius:8px">
+        <rect width="960" height="450" fill="#ffffff"/>
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5A6B7B"/></marker></defs>
+        <rect x="14" y="14" width="932" height="420" rx="2" fill="none" stroke="#232F3E" stroke-width="2"/>
+        <rect x="14" y="14" width="34" height="30" fill="#232F3E"/>
+        <text x="21" y="34" font-family="Arial,sans-serif" font-size="11" font-weight="700" fill="#FFFFFF">aws</text>
+        <text x="58" y="34" font-family="Arial,sans-serif" font-size="13" fill="#232F3E">AWS Cloud</text>
+        <rect x="44" y="56" width="400" height="236" rx="2" fill="none" stroke="#5A6B7B" stroke-width="1.5"/>
+        <text x="56" y="76" font-family="Arial,sans-serif" font-size="12" font-weight="600" fill="#5A6B7B">Region: us-east-1 (primary)</text>
+        <rect x="516" y="56" width="400" height="236" rx="2" fill="none" stroke="#5A6B7B" stroke-width="1.5"/>
+        <text x="528" y="76" font-family="Arial,sans-serif" font-size="12" font-weight="600" fill="#5A6B7B">Region: us-west-2 (standby)</text>
+        <g transform="translate(110,140) scale(0.60000)"><g id="Icon-Architecture/64/Arch_AWS-Lambda_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/64/Compute" fill="#ED7100">
+            <rect id="Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M28.0075352,66 L15.5907274,66 L29.3235885,37.296 L35.5460249,50.106 L28.0075352,66 Z M30.2196674,34.553 C30.0512768,34.208 29.7004629,33.989 29.3175745,33.989 L29.3145676,33.989 C28.9286723,33.99 28.5778583,34.211 28.4124746,34.558 L13.097944,66.569 C12.9495999,66.879 12.9706487,67.243 13.1550766,67.534 C13.3374998,67.824 13.6582439,68 14.0020416,68 L28.6420072,68 C29.0299071,68 29.3817234,67.777 29.5481094,67.428 L37.563706,50.528 C37.693006,50.254 37.6920037,49.937 37.5586944,49.665 L30.2196674,34.553 Z M64.9953491,66 L52.6587274,66 L32.866809,24.57 C32.7014253,24.222 32.3486067,24 31.9617091,24 L23.8899822,24 L23.8990031,14 L39.7197081,14 L59.4204149,55.429 C59.5857986,55.777 59.9386172,56 60.3255148,56 L64.9953491,56 L64.9953491,66 Z M65.9976745,54 L60.9599868,54 L41.25928,12.571 C41.0938963,12.223 40.7410777,12 40.3531778,12 L22.89768,12 C22.3453987,12 21.8963569,12.447 21.8953545,12.999 L21.884329,24.999 C21.884329,25.265 21.9885708,25.519 22.1780103,25.707 C22.3654452,25.895 22.6200358,26 22.8866544,26 L31.3292417,26 L51.1221625,67.43 C51.2885485,67.778 51.6393624,68 52.02626,68 L65.9976745,68 C66.5519605,68 67,67.552 67,67 L67,55 C67,54.448 66.5519605,54 65.9976745,54 L65.9976745,54 Z" id="AWS-Lambda_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g></g>
+        <text x="134" y="204" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" fill="#232F3E">writer</text>
+        <text x="134" y="219" text-anchor="middle" font-family="Arial,sans-serif" font-size="10.5" fill="#687078">6.4M rows</text>
+        <g transform="translate(300,140) scale(0.60000)"><g id="Icon-Architecture/64/Arch_Amazon-RDS_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/64/Database" fill="#C925D1">
+            <rect id="Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M15.414,14 L24.707,23.293 L23.293,24.707 L14,15.414 L14,23 L12,23 L12,13 C12,12.448 12.447,12 13,12 L23,12 L23,14 L15.414,14 Z M68,13 L68,23 L66,23 L66,15.414 L56.707,24.707 L55.293,23.293 L64.586,14 L57,14 L57,12 L67,12 C67.553,12 68,12.448 68,13 L68,13 Z M66,57 L68,57 L68,67 C68,67.552 67.553,68 67,68 L57,68 L57,66 L64.586,66 L55.293,56.707 L56.707,55.293 L66,64.586 L66,57 Z M65.5,39.213 C65.5,35.894 61.668,32.615 55.25,30.442 L55.891,28.548 C63.268,31.045 67.5,34.932 67.5,39.213 C67.5,43.495 63.268,47.383 55.89,49.879 L55.249,47.984 C61.668,45.812 65.5,42.534 65.5,39.213 L65.5,39.213 Z M14.556,39.213 C14.556,42.393 18.143,45.585 24.152,47.753 L23.473,49.634 C16.535,47.131 12.556,43.333 12.556,39.213 C12.556,35.094 16.535,31.296 23.473,28.792 L24.152,30.673 C18.143,32.842 14.556,36.034 14.556,39.213 L14.556,39.213 Z M24.707,56.707 L15.414,66 L23,66 L23,68 L13,68 C12.447,68 12,67.552 12,67 L12,57 L14,57 L14,64.586 L23.293,55.293 L24.707,56.707 Z M40,31.286 C32.854,31.286 29,29.44 29,28.686 C29,27.931 32.854,26.086 40,26.086 C47.145,26.086 51,27.931 51,28.686 C51,29.44 47.145,31.286 40,31.286 L40,31.286 Z M40.029,39.031 C33.187,39.031 29,37.162 29,36.145 L29,31.284 C31.463,32.643 35.832,33.286 40,33.286 C44.168,33.286 48.537,32.643 51,31.284 L51,36.145 C51,37.163 46.835,39.031 40.029,39.031 L40.029,39.031 Z M40.029,46.667 C33.187,46.667 29,44.798 29,43.781 L29,38.862 C31.431,40.291 35.742,41.031 40.029,41.031 C44.292,41.031 48.578,40.292 51,38.867 L51,43.781 C51,44.799 46.835,46.667 40.029,46.667 L40.029,46.667 Z M40,53.518 C32.883,53.518 29,51.605 29,50.622 L29,46.498 C31.431,47.927 35.742,48.667 40.029,48.667 C44.292,48.667 48.578,47.929 51,46.503 L51,50.622 C51,51.605 47.117,53.518 40,53.518 L40,53.518 Z M40,24.086 C33.739,24.086 27,25.525 27,28.686 L27,50.622 C27,53.836 33.54,55.518 40,55.518 C46.46,55.518 53,53.836 53,50.622 L53,28.686 C53,25.525 46.261,24.086 40,24.086 L40,24.086 Z" id="Amazon-RDS_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g></g>
+        <text x="324" y="204" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" fill="#232F3E">PostgreSQL 18.6</text>
+        <text x="324" y="219" text-anchor="middle" font-family="Arial,sans-serif" font-size="10.5" fill="#687078">db.t4g.micro</text>
+        <g transform="translate(700,140) scale(0.60000)"><g id="Icon-Architecture/64/Arch_Amazon-RDS_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/64/Database" fill="#C925D1">
+            <rect id="Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M15.414,14 L24.707,23.293 L23.293,24.707 L14,15.414 L14,23 L12,23 L12,13 C12,12.448 12.447,12 13,12 L23,12 L23,14 L15.414,14 Z M68,13 L68,23 L66,23 L66,15.414 L56.707,24.707 L55.293,23.293 L64.586,14 L57,14 L57,12 L67,12 C67.553,12 68,12.448 68,13 L68,13 Z M66,57 L68,57 L68,67 C68,67.552 67.553,68 67,68 L57,68 L57,66 L64.586,66 L55.293,56.707 L56.707,55.293 L66,64.586 L66,57 Z M65.5,39.213 C65.5,35.894 61.668,32.615 55.25,30.442 L55.891,28.548 C63.268,31.045 67.5,34.932 67.5,39.213 C67.5,43.495 63.268,47.383 55.89,49.879 L55.249,47.984 C61.668,45.812 65.5,42.534 65.5,39.213 L65.5,39.213 Z M14.556,39.213 C14.556,42.393 18.143,45.585 24.152,47.753 L23.473,49.634 C16.535,47.131 12.556,43.333 12.556,39.213 C12.556,35.094 16.535,31.296 23.473,28.792 L24.152,30.673 C18.143,32.842 14.556,36.034 14.556,39.213 L14.556,39.213 Z M24.707,56.707 L15.414,66 L23,66 L23,68 L13,68 C12.447,68 12,67.552 12,67 L12,57 L14,57 L14,64.586 L23.293,55.293 L24.707,56.707 Z M40,31.286 C32.854,31.286 29,29.44 29,28.686 C29,27.931 32.854,26.086 40,26.086 C47.145,26.086 51,27.931 51,28.686 C51,29.44 47.145,31.286 40,31.286 L40,31.286 Z M40.029,39.031 C33.187,39.031 29,37.162 29,36.145 L29,31.284 C31.463,32.643 35.832,33.286 40,33.286 C44.168,33.286 48.537,32.643 51,31.284 L51,36.145 C51,37.163 46.835,39.031 40.029,39.031 L40.029,39.031 Z M40.029,46.667 C33.187,46.667 29,44.798 29,43.781 L29,38.862 C31.431,40.291 35.742,41.031 40.029,41.031 C44.292,41.031 48.578,40.292 51,38.867 L51,43.781 C51,44.799 46.835,46.667 40.029,46.667 L40.029,46.667 Z M40,53.518 C32.883,53.518 29,51.605 29,50.622 L29,46.498 C31.431,47.927 35.742,48.667 40.029,48.667 C44.292,48.667 48.578,47.929 51,46.503 L51,50.622 C51,51.605 47.117,53.518 40,53.518 L40,53.518 Z M40,24.086 C33.739,24.086 27,25.525 27,28.686 L27,50.622 C27,53.836 33.54,55.518 40,55.518 C46.46,55.518 53,53.836 53,50.622 L53,28.686 C53,25.525 46.261,24.086 40,24.086 L40,24.086 Z" id="Amazon-RDS_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g></g>
+        <text x="724" y="204" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" fill="#232F3E">read replica</text>
+        <text x="724" y="219" text-anchor="middle" font-family="Arial,sans-serif" font-size="10.5" fill="#687078">db.t4g.micro</text>
+        <path d="M170 166 L292 166" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)"/>
+        <circle cx="231" cy="154" r="11" fill="#232F3E"/>
+        <text x="231" y="158" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">1</text>
+        <path d="M364 166 L692 166" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)"/>
+        <circle cx="528" cy="154" r="11" fill="#232F3E"/>
+        <text x="528" y="158" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">2</text>
+        <text x="420" y="206" text-anchor="start" font-family="Arial,sans-serif" font-size="11" font-weight="600" fill="#232F3E">asynchronous — lag 4.2s avg, 20s peak</text>
+        <rect x="190" y="318" width="580" height="44" rx="3" fill="#F2F3F3" stroke="#687078" stroke-width="1.4"/>
+        <circle cx="216" cy="340" r="11" fill="#232F3E"/>
+        <text x="216" y="344" text-anchor="middle" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">3</text>
+        <text x="240" y="345" text-anchor="start" font-family="Arial,sans-serif" font-size="12" font-weight="600" fill="#232F3E">ARC Region switch plan — activate us-west-2 → promote-replica</text>
+        <path d="M790 318 L790 196" fill="none" stroke="#5A6B7B" stroke-width="1.6" marker-end="url(#ah)" stroke-dasharray="5 4"/>
+        <text x="516" y="390" text-anchor="start" font-family="Arial,sans-serif" font-size="10.5" font-weight="700" fill="#687078">AFTER PROMOTION:</text>
+        <text x="516" y="412" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="600" fill="#D13212">standalone primary. There is no un-promote.</text>
+        <text x="44" y="390" text-anchor="start" font-family="Arial,sans-serif" font-size="10.5" font-weight="700" fill="#687078">MEASURED FAILOVER:</text>
+        <text x="44" y="412" text-anchor="start" font-family="Arial,sans-serif" font-size="13" font-weight="700" fill="#1A7F37">726 s (12.1 min)</text>
+      </svg>
+
+    <p>The numbers in the diagram are the order things happen:</p>
+
+    <ol>
+      <li><strong>Write load.</strong> A Lambda function in the primary's VPC
+      writes 6.4 million rows, because replication lag is only meaningful
+      while something is actually replicating.</li>
+      <li><strong>Asynchronous replication</strong> to Oregon. This is the
+      only link between the two regions, and the gap it leaves is the data
+      you would lose.</li>
+      <li><strong>The Region switch plan</strong> promotes the replica. It is
+      drawn outside both regions on purpose: ARC runs a data plane in every
+      region, so activating Oregon never calls into the region being
+      evacuated. That is the difference between a recovery tool and a Lambda
+      that dies with the region it lives in.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
+
+    <ul>
+      <li>An AWS account, and Terraform 1.10 or later.</li>
+      <li>The AWS provider at <strong>6.47 or later</strong> &mdash;
+      <code>rds_promote_read_replica_config</code> landed in that release.</li>
+      <li>Backups enabled on the source. A read replica cannot be created
+      from an instance with <code>backup_retention_period = 0</code>. This is
+      a prerequisite, not a durability preference.</li>
+      <li>Two regions with a default VPC, or your own subnets in each.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <h3>What was deployed</h3>
+
+    <table>
+      <thead>
+        <tr><th>Resource</th><th>How many</th><th>Its job</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>aws_db_instance</code></td><td>2</td><td>The primary in us-east-1 and its cross-region replica in us-west-2, both <code>db.t4g.micro</code>, PostgreSQL 18.6</td></tr>
+        <tr><td><code>aws_arcregionswitch_plan</code></td><td>1</td><td>The failover runbook: two activate workflows, one per region</td></tr>
+        <tr><td><code>aws_lambda_function</code></td><td>1</td><td>Writes load to the primary so lag is measurable</td></tr>
+        <tr><td><code>aws_db_subnet_group</code></td><td>2</td><td>One per region; a replica needs its own</td></tr>
+        <tr><td><code>aws_security_group</code></td><td>3</td><td>Database and writer in the primary region, database in the replica region. The replica's has no ingress at all &mdash; replication arrives over the managed path</td></tr>
+        <tr><td><code>aws_iam_role</code></td><td>2</td><td>One the writer runs as, one ARC assumes to promote</td></tr>
+        <tr><td>Rules, policies, password</td><td>6</td><td>Ingress and egress rules, role policies, generated credential</td></tr>
+      </tbody>
+    </table>
+
+    <p>Seventeen resources. Two of them cost real money.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/01-hcp-runs.png" alt="The HCP Terraform run page for workspace week-28-dev, showing the plan finished with 17 resources to create and the apply in progress.">
+      <figcaption>Seventeen to create, applying. The replica alone took 14
+      minutes to build from its source.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/02-hcp-variables.png" alt="The HCP workspace variables page showing TFC_AWS_PROVIDER_AUTH set to true and TFC_AWS_RUN_ROLE_ARN marked sensitive and write-only.">
+      <figcaption>Two regions, no stored keys. The run assumes a role through
+      OIDC; the role ARN is write-only.</figcaption>
+    </figure>
+
+    <h3>The one thing that is not obvious in the Terraform</h3>
+
+    <p>A cross-region replica of an encrypted source needs
+    <code>storage_encrypted = true</code> declared on the replica, even
+    though RDS sets it for you. AWS reports <code>true</code>, your config
+    says <code>null</code>, and Terraform reads that as
+    <code>true -&gt; null # forces replacement</code>.</p>
+
+    <p>The first apply succeeds either way. The <em>second</em> one destroys
+    the database. That is what makes it a trap rather than an error.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/03-primary-and-replica.png" alt="The RDS console Replication panel for the primary, listing week28-failover-primary as Primary in us-east-1d and week28-failover-replica in us-west-2 with the primary as its replication source.">
+      <figcaption>Both instances, two regions, one replication source.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/04-region-switch-plan.png" alt="The ARC Region switch plan detail page showing recovery approach Active/passive, two workflows, and the activate us-west-2 workflow containing an Amazon RDS promote read replica execution block named promote-replica.">
+      <figcaption>The runbook, as the console sees it. The same thing lives
+      in version control as about thirty lines of HCL.</figcaption>
+    </figure>
+  </div>
+
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
+
+    <p>Lag first, because it stops existing the moment you fail over.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/05-replication-lag.png" alt="A CloudWatch graph of ReplicaLag over two hours, showing a tall sawtooth rising to nearly eleven minutes while the primary is idle, then flattening to near zero once sustained writes begin.">
+      <figcaption>The same metric, two stories. The tall sawtooth is an idle
+      primary. The flat stretch is 6.4 million rows being written.</figcaption>
+    </figure>
+
+    <p>Under sustained load the replica held a <strong>4.2 second average
+    and a 20 second peak</strong>, across roughly 2,400 miles. That peak is
+    the honest answer to "how much would we lose" &mdash; and it is two
+    orders of magnitude smaller than the idle metric advertised.</p>
+
+    <p>Then the part that cannot be undone.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/06-failover-timed.png" alt="A terminal showing the recorded measurement: 6,401,000 rows written, replication lag peak 20 seconds, failover 726 seconds via the ARC plan and 715 seconds for the database, endpoint unchanged, still replicating False. A second command queries the former replica and returns a null replication source.">
+      <figcaption>726 seconds, and a database that no longer has a
+      replication source.</figcaption>
+    </figure>
+
+    <table>
+      <thead><tr><th>Question</th><th>Documented</th><th>Measured</th></tr></thead>
+      <tbody>
+        <tr><td>How long does failover take?</td><td>"about 15 minutes"</td><td><strong>726 s (12.1 min)</strong></td></tr>
+        <tr><td>How much data is at risk?</td><td>unstated</td><td><strong>20 s peak, 4.2 s average</strong></td></tr>
+        <tr><td>Does the endpoint change?</td><td>unstated</td><td>No</td></tr>
+        <tr><td>Can you go back?</td><td>unstated</td><td>No</td></tr>
+      </tbody>
+    </table>
+
+    <p>Twelve minutes is good news, and it is still nearly four times longer
+    than the longest acceptable outage most teams write into an SLA without
+    thinking about it.</p>
+  </div>
+
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
+
+    <p>Neither database has a public endpoint. The replica's security group
+    has <em>no</em> ingress rules at all, because replication does not travel
+    through one &mdash; a useful thing to see written down, since the instinct
+    is to open a port for it. The writer reaches the primary through a
+    security group reference rather than a CIDR, and has no route to the
+    internet.</p>
+
+    <h3>What this means for a platform team</h3>
+
+    <p>The runbook being Terraform is the point. A recovery document is
+    reviewed when someone remembers; a plan in version control is reviewed
+    when it changes, and it fails CI when it is wrong. Mine failed three
+    times before it was right, which is three times it would have failed
+    during an incident instead.</p>
+
+    <h3>Cost</h3>
+
+    <p>COST_PENDING</p>
+  </div>
+
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
+
+    <p><strong>The provider's own example does not create.</strong> The
+    documented <code>aws_arcregionswitch_plan</code> example shows an
+    activate workflow and a deactivate workflow. <code>CreatePlan</code>
+    refuses: "activePassive plans must not specify target action
+    'deactivate'". Remove it and it refuses again, this time demanding
+    "activate workflows defined for each region". The shape that applies is
+    two <em>activate</em> workflows, one per region.</p>
+
+    <p><strong>The sample IAM policy is incomplete.</strong> AWS's published
+    policy for the RDS execution block lists four <code>rds:</code> actions.
+    The plan sits at "Action required" until you also grant
+    <code>iam:SimulatePrincipalPolicy</code> &mdash; ARC pre-flights the role
+    against each step, and when it cannot simulate, it reports both a
+    missing-policy warning <em>and</em> "Region switch does not have data on
+    DB instance". One cause, two warnings that read like unrelated faults.</p>
+
+    <p><strong>An activate flow must be started in the target region.</strong>
+    Calling <code>StartPlanExecution</code> against the primary region returns
+    "An activate flow should be run on the target region". That is the
+    per-region data plane doing its job: failing over to Oregon must not
+    require a call into Virginia.</p>
+
+    <p><strong>Declare the primary region's workflow first.</strong> The
+    provider compares workflows by position and the API returns them sorted,
+    so declaring the replica's workflow first fails the apply with "block
+    count changed from 0 to 1" and leaves every later plan showing the two
+    workflows swapping places forever.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup and Key Takeaways</h2>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/07-destroyed.png" alt="A terminal querying both regions for week28 database instances, manual snapshots and Region switch plans. Every query returns an empty list.">
+      <figcaption>Both regions, instances, snapshots and the plan. Snapshots
+      are included because they outlive a destroyed instance and keep
+      charging.</figcaption>
+    </figure>
+
+    <h3>Key takeaways</h3>
+
+    <ul>
+      <li><strong>ReplicaLag on an idle primary measures idleness.</strong>
+      It is <code>now()</code> minus the last replayed transaction, so it
+      climbs forever when nothing is being written. Read it under load or do
+      not read it.</li>
+      <li><strong>A documented RTO is a guess until someone runs it.</strong>
+      This one was 726 seconds. Yours is a different number, and you do not
+      know it.</li>
+      <li><strong>Promotion is irreversible</strong>, which is exactly why
+      the drill never happens. Budget for rebuilding the replica afterwards,
+      because that is the real cost of testing.</li>
+      <li><strong>Put the runbook in version control.</strong> Three API
+      rejections found three mistakes in mine. An incident is a worse place
+      to find them.</li>
+    </ul>
+
+    <h3>References</h3>
+    <ul>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-28-rds-multi-region-failover/README.md"><strong>The full lab guide</strong></a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.Monitoring.html">Monitoring read replication</a> &mdash; the exact query behind <code>ReplicaLag</code></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/rds-promote-read-replica-block.html">Amazon RDS Promote Read Replica execution block</a> &mdash; active/passive only, and what promotion changes</li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/region-switch.html">Region switch in ARC</a> &mdash; the per-region data plane</li>
+      <li><a href="https://aws.amazon.com/application-recovery-controller/pricing/">ARC pricing</a> &mdash; $70 per plan per month, and readiness checks closing to new customers</li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/security_iam_region_switch_rds.html">Amazon RDS execution block sample policy</a> &mdash; the four actions, and what it leaves out</li>
+      <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/arcregionswitch_plan">Terraform &mdash; <code>aws_arcregionswitch_plan</code></a></li>
+    </ul>
+  </div>
+
+</div>
