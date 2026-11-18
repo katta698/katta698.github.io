@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #117 — Masking hides the data on the way out; one permission puts it back | Jayanth Katta Blog</title>
+<meta name="description" content="A CloudWatch Logs data protection policy masks sensitive data at all egress points - Logs Insights, metric filters, subscription filters - and only holders of logs:Unmask can see through it. That is a read-time control, not redaction: the mask is applied on the way out, which is why a single IAM permission reverses it. Masking also only applies to events ingested after the policy exists, so turning it on does not clean history. And the audit half of the policy is optional, so a policy can be masking data while keeping no record of what it found."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Masking hides the data on the way out; one permission puts it back"/>
+<meta property="og:description" content="A CloudWatch Logs data protection policy masks sensitive data at all egress points - Logs Insights, metric filters, subscription filters - and only holders of logs:Unmask can see through it. That is a read-time control, not redaction: the mask is applied on the way out, which is why a single IAM permission reverses it. Masking also only applies to events ingested after the policy exists, so turning it on does not clean history. And the audit half of the policy is optional, so a policy can be masking data while keeping no record of what it found."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-log-data-protection/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Masking hides the data on the way out; one permission puts it back"/>
+<meta name="twitter:description" content="A CloudWatch Logs data protection policy masks sensitive data at all egress points - Logs Insights, metric filters, subscription filters - and only holders of logs:Unmask can see through it. That is a read-time control, not redaction: the mask is applied on the way out, which is why a single IAM permission reverses it. Masking also only applies to events ingested after the policy exists, so turning it on does not clean history. And the audit half of the policy is optional, so a policy can be masking data while keeping no record of what it found."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-log-data-protection/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #117 — Masking hides the data on the way out; one permission puts it back…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #117 — Masking hides the data on the way out; one permission puts it back</h1>
+      <p class="post-description">A CloudWatch Logs data protection policy masks sensitive data at all egress points - Logs Insights, metric filters, subscription filters - and only holders of logs:Unmask can see through it. That is a read-time control, not redaction: the mask is applied on the way out, which is why a single IAM permission reverses it. Masking also only applies to events ingested after the policy exists, so turning it on does not clean history. And the audit half of the policy is optional, so a policy can be masking data while keeping no record of what it found.</p>
+      <div class="post-info">
+        <span>Nov 18, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>14 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 18 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-log-data-protection" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #116 covered the six account-level policy types and promised a closer look at the one with the
+      strongest-sounding name. Data protection policies
+      <em>&ldquo;let you audit and mask sensitive data that appears in log events ingested by the log groups
+      in your account&rdquo;</em>, across a long list of managed identifiers &mdash; credentials,
+      financial data, PII, PHI, device identifiers.
+    </p>
+    <p>
+      The word that does the work is <em>mask</em>, and it is doing something narrower than most readers
+      hear. Masking is not redaction, and the documentation says so clearly enough if you read two
+      sentences together rather than one.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The mask is applied at egress, so one IAM permission removes it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When you create a data protection policy, then by default, sensitive data that matches
+          the data identifiers you've selected is <strong>masked at all egress points</strong>, including
+          CloudWatch Logs Insights, metric filters, and subscription filters.&rdquo;</em>
+        </p>
+        <p>
+          And immediately after:
+          <em>&ldquo;<strong>Only users who have the logs:Unmask IAM permission can view unmasked
+          data.</strong>&rdquo;</em> Concretely, that user
+          <em>&ldquo;can use a GetLogEvents or FilterLogEvents operation with the unmask parameter set to
+          true to view the unmasked log events&rdquo;</em>.
+        </p>
+        <p>
+          Put those together and the architecture is unambiguous. The masking happens on the way out, which
+          means the unmasked value is still there to be returned when someone asks with the right
+          permission and a parameter. This is a presentation control over retained data, not a destruction
+          control. Both are legitimate designs; they answer different questions, and a compliance
+          conversation that treats the first as the second is building on sand.
+        </p>
+        <p>
+          The egress list is the reassuring half, and it is genuinely broad: Logs Insights, metric filters
+          and subscription filters are the three ways data leaves a log group, and all three mask. The copy
+          that reaches your SIEM through #115's subscription filter is masked. What is not protected is the
+          data at rest, from anyone holding <code>logs:Unmask</code>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat <code>logs:Unmask</code> as the actual control boundary and govern it like a break-glass permission: granted to a named role, never to a human group, with CloudTrail alerting on use. The data protection policy decides what is hidden; that permission decides who the hiding does not apply to, and it is the shorter list to audit.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>It starts when you create it, and the audit half is optional</strong></div>
+      <div class="challenge-body">
+        <p>
+          The timing rule is in an Important callout, and it is the same shape as #113's field indexes:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Sensitive data is detected and masked when it is ingested into the log group.
+          When you set a data protection policy, log events ingested to the log group before that time are
+          not masked.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So a policy created in response to an incident does nothing about the incident. The credentials
+          already in the log group stay visible to everyone who could already read them, and the only
+          remedies are the ones that were always available: delete the log stream, shorten retention, or
+          rotate what leaked. For an account-level policy there is also a propagation delay &mdash;
+          <em>&ldquo;It might take up to 5 minutes before sensitive data in existing log groups begins to be
+          masked&rdquo;</em>.
+        </p>
+        <p>
+          The second half of this is the policy's own structure. A data protection policy is two JSON
+          blocks: an <code>Audit</code> action and a <code>Deidentify</code> action, where
+          <em>&ldquo;The Operation property with the Deidentify action is what actually masks the
+          data&rdquo;</em> and the identifier lists
+          <em>&ldquo;must exactly match&rdquo;</em> between them. The audit block is mandatory &mdash; it is
+          <em>&ldquo;required to find the sensitive data terms&rdquo;</em> &mdash; and it must contain a
+          <code>FindingsDestination</code> object.
+        </p>
+        <p>
+          But: <em>&ldquo;You can <strong>optionally</strong> use that FindingsDestination object to list one
+          or more destinations to send audit findings to.&rdquo;</em> An empty destination list is valid. So
+          the common outcome is a policy that masks correctly and keeps no durable record of what it found,
+          leaving only the <code>LogEventsWithFindings</code> metric &mdash; a count, with no indication of
+          which log group, which identifier, or how often.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Configure a findings destination when you create the policy, not later, and note that destinations <em>&ldquo;must already exist&rdquo;</em> before the policy will accept them. If the destination is an S3 bucket with SSE-KMS, the extra step is real: <em>&ldquo;you must update the key policy for your KMS key so that the log delivery account can write to your S3 bucket&rdquo;</em>, whereas SSE-S3 needs nothing. And alarm on <code>LogEventsWithFindings</code> regardless, since it is free &mdash; <em>&ldquo;vended metrics and are free of charge&rdquo;</em>.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Detection is probabilistic, and the metric counts events rather than findings</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two statements set expectations correctly, and both are easy to skim past.
+        </p>
+        <p>
+          On the mechanism:
+          <em>&ldquo;CloudWatch Logs data protection allows you to leverage pattern matching and machine
+          learning models to detect sensitive data&rdquo;</em>, and &mdash; the important one &mdash;
+          <em>&ldquo;<strong>For some types of managed data identifiers, the detection depends on also
+          finding certain keywords in proximity with the sensitive data.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That is the difference between a regex and a detector. A driver's licence number in a log line
+          with no nearby word suggesting it is a driver's licence may not be detected at all. The design is
+          sound &mdash; context-free matching on a nine-digit number would mask half your request IDs
+          &mdash; but it means coverage is a function of how your application happens to phrase its log
+          messages, which nobody chose deliberately.
+        </p>
+        <p>
+          On measurement:
+          <em>&ldquo;Even though this log event has two email addresses, the value of the
+          LogEventsWithFindings metric is incremented only by one, because that metric counts the number of
+          log events that contain sensitive data, not the number of occurrences of sensitive
+          data.&rdquo;</em>
+        </p>
+        <p>
+          So the metric is a lower bound on exposure, and a bad one if your leak is a single log event
+          containing a thousand records. A flat line at one per minute can be one address or a bulk dump.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write a custom data identifier for anything whose format you control &mdash; internal account numbers, customer references, tenant IDs &mdash; rather than hoping a managed identifier infers it: <em>&ldquo;You can also use custom data identifiers to create data identifiers tailored to your specific use case.&rdquo;</em> And treat <code>LogEventsWithFindings</code> as a detector of <em>whether</em> rather than <em>how much</em>; the findings reports are where the counts live.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-117-data-protection-policies.svg" alt="Diagram: A CloudWatch Logs data protection policy audits and masks sensitive data in log events. Masking is applied at all egress points, including CloudWatch Logs Insights, metric filters and subscription filters, and only users who have the logs:Unmask IAM permission can view unmasked data, using the unmask parameter on GetLogEvents or FilterLogEvents. That makes the control a read-time transformation rather than redaction: the unmasked value is still retained and one IAM permission returns it, so logs:Unmask is the real control boundary. Masking applies only from the moment the policy exists, because sensitive data is detected and masked when it is ingested into the log group, and log events ingested before that time are not masked, with an account-level policy taking up to five minutes to begin masking in existing log groups. The policy itself is two JSON blocks whose data identifier arrays must exactly match: an Audit action, which is required to find the sensitive data terms and must contain a FindingsDestination object, and a Deidentify action, which is what actually masks the data and must contain an empty MaskConfig object. The findings destination list is optional, so a policy can mask correctly while keeping no durable record of what it found. Audit findings are written one report per log event containing sensitive data, and they contain the log group ARN, the identifier name, a count of occurrences in that event, and the start and end character offsets of each occurrence, but never the sensitive value itself. Destinations must already exist, and an S3 bucket protected with SSE-KMS requires a key policy update so the log delivery account can write to it, while SSE-S3 requires nothing. Detection uses pattern matching and machine learning models, and for some managed data identifiers detection depends on also finding certain keywords in proximity with the sensitive data, so coverage depends on how log messages are phrased; custom data identifiers exist for formats you control. The LogEventsWithFindings metric is emitted in the AWS slash Logs namespace, is free of charge, and counts the number of log events containing sensitive data rather than the number of occurrences, so it is a lower bound on exposure. Account-level and log-group-level policies are cumulative, with all identifiers from either policy audited and masked, each log group may have only one log-group-level policy, the policy document limit is 30,720 characters, and masking is supported in both the Standard and Essentials log classes.">
+
+    <h3>What the control actually does</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Question</th><th>Answer</th></tr>
+      <tr>
+        <td>Is the sensitive value removed from the log group?</td>
+        <td><strong>No</strong> &mdash; masking is applied <em>&ldquo;at all egress points&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Who can see through it?</td>
+        <td>Holders of <code>logs:Unmask</code>, via the <code>unmask</code> parameter</td>
+      </tr>
+      <tr>
+        <td>Does it cover data already in the log group?</td>
+        <td><strong>No</strong> &mdash; events ingested before the policy <em>&ldquo;are not masked&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Does it cover what leaves via a subscription filter?</td>
+        <td>Yes &mdash; subscription filters are an egress point</td>
+      </tr>
+      <tr>
+        <td>Does it cover Logs Insights queries?</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Is there a record of what was found?</td>
+        <td>Only if you configured a findings destination &mdash; it is optional</td>
+      </tr>
+      <tr>
+        <td>Does it work in the Essentials log class?</td>
+        <td>Yes &mdash; <em>&ldquo;both the Standard and Essentials&rdquo;</em> classes</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      That last row is worth noting against #114. Almost everything else in CloudWatch Logs is
+      Standard-only &mdash; field indexing, metric filters, subscription filters, Live Tail. Masking works
+      in the cheap class, which makes the consolidation tier a safer place to put logs you have not fully
+      vetted than its feature table would suggest.
+    </p>
+
+    <h3>The two blocks, and why they must agree</h3>
+    <p>
+      <em>&ldquo;The first block must include both a DataIdentifer array and an Operation property with an
+      Audit action&rdquo;</em>; <em>&ldquo;The second block must include both a DataIdentifer array and an
+      Operation property with an Deidentify action. The DataIdentifer array must exactly match the
+      DataIdentifer array in the first block of the policy.&rdquo;</em> And the deidentify block is
+      mechanically fixed: it <em>&ldquo;must contain the &quot;MaskConfig&quot;: {} object. The
+      &quot;MaskConfig&quot;: {} object must be empty.&rdquo;</em>
+    </p>
+    <p>
+      The requirement that the arrays match exactly is the service refusing to let you audit one set of
+      identifiers and mask a different one. That could only produce two outcomes, both bad: data masked
+      with no finding recorded, or a finding recorded for data still visible. Forcing the two lists to be
+      identical removes the whole class of mistake, at the cost of a policy document that looks redundant
+      and invites someone to simplify it.
+    </p>
+
+    <h3>What a finding tells you, and what it refuses to</h3>
+    <p>
+      <em>&ldquo;CloudWatch Logs writes one findings report for each log event that contains sensitive
+      data&rdquo;</em>, containing the log group ARN, the identifier
+      <em>&ldquo;name&rdquo;</em>, a <em>&ldquo;count&rdquo;</em> of occurrences in that event, and
+      <em>&ldquo;The start and end fields show where in the log event, by character count, each occurrence
+      of the sensitive data appears.&rdquo;</em>
+    </p>
+    <p>
+      What it does not contain is the value. A finding says <em>an email address occupied characters 13 to
+      26 of this event</em>, never which address. That is the right call and not an obvious one: a findings
+      pipeline that carried the sensitive values would recreate the exposure in a second system, usually a
+      less protected one. Offsets and counts are enough to triage and fix a logging statement without
+      copying the secret into S3.
+    </p>
+    <p>
+      The one thing to design around is that offsets are a weak side channel in aggregate &mdash; stable
+      offsets across many events reveal the shape of your log lines, not their contents. Negligible for
+      most, worth a thought if findings go somewhere broadly readable.
+    </p>
+
+    <h3>How account and log-group policies combine</h3>
+    <p>
+      From #116's conflict table, this is the cumulative case:
+      <em>&ldquo;If you create a data protection policy for your entire account and you also create a
+      policy for a single log group, both policies apply to that log group. All managed data identifiers
+      that are specified in either policy are audited and masked in that log group.&rdquo;</em>
+    </p>
+    <p>
+      With <em>&ldquo;Each log group can have only one log group-level data protection policy&rdquo;</em>
+      and a document limit of <em>&ldquo;30,720 characters&rdquo;</em>. Cumulative is the right default for
+      a protective control &mdash; a team can add identifiers for their own data without being able to
+      subtract the organisation's. There is no exclusion mechanism here at all, which #116 showed is
+      unusual among the six policy types and, for this one, correct.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Masking at egress rather than at rest is the defensible choice</h3>
+    <p>
+      Destroying the original at ingestion would make the log group the only copy and the detection
+      irreversible: a false positive would silently corrupt an audit trail, with no way to recover what was
+      overwritten. Masking on read keeps the record intact and makes the exception auditable through one
+      permission. The honest framing is that this control reduces casual exposure across every read path,
+      and does not claim the data is gone.
+    </p>
+
+    <h3>Keeping values out of findings is a genuinely good decision</h3>
+    <p>
+      The obvious design is for an audit finding to say what it found. Resisting that keeps the
+      sensitive-data blast radius inside the log group instead of fanning it out to every findings
+      destination, and offsets plus counts are sufficient for the actual task &mdash; locating the logging
+      statement that emitted it.
+    </p>
+
+    <h3>Cumulative with no exclusions is right for a protective policy</h3>
+    <p>
+      Every other account-level policy type in #116 has some way to scope or exclude. This one does not,
+      and a protective baseline that a log group owner could narrow would not be a baseline. Additive-only
+      is the correct asymmetry.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>The real control boundary</td>
+        <td>Govern <code>logs:Unmask</code> as break-glass</td>
+        <td>Masking is applied at egress and that permission reverses it</td>
+      </tr>
+      <tr>
+        <td>Findings destination</td>
+        <td>Configure one at creation</td>
+        <td>It is optional, and without it the only evidence is an event count</td>
+      </tr>
+      <tr>
+        <td>Destination encryption</td>
+        <td>SSE-S3 unless you need SSE-KMS</td>
+        <td>SSE-KMS needs a key policy update for the log delivery account; SSE-S3 needs nothing</td>
+      </tr>
+      <tr>
+        <td>Responding to a leak already in logs</td>
+        <td>Delete, shorten retention, or rotate &mdash; not a policy</td>
+        <td>Events ingested before the policy are never masked</td>
+      </tr>
+      <tr>
+        <td>Identifiers for your own formats</td>
+        <td>Custom data identifiers</td>
+        <td>Managed detection can depend on nearby keywords, which your log phrasing decides</td>
+      </tr>
+      <tr>
+        <td>Measuring exposure</td>
+        <td>Findings reports, with the metric as the trigger</td>
+        <td><code>LogEventsWithFindings</code> counts events, not occurrences</td>
+      </tr>
+      <tr>
+        <td>Alarming</td>
+        <td>Alarm on the metric from day one</td>
+        <td>It is free, and it is the only always-present signal</td>
+      </tr>
+      <tr>
+        <td>Scope</td>
+        <td>Account-level baseline, log-group policies to add</td>
+        <td>The two are cumulative and there is no exclusion mechanism</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every principal with <code>logs:Unmask</code>.</strong> That list is the set of
+      identities for whom your data protection policy does not exist. If it is longer than a handful of
+      break-glass roles, the policy is decoration.
+    </p>
+    <p>
+      <strong>Check whether each data protection policy has a findings destination.</strong> A policy
+      masking without recording is the common configuration and the one that leaves you unable to answer
+      what leaked, when, or from where.
+    </p>
+    <p>
+      <strong>Compare policy creation dates against log group retention.</strong> Any log group whose
+      retention reaches back before its policy has an unmasked window still being served, and the length of
+      it is arithmetic you can do today.
+    </p>
+    <p>
+      <strong>Test detection with a synthetic event in the format your application actually logs.</strong>
+      Because some identifiers need nearby keywords, the only reliable coverage check is writing a line
+      that looks like your real lines and querying for it.
+    </p>
+    <p>
+      <strong>Confirm CloudTrail alerting on <code>unmask</code> use.</strong> The permission is the
+      boundary; its exercise should not be silent.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Five posts ago this series was looking at alarms that say nothing. The thread since has been about
+      controls whose name is broader than their guarantee: an index that only covers what arrived after it,
+      a class whose saving is only at ingestion, a subscription whose permissions failure skips the logs, an
+      API whose retention policy deletes.
+    </p>
+    <p>
+      Data protection policies are the most sharply named of them. <em>Mask</em> sounds terminal, and the
+      control is genuinely strong across every path data takes out of a log group &mdash; Logs Insights,
+      metric filters, subscription filters, all of it. But the data is still there, one IAM permission and
+      one request parameter away, which is not a flaw so much as the thing you must know in order to
+      describe the control accurately to an auditor.
+    </p>
+    <p>
+      So the rule is: the policy decides what is hidden, and <code>logs:Unmask</code> decides who it is
+      hidden from. Govern the second as carefully as you configure the first, record what the audit block
+      finds rather than leaving the destination empty, and remember that none of it reaches backwards to the
+      credential that was logged last Tuesday.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &mdash; CloudWatch Logs custom data identifiers: what a custom pattern can and cannot express, the documented constraints on it, and why a detector that depends on keywords in proximity behaves differently from a pattern match in ways that decide your coverage.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html" target="_blank" rel="noopener">Help protect sensitive log data with masking &#8212; that masking is applied at all egress points including Logs Insights, metric filters and subscription filters, that only <code>logs:Unmask</code> holders see unmasked data, that events ingested before the policy are not masked, how account-level and log-group policies combine cumulatively, the one-policy-per-log-group rule and the 30,720-character limit, support in both the Standard and Essentials log classes, the keyword-proximity dependency for some identifiers, custom data identifiers, and the free <code>LogEventsWithFindings</code> metric</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html" target="_blank" rel="noopener">Audit findings reports &#8212; that one report is written per log event containing sensitive data, the fields it carries including the log group ARN, identifier name, occurrence count and character offsets, that the metric counts events rather than occurrences, and the SSE-S3 versus SSE-KMS requirements for an S3 destination</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html" target="_blank" rel="noopener">PutAccountPolicy &#8212; the two-block policy structure with matching data identifier arrays, that the Deidentify action is what masks and must carry an empty <code>MaskConfig</code>, that the Audit action's findings destinations are optional and must already exist, the <code>unmask</code> parameter on <code>GetLogEvents</code> and <code>FilterLogEvents</code>, and the up-to-5-minute propagation for account-level policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html" target="_blank" rel="noopener">Custom data identifiers &#8212; further reading on defining identifiers for formats you control, and the constraints on them; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/protect-sensitive-log-data-types.html" target="_blank" rel="noopener">Types of data that you can protect &#8212; further reading on the managed data identifiers available and the keywords some of them require; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-viewunmasked.html" target="_blank" rel="noopener">View unmasked data &#8212; further reading on the console and API paths for reading through a mask; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-ebs-associated-kms-keys/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #77 - A second key on the snapshot, and the data never moves</span></a><a href="/blog/azure-architecture-application-gateway-listeners-rules-and-backend-pools/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #97 — Application Gateway: Listeners, Rules and Backend Pools</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-log-data-protection/';
+      this.page.identifier = 'aws-architecture-log-data-protection';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

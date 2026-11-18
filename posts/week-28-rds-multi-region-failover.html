@@ -78,6 +78,18 @@ verified_claims:
   <div class="section" id="services">
     <h2>Cloud Services and Concepts</h2>
 
+    <table>
+      <thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Amazon RDS for PostgreSQL</strong></td><td>The primary and its cross-region read replica, both <code>db.t4g.micro</code> running 18.6</td><td>A managed relational database; a read replica is a second instance fed asynchronously from the first</td></tr>
+        <tr><td><strong>ARC Region switch</strong></td><td>The failover runbook as a plan, executed to promote the replica &mdash; and the only flat monthly fee here</td><td>Application Recovery Controller's recovery orchestration &mdash; a plan of workflows and execution blocks</td></tr>
+        <tr><td><strong>AWS Lambda</strong></td><td>The write load, inside the primary's VPC because neither database has a public endpoint</td><td>Short-lived functions; here one writes rows on demand and nothing runs between invocations</td></tr>
+        <tr><td><strong>Amazon CloudWatch</strong></td><td><code>ReplicaLag</code> &mdash; the data-loss window, and the metric most likely to be misread</td><td>The metric store; <code>ReplicaLag</code> is published every 60 seconds without being asked</td></tr>
+        <tr><td><strong>AWS KMS</strong></td><td>Encryption at rest; a cross-region replica needs a key in the <em>destination</em> region</td><td>Managed encryption keys; keys are regional, which matters for a cross-region replica</td></tr>
+        <tr><td><strong>HCP Terraform</strong></td><td>Remote applies through OIDC across two regions, so no AWS keys are stored anywhere</td><td>Hosted Terraform runs, authenticating to AWS with short-lived credentials through OIDC</td></tr>
+      </tbody>
+    </table>
+
     <p><strong>Cross-region read replica.</strong> A second database in
     another region that receives changes asynchronously. It can serve reads,
     and it can be promoted to a primary. "Asynchronously" is the whole
@@ -286,12 +298,14 @@ verified_claims:
     </figure>
 
     <table>
-      <thead><tr><th>Question</th><th>Documented</th><th>Measured</th></tr></thead>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
       <tbody>
-        <tr><td>How long does failover take?</td><td>"about 15 minutes"</td><td><strong>726 s (12.1 min)</strong></td></tr>
-        <tr><td>How much data is at risk?</td><td>unstated</td><td><strong>20 s peak, 4.2 s average</strong></td></tr>
-        <tr><td>Does the endpoint change?</td><td>unstated</td><td>No</td></tr>
-        <tr><td>Can you go back?</td><td>unstated</td><td>No</td></tr>
+        <tr><td>Replication established cross-region</td><td>replica reports the primary as its source</td><td>source set, status available</td><td>&#9989;</td></tr>
+        <tr><td><code>ReplicaLag</code> under sustained writes</td><td>seconds, not minutes</td><td><strong>20 s peak, 4.2 s average</strong></td><td>&#9989;</td></tr>
+        <tr><td>Plan execution, activate us-west-2</td><td>reaches <code>completed</code></td><td>pending &rarr; inProgress &rarr; completed</td><td>&#9989;</td></tr>
+        <tr><td>Failover duration</td><td>"about 15 minutes"</td><td><strong>726 s (12.1 min)</strong></td><td>&#9989;</td></tr>
+        <tr><td>Endpoint after promotion</td><td>unchanged</td><td>unchanged</td><td>&#9989;</td></tr>
+        <tr><td>Replication after promotion</td><td>gone, irreversibly</td><td>source is <code>null</code></td><td>&#9989;</td></tr>
       </tbody>
     </table>
 
@@ -326,33 +340,82 @@ verified_claims:
   <div class="section" id="troubleshooting">
     <h2>Troubleshooting and Lessons</h2>
 
-    <p><strong>The provider's own example does not create.</strong> The
-    documented <code>aws_arcregionswitch_plan</code> example shows an
-    activate workflow and a deactivate workflow. <code>CreatePlan</code>
-    refuses: "activePassive plans must not specify target action
-    'deactivate'". Remove it and it refuses again, this time demanding
-    "activate workflows defined for each region". The shape that applies is
-    two <em>activate</em> workflows, one per region.</p>
+    <p><strong>Problem.</strong> The apply failed on the Region switch plan
+    with <code>ValidationException: activePassive plans must not specify
+    target action 'deactivate'</code>. Removing the deactivate workflow
+    produced a second refusal: "must have activate workflows defined for each
+    region but found workflow for only us-west-2".</p>
 
-    <p><strong>The sample IAM policy is incomplete.</strong> AWS's published
-    policy for the RDS execution block lists four <code>rds:</code> actions.
-    The plan sits at "Action required" until you also grant
-    <code>iam:SimulatePrincipalPolicy</code> &mdash; ARC pre-flights the role
-    against each step, and when it cannot simulate, it reports both a
-    missing-policy warning <em>and</em> "Region switch does not have data on
-    DB instance". One cause, two warnings that read like unrelated faults.</p>
+    <p><strong>Root cause.</strong> The Terraform provider's own documented
+    example shows an activate workflow paired with a deactivate workflow.
+    That shape is not valid for an active/passive plan, which wants an
+    <em>activate</em> workflow for every region in the plan.</p>
 
-    <p><strong>An activate flow must be started in the target region.</strong>
-    Calling <code>StartPlanExecution</code> against the primary region returns
-    "An activate flow should be run on the target region". That is the
-    per-region data plane doing its job: failing over to Oregon must not
-    require a call into Virginia.</p>
+    <p><strong>Resolution.</strong> Two activate workflows: one targeting
+    us-west-2 containing the promote block, one targeting us-east-1
+    containing a manual approval, because activating the original region
+    after a promotion is not something that can be automated.</p>
 
-    <p><strong>Declare the primary region's workflow first.</strong> The
-    provider compares workflows by position and the API returns them sorted,
-    so declaring the replica's workflow first fails the apply with "block
-    count changed from 0 to 1" and leaves every later plan showing the two
-    workflows swapping places forever.</p>
+    <p><strong>Lesson.</strong> A provider example is not an API contract.
+    This one cost two applies to discover, and both error messages were
+    precise once read as specifications rather than complaints.</p>
+
+    <p><strong>Problem.</strong> The plan reported "Action required" in both
+    regions, with a missing-policy warning and, separately, "Region switch
+    does not have data on DB instance &hellip; validate that the plan
+    execution role has sufficient IAM permissions".</p>
+
+    <p><strong>Root cause.</strong> One missing permission,
+    <code>iam:SimulatePrincipalPolicy</code>, which is not in AWS's published
+    sample policy for the RDS execution block. ARC pre-flights the execution
+    role against each step; when it cannot simulate the role, it reports both
+    the missing policy and its inability to see the database.</p>
+
+    <p><strong>Resolution.</strong> Grant
+    <code>iam:SimulatePrincipalPolicy</code>, and
+    <code>arc-region-switch:ApprovePlanExecutionStep</code> for the manual
+    approval step.</p>
+
+    <p><strong>Lesson.</strong> Two warnings that read like unrelated faults
+    can share one cause. Plan evaluation is also cached and does not re-run
+    promptly, so this is slow to iterate &mdash; worth getting right from the
+    documentation rather than by trial.</p>
+
+    <p><strong>Problem.</strong> <code>StartPlanExecution</code> returned "An
+    activate flow should be run on the target region. Please start the
+    execution in the target region: us-west-2".</p>
+
+    <p><strong>Root cause.</strong> The call was made against the primary
+    region, on the assumption that a plan is addressed where it was
+    created.</p>
+
+    <p><strong>Resolution.</strong> Create the client in the region being
+    activated.</p>
+
+    <p><strong>Lesson.</strong> This is the per-region data plane working as
+    designed. If activating Oregon required a call into Virginia, the plan
+    would depend on the region it exists to evacuate &mdash; which is the
+    failure mode a hand-rolled promotion Lambda has and nobody notices until
+    the day it matters.</p>
+
+    <p><strong>Problem.</strong> The first successful apply still errored:
+    "Provider produced inconsistent result after apply &hellip; block count
+    changed from 0 to 1", and every later plan proposed swapping the two
+    workflows.</p>
+
+    <p><strong>Root cause.</strong> The provider compares workflows by
+    position, while <code>GetPlan</code> returns them sorted by region. The
+    config declared us-west-2 first, so position 1 in the config and position
+    1 in the response were different workflows.</p>
+
+    <p><strong>Resolution.</strong> Declare the primary region's workflow
+    first, matching the order the API returns. The plan then shows no
+    changes.</p>
+
+    <p><strong>Lesson.</strong> The resource was created correctly in AWS
+    despite the error &mdash; worth checking the service before assuming a
+    failed apply means nothing happened, particularly for a resource billed
+    as a flat monthly fee.</p>
   </div>
 
   <div class="section" id="cleanup">

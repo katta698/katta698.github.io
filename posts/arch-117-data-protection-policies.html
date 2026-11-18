@@ -1,0 +1,453 @@
+---
+title: "AWS Architecture Series #117 — Masking hides the data on the way out; one permission puts it back"
+date: '2026-11-18T09:00:00'
+slug: aws-architecture-log-data-protection
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-18'
+problem: "A CloudWatch Logs data protection policy masks sensitive data at all egress points - Logs Insights, metric filters, subscription filters - and only holders of logs:Unmask can see through it. That is a read-time control, not redaction: the mask is applied on the way out, which is why a single IAM permission reverses it. Masking also only applies to events ingested after the policy exists, so turning it on does not clean history. And the audit half of the policy is optional, so a policy can be masking data while keeping no record of what it found."
+builds: "A reading of what a data protection policy actually guarantees: why masking is an egress transformation rather than redaction, what the audit and deidentify blocks each do and why the identifier lists must match, what an audit finding contains and what it deliberately leaves out, how account-level and log-group policies combine, and why detection is probabilistic rather than exact."
+verified_claims:
+  - claim: "When you create a data protection policy, then by default, sensitive data that matches the data identifiers you've selected is masked at all egress points, including CloudWatch Logs Insights, metric filters, and subscription filters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Only users who have the logs:Unmask IAM permission can view unmasked data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Sensitive data is detected and masked when it is ingested into the log group. When you set a data protection policy, log events ingested to the log group before that time are not masked"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "If you create a data protection policy for your entire account and you also create a policy for a single log group, both policies apply to that log group. All managed data identifiers that are specified in either policy are audited and masked in that log group"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Each log group can have only one log group-level data protection policy, but that policy can specify many managed data identifiers to audit and mask. The limit for a data protection policy is 30,720 characters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Masking sensitive data is supported for log groups in both the Standard and Essentials (formerly Infrequent Access) log classes"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "For some types of managed data identifiers, the detection depends on also finding certain keywords in proximity with the sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "CloudWatch Logs data protection allows you to leverage pattern matching and machine learning models to detect sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "You can also use custom data identifiers to create data identifiers tailored to your specific use case"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "A metric is emitted to CloudWatch when sensitive data is detected that matches the data identifiers you select. This is the LogEventsWithFindings metric and it is emitted in the AWS/Logs namespace"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Metrics emitted by data protection are vended metrics and are free of charge"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "CloudWatch Logs data protection can detect categories of sensitive data including credentials such as private keys or AWS secret access keys, financial information, personally identifiable information, protected health information, and device identifiers such as IP addresses or MAC addresses"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "CloudWatch Logs writes one findings report for each log event that contains sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "The resourceArn field displays the log group where the sensitive data was found"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "The count field displays the number of times this type of sensitive data appears in the log event"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "The start and end fields show where in the log event, by character count, each occurrence of the sensitive data appears"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "Even though this log event has two email addresses, the value of the LogEventsWithFindings metric is incremented only by one, because that metric counts the number of log events that contain sensitive data, not the number of occurrences of sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "If you send audit findings to a bucket that is protected with SSE-S3, no additional configuration is required"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "If you send audit findings to a bucket that is protected with SSE-KMS, you must update the key policy for your KMS key so that the log delivery account can write to your S3 bucket"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html
+  - claim: "The first block must include both a DataIdentifer array and an Operation property with an Audit action"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The second block must include both a DataIdentifer array and an Operation property with an Deidentify action. The DataIdentifer array must exactly match the DataIdentifer array in the first block of the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The Operation property with the Deidentify action is what actually masks the data, and it must contain the MaskConfig object. The MaskConfig object must be empty"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "This Audit action must contain a FindingsDestination object. You can optionally use that FindingsDestination object to list one or more destinations to send audit findings to. If you specify destinations such as log groups, Firehose streams, and S3 buckets, they must already exist"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "A user who has the logs:Unmask permission can use a GetLogEvents or FilterLogEvents operation with the unmask parameter set to true to view the unmasked log events"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The account-level policy is applied to existing log groups with eventual consistency. It might take up to 5 minutes before sensitive data in existing log groups begins to be masked"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "The JSON specified in policyDocument can be up to 30,720 characters long"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+  - claim: "A data protection policy requires exactly 2 JSON blocks, one Audit and one Deidentify, whose data identifier arrays must match"
+    derive: "1 + 1"
+    expect: "2"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+catch: "Masking is applied at egress - Logs Insights, metric filters, subscription filters - and logs:Unmask reverses it with the unmask parameter on GetLogEvents or FilterLogEvents. So the control is a read-time transformation rather than redaction, and one IAM permission is the whole boundary. It also only covers events ingested after the policy exists: log events ingested before that time are not masked. The audit findings are well designed - type, count and character offsets, never the value itself - but the FindingsDestination list is optional, so a policy can mask data while keeping no record of what it found."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #117 &middot; Security</div>
+  <h1 class="post-title">Masking hides the data on the way out; one permission puts it back</h1>
+  <p class="post-subtitle">A data protection policy masks sensitive data at every egress point in CloudWatch Logs. That is a read-time control, which is exactly why a single IAM permission reverses it &mdash; and why it cannot clean what is already there.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #116 covered the six account-level policy types and promised a closer look at the one with the
+      strongest-sounding name. Data protection policies
+      <em>&ldquo;let you audit and mask sensitive data that appears in log events ingested by the log groups
+      in your account&rdquo;</em>, across a long list of managed identifiers &mdash; credentials,
+      financial data, PII, PHI, device identifiers.
+    </p>
+    <p>
+      The word that does the work is <em>mask</em>, and it is doing something narrower than most readers
+      hear. Masking is not redaction, and the documentation says so clearly enough if you read two
+      sentences together rather than one.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The mask is applied at egress, so one IAM permission removes it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When you create a data protection policy, then by default, sensitive data that matches
+          the data identifiers you've selected is <strong>masked at all egress points</strong>, including
+          CloudWatch Logs Insights, metric filters, and subscription filters.&rdquo;</em>
+        </p>
+        <p>
+          And immediately after:
+          <em>&ldquo;<strong>Only users who have the logs:Unmask IAM permission can view unmasked
+          data.</strong>&rdquo;</em> Concretely, that user
+          <em>&ldquo;can use a GetLogEvents or FilterLogEvents operation with the unmask parameter set to
+          true to view the unmasked log events&rdquo;</em>.
+        </p>
+        <p>
+          Put those together and the architecture is unambiguous. The masking happens on the way out, which
+          means the unmasked value is still there to be returned when someone asks with the right
+          permission and a parameter. This is a presentation control over retained data, not a destruction
+          control. Both are legitimate designs; they answer different questions, and a compliance
+          conversation that treats the first as the second is building on sand.
+        </p>
+        <p>
+          The egress list is the reassuring half, and it is genuinely broad: Logs Insights, metric filters
+          and subscription filters are the three ways data leaves a log group, and all three mask. The copy
+          that reaches your SIEM through #115's subscription filter is masked. What is not protected is the
+          data at rest, from anyone holding <code>logs:Unmask</code>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat <code>logs:Unmask</code> as the actual control boundary and govern it like a break-glass permission: granted to a named role, never to a human group, with CloudTrail alerting on use. The data protection policy decides what is hidden; that permission decides who the hiding does not apply to, and it is the shorter list to audit.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>It starts when you create it, and the audit half is optional</strong></div>
+      <div class="challenge-body">
+        <p>
+          The timing rule is in an Important callout, and it is the same shape as #113's field indexes:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Sensitive data is detected and masked when it is ingested into the log group.
+          When you set a data protection policy, log events ingested to the log group before that time are
+          not masked.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So a policy created in response to an incident does nothing about the incident. The credentials
+          already in the log group stay visible to everyone who could already read them, and the only
+          remedies are the ones that were always available: delete the log stream, shorten retention, or
+          rotate what leaked. For an account-level policy there is also a propagation delay &mdash;
+          <em>&ldquo;It might take up to 5 minutes before sensitive data in existing log groups begins to be
+          masked&rdquo;</em>.
+        </p>
+        <p>
+          The second half of this is the policy's own structure. A data protection policy is two JSON
+          blocks: an <code>Audit</code> action and a <code>Deidentify</code> action, where
+          <em>&ldquo;The Operation property with the Deidentify action is what actually masks the
+          data&rdquo;</em> and the identifier lists
+          <em>&ldquo;must exactly match&rdquo;</em> between them. The audit block is mandatory &mdash; it is
+          <em>&ldquo;required to find the sensitive data terms&rdquo;</em> &mdash; and it must contain a
+          <code>FindingsDestination</code> object.
+        </p>
+        <p>
+          But: <em>&ldquo;You can <strong>optionally</strong> use that FindingsDestination object to list one
+          or more destinations to send audit findings to.&rdquo;</em> An empty destination list is valid. So
+          the common outcome is a policy that masks correctly and keeps no durable record of what it found,
+          leaving only the <code>LogEventsWithFindings</code> metric &mdash; a count, with no indication of
+          which log group, which identifier, or how often.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Configure a findings destination when you create the policy, not later, and note that destinations <em>&ldquo;must already exist&rdquo;</em> before the policy will accept them. If the destination is an S3 bucket with SSE-KMS, the extra step is real: <em>&ldquo;you must update the key policy for your KMS key so that the log delivery account can write to your S3 bucket&rdquo;</em>, whereas SSE-S3 needs nothing. And alarm on <code>LogEventsWithFindings</code> regardless, since it is free &mdash; <em>&ldquo;vended metrics and are free of charge&rdquo;</em>.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Detection is probabilistic, and the metric counts events rather than findings</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two statements set expectations correctly, and both are easy to skim past.
+        </p>
+        <p>
+          On the mechanism:
+          <em>&ldquo;CloudWatch Logs data protection allows you to leverage pattern matching and machine
+          learning models to detect sensitive data&rdquo;</em>, and &mdash; the important one &mdash;
+          <em>&ldquo;<strong>For some types of managed data identifiers, the detection depends on also
+          finding certain keywords in proximity with the sensitive data.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That is the difference between a regex and a detector. A driver's licence number in a log line
+          with no nearby word suggesting it is a driver's licence may not be detected at all. The design is
+          sound &mdash; context-free matching on a nine-digit number would mask half your request IDs
+          &mdash; but it means coverage is a function of how your application happens to phrase its log
+          messages, which nobody chose deliberately.
+        </p>
+        <p>
+          On measurement:
+          <em>&ldquo;Even though this log event has two email addresses, the value of the
+          LogEventsWithFindings metric is incremented only by one, because that metric counts the number of
+          log events that contain sensitive data, not the number of occurrences of sensitive
+          data.&rdquo;</em>
+        </p>
+        <p>
+          So the metric is a lower bound on exposure, and a bad one if your leak is a single log event
+          containing a thousand records. A flat line at one per minute can be one address or a bulk dump.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write a custom data identifier for anything whose format you control &mdash; internal account numbers, customer references, tenant IDs &mdash; rather than hoping a managed identifier infers it: <em>&ldquo;You can also use custom data identifiers to create data identifiers tailored to your specific use case.&rdquo;</em> And treat <code>LogEventsWithFindings</code> as a detector of <em>whether</em> rather than <em>how much</em>; the findings reports are where the counts live.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-117-data-protection-policies.svg" alt="Diagram: A CloudWatch Logs data protection policy audits and masks sensitive data in log events. Masking is applied at all egress points, including CloudWatch Logs Insights, metric filters and subscription filters, and only users who have the logs:Unmask IAM permission can view unmasked data, using the unmask parameter on GetLogEvents or FilterLogEvents. That makes the control a read-time transformation rather than redaction: the unmasked value is still retained and one IAM permission returns it, so logs:Unmask is the real control boundary. Masking applies only from the moment the policy exists, because sensitive data is detected and masked when it is ingested into the log group, and log events ingested before that time are not masked, with an account-level policy taking up to five minutes to begin masking in existing log groups. The policy itself is two JSON blocks whose data identifier arrays must exactly match: an Audit action, which is required to find the sensitive data terms and must contain a FindingsDestination object, and a Deidentify action, which is what actually masks the data and must contain an empty MaskConfig object. The findings destination list is optional, so a policy can mask correctly while keeping no durable record of what it found. Audit findings are written one report per log event containing sensitive data, and they contain the log group ARN, the identifier name, a count of occurrences in that event, and the start and end character offsets of each occurrence, but never the sensitive value itself. Destinations must already exist, and an S3 bucket protected with SSE-KMS requires a key policy update so the log delivery account can write to it, while SSE-S3 requires nothing. Detection uses pattern matching and machine learning models, and for some managed data identifiers detection depends on also finding certain keywords in proximity with the sensitive data, so coverage depends on how log messages are phrased; custom data identifiers exist for formats you control. The LogEventsWithFindings metric is emitted in the AWS slash Logs namespace, is free of charge, and counts the number of log events containing sensitive data rather than the number of occurrences, so it is a lower bound on exposure. Account-level and log-group-level policies are cumulative, with all identifiers from either policy audited and masked, each log group may have only one log-group-level policy, the policy document limit is 30,720 characters, and masking is supported in both the Standard and Essentials log classes.">
+
+    <h3>What the control actually does</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Question</th><th>Answer</th></tr>
+      <tr>
+        <td>Is the sensitive value removed from the log group?</td>
+        <td><strong>No</strong> &mdash; masking is applied <em>&ldquo;at all egress points&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Who can see through it?</td>
+        <td>Holders of <code>logs:Unmask</code>, via the <code>unmask</code> parameter</td>
+      </tr>
+      <tr>
+        <td>Does it cover data already in the log group?</td>
+        <td><strong>No</strong> &mdash; events ingested before the policy <em>&ldquo;are not masked&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Does it cover what leaves via a subscription filter?</td>
+        <td>Yes &mdash; subscription filters are an egress point</td>
+      </tr>
+      <tr>
+        <td>Does it cover Logs Insights queries?</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Is there a record of what was found?</td>
+        <td>Only if you configured a findings destination &mdash; it is optional</td>
+      </tr>
+      <tr>
+        <td>Does it work in the Essentials log class?</td>
+        <td>Yes &mdash; <em>&ldquo;both the Standard and Essentials&rdquo;</em> classes</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      That last row is worth noting against #114. Almost everything else in CloudWatch Logs is
+      Standard-only &mdash; field indexing, metric filters, subscription filters, Live Tail. Masking works
+      in the cheap class, which makes the consolidation tier a safer place to put logs you have not fully
+      vetted than its feature table would suggest.
+    </p>
+
+    <h3>The two blocks, and why they must agree</h3>
+    <p>
+      <em>&ldquo;The first block must include both a DataIdentifer array and an Operation property with an
+      Audit action&rdquo;</em>; <em>&ldquo;The second block must include both a DataIdentifer array and an
+      Operation property with an Deidentify action. The DataIdentifer array must exactly match the
+      DataIdentifer array in the first block of the policy.&rdquo;</em> And the deidentify block is
+      mechanically fixed: it <em>&ldquo;must contain the &quot;MaskConfig&quot;: {} object. The
+      &quot;MaskConfig&quot;: {} object must be empty.&rdquo;</em>
+    </p>
+    <p>
+      The requirement that the arrays match exactly is the service refusing to let you audit one set of
+      identifiers and mask a different one. That could only produce two outcomes, both bad: data masked
+      with no finding recorded, or a finding recorded for data still visible. Forcing the two lists to be
+      identical removes the whole class of mistake, at the cost of a policy document that looks redundant
+      and invites someone to simplify it.
+    </p>
+
+    <h3>What a finding tells you, and what it refuses to</h3>
+    <p>
+      <em>&ldquo;CloudWatch Logs writes one findings report for each log event that contains sensitive
+      data&rdquo;</em>, containing the log group ARN, the identifier
+      <em>&ldquo;name&rdquo;</em>, a <em>&ldquo;count&rdquo;</em> of occurrences in that event, and
+      <em>&ldquo;The start and end fields show where in the log event, by character count, each occurrence
+      of the sensitive data appears.&rdquo;</em>
+    </p>
+    <p>
+      What it does not contain is the value. A finding says <em>an email address occupied characters 13 to
+      26 of this event</em>, never which address. That is the right call and not an obvious one: a findings
+      pipeline that carried the sensitive values would recreate the exposure in a second system, usually a
+      less protected one. Offsets and counts are enough to triage and fix a logging statement without
+      copying the secret into S3.
+    </p>
+    <p>
+      The one thing to design around is that offsets are a weak side channel in aggregate &mdash; stable
+      offsets across many events reveal the shape of your log lines, not their contents. Negligible for
+      most, worth a thought if findings go somewhere broadly readable.
+    </p>
+
+    <h3>How account and log-group policies combine</h3>
+    <p>
+      From #116's conflict table, this is the cumulative case:
+      <em>&ldquo;If you create a data protection policy for your entire account and you also create a
+      policy for a single log group, both policies apply to that log group. All managed data identifiers
+      that are specified in either policy are audited and masked in that log group.&rdquo;</em>
+    </p>
+    <p>
+      With <em>&ldquo;Each log group can have only one log group-level data protection policy&rdquo;</em>
+      and a document limit of <em>&ldquo;30,720 characters&rdquo;</em>. Cumulative is the right default for
+      a protective control &mdash; a team can add identifiers for their own data without being able to
+      subtract the organisation's. There is no exclusion mechanism here at all, which #116 showed is
+      unusual among the six policy types and, for this one, correct.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Masking at egress rather than at rest is the defensible choice</h3>
+    <p>
+      Destroying the original at ingestion would make the log group the only copy and the detection
+      irreversible: a false positive would silently corrupt an audit trail, with no way to recover what was
+      overwritten. Masking on read keeps the record intact and makes the exception auditable through one
+      permission. The honest framing is that this control reduces casual exposure across every read path,
+      and does not claim the data is gone.
+    </p>
+
+    <h3>Keeping values out of findings is a genuinely good decision</h3>
+    <p>
+      The obvious design is for an audit finding to say what it found. Resisting that keeps the
+      sensitive-data blast radius inside the log group instead of fanning it out to every findings
+      destination, and offsets plus counts are sufficient for the actual task &mdash; locating the logging
+      statement that emitted it.
+    </p>
+
+    <h3>Cumulative with no exclusions is right for a protective policy</h3>
+    <p>
+      Every other account-level policy type in #116 has some way to scope or exclude. This one does not,
+      and a protective baseline that a log group owner could narrow would not be a baseline. Additive-only
+      is the correct asymmetry.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>The real control boundary</td>
+        <td>Govern <code>logs:Unmask</code> as break-glass</td>
+        <td>Masking is applied at egress and that permission reverses it</td>
+      </tr>
+      <tr>
+        <td>Findings destination</td>
+        <td>Configure one at creation</td>
+        <td>It is optional, and without it the only evidence is an event count</td>
+      </tr>
+      <tr>
+        <td>Destination encryption</td>
+        <td>SSE-S3 unless you need SSE-KMS</td>
+        <td>SSE-KMS needs a key policy update for the log delivery account; SSE-S3 needs nothing</td>
+      </tr>
+      <tr>
+        <td>Responding to a leak already in logs</td>
+        <td>Delete, shorten retention, or rotate &mdash; not a policy</td>
+        <td>Events ingested before the policy are never masked</td>
+      </tr>
+      <tr>
+        <td>Identifiers for your own formats</td>
+        <td>Custom data identifiers</td>
+        <td>Managed detection can depend on nearby keywords, which your log phrasing decides</td>
+      </tr>
+      <tr>
+        <td>Measuring exposure</td>
+        <td>Findings reports, with the metric as the trigger</td>
+        <td><code>LogEventsWithFindings</code> counts events, not occurrences</td>
+      </tr>
+      <tr>
+        <td>Alarming</td>
+        <td>Alarm on the metric from day one</td>
+        <td>It is free, and it is the only always-present signal</td>
+      </tr>
+      <tr>
+        <td>Scope</td>
+        <td>Account-level baseline, log-group policies to add</td>
+        <td>The two are cumulative and there is no exclusion mechanism</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every principal with <code>logs:Unmask</code>.</strong> That list is the set of
+      identities for whom your data protection policy does not exist. If it is longer than a handful of
+      break-glass roles, the policy is decoration.
+    </p>
+    <p>
+      <strong>Check whether each data protection policy has a findings destination.</strong> A policy
+      masking without recording is the common configuration and the one that leaves you unable to answer
+      what leaked, when, or from where.
+    </p>
+    <p>
+      <strong>Compare policy creation dates against log group retention.</strong> Any log group whose
+      retention reaches back before its policy has an unmasked window still being served, and the length of
+      it is arithmetic you can do today.
+    </p>
+    <p>
+      <strong>Test detection with a synthetic event in the format your application actually logs.</strong>
+      Because some identifiers need nearby keywords, the only reliable coverage check is writing a line
+      that looks like your real lines and querying for it.
+    </p>
+    <p>
+      <strong>Confirm CloudTrail alerting on <code>unmask</code> use.</strong> The permission is the
+      boundary; its exercise should not be silent.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Five posts ago this series was looking at alarms that say nothing. The thread since has been about
+      controls whose name is broader than their guarantee: an index that only covers what arrived after it,
+      a class whose saving is only at ingestion, a subscription whose permissions failure skips the logs, an
+      API whose retention policy deletes.
+    </p>
+    <p>
+      Data protection policies are the most sharply named of them. <em>Mask</em> sounds terminal, and the
+      control is genuinely strong across every path data takes out of a log group &mdash; Logs Insights,
+      metric filters, subscription filters, all of it. But the data is still there, one IAM permission and
+      one request parameter away, which is not a flaw so much as the thing you must know in order to
+      describe the control accurately to an auditor.
+    </p>
+    <p>
+      So the rule is: the policy decides what is hidden, and <code>logs:Unmask</code> decides who it is
+      hidden from. Govern the second as carefully as you configure the first, record what the audit block
+      finds rather than leaving the destination empty, and remember that none of it reaches backwards to the
+      credential that was logged last Tuesday.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &mdash; CloudWatch Logs custom data identifiers: what a custom pattern can and cannot express, the documented constraints on it, and why a detector that depends on keywords in proximity behaves differently from a pattern match in ways that decide your coverage.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html" target="_blank" rel="noopener">Help protect sensitive log data with masking &#8212; that masking is applied at all egress points including Logs Insights, metric filters and subscription filters, that only <code>logs:Unmask</code> holders see unmasked data, that events ingested before the policy are not masked, how account-level and log-group policies combine cumulatively, the one-policy-per-log-group rule and the 30,720-character limit, support in both the Standard and Essentials log classes, the keyword-proximity dependency for some identifiers, custom data identifiers, and the free <code>LogEventsWithFindings</code> metric</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-audit-findings.html" target="_blank" rel="noopener">Audit findings reports &#8212; that one report is written per log event containing sensitive data, the fields it carries including the log group ARN, identifier name, occurrence count and character offsets, that the metric counts events rather than occurrences, and the SSE-S3 versus SSE-KMS requirements for an S3 destination</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html" target="_blank" rel="noopener">PutAccountPolicy &#8212; the two-block policy structure with matching data identifier arrays, that the Deidentify action is what masks and must carry an empty <code>MaskConfig</code>, that the Audit action's findings destinations are optional and must already exist, the <code>unmask</code> parameter on <code>GetLogEvents</code> and <code>FilterLogEvents</code>, and the up-to-5-minute propagation for account-level policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html" target="_blank" rel="noopener">Custom data identifiers &#8212; further reading on defining identifiers for formats you control, and the constraints on them; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/protect-sensitive-log-data-types.html" target="_blank" rel="noopener">Types of data that you can protect &#8212; further reading on the managed data identifiers available and the keywords some of them require; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data-viewunmasked.html" target="_blank" rel="noopener">View unmasked data &#8212; further reading on the console and API paths for reading through a mask; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
