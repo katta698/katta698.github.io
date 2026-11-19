@@ -56,8 +56,8 @@ def build():
     d.note(516, 412, "standalone primary. There is no un-promote.",
            size=11.5, colour=RED, weight="600")
 
-    d.note(44, 390, "MEASURED FAILOVER:", weight="700", size=10.5, colour=MUTED)
-    d.note(44, 412, "726 s (12.1 min)", size=13, colour=GREEN, weight="700")
+    d.note(44, 390, "DATABASE SERVING AGAIN:", weight="700", size=10.5, colour=MUTED)
+    d.note(44, 412, "160 s after the promote call", size=13, colour=GREEN, weight="700")
 
     d.assert_clean()
     return d
