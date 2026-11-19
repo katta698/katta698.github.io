@@ -1,0 +1,421 @@
+---
+title: "AWS Architecture Series #118 — The regex is an allow-list of characters, and brackets are not parentheses"
+date: '2026-11-19T09:00:00'
+slug: aws-architecture-custom-data-identifiers
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-19'
+problem: "A custom data identifier is your own regular expression in a CloudWatch Logs data protection policy, and the documented constraint is not a syntax restriction but a list of permitted characters. Read that list for what it omits: the opening and closing parenthesis are not in it, which is what grouping, bounded alternation and lookarounds are built from. Combined with a 200-character ceiling and a limit of 10 identifiers per policy, that decides which business-specific formats you can detect - and because a custom identifier is a pure pattern with none of the keyword-proximity inference that managed identifiers use, any context you need must be encoded in the pattern yourself."
+builds: "A reading of what a custom data identifier can and cannot express: why the regex constraint is an allow-list rather than a dialect, what the omission of parentheses removes, how a pure pattern differs from a managed identifier that depends on nearby keywords, and how the 10-per-policy budget interacts with policies that combine."
+verified_claims:
+  - claim: "Custom data identifiers (CDIs) let you define your own custom regular expressions that can be used in your data protection policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Using custom data identifiers, you can target business-specific personally identifiable information (PII) use cases that managed data identifiers can't provide"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Custom data identifiers can be used in conjunction with managed data identifiers"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "A maximum of 10 custom data identifiers are supported for each data protection policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Custom data identifier names have a maximum length of 128 characters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "RegEx has a maximum length of 200 characters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Custom data identifiers cannot share the same name as a managed data identifier"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Custom data identifiers can be specified within an account-level data protection policy or in log group-level data protection policies"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "Similar to managed data identifiers, custom data identifiers defined within an account-level policy work in combination with custom data identifiers defined in a log group-level policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "This regular expression will detect and mask log events with nine numbers after EmployeeID-"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "A regex of 200 characters is 64 shorter than the 128-character name limit doubled, so the pattern budget is smaller than the name budget by a wide margin"
+    derive: "128 * 2 - 200"
+    expect: "56"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
+  - claim: "For some types of managed data identifiers, the detection depends on also finding certain keywords in proximity with the sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "CloudWatch Logs data protection allows you to leverage pattern matching and machine learning models to detect sensitive data"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "The limit for a data protection policy is 30,720 characters"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Each log group can have only one log group-level data protection policy, but that policy can specify many managed data identifiers to audit and mask"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "If you create a data protection policy for your entire account and you also create a policy for a single log group, both policies apply to that log group"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "Sensitive data is detected and masked when it is ingested into the log group. When you set a data protection policy, log events ingested to the log group before that time are not masked"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html
+  - claim: "The second block must include both a DataIdentifer array and an Operation property with an Deidentify action. The DataIdentifer array must exactly match the DataIdentifer array in the first block of the policy"
+    source: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html
+catch: "The documented constraint on a custom data identifier's regex is a list of permitted characters, not a named dialect, and the list omits the opening and closing parenthesis. Everything built from parentheses goes with them: grouping, bounded alternation, quantified groups, lookahead and lookbehind. What remains is character classes, anchors, the standard quantifiers and a top-level alternation you cannot scope. Add a 200-character ceiling and 10 identifiers per policy, and the practical consequence is that a custom identifier is a single flat pattern - so the context a managed identifier would infer from nearby keywords has to be written into the pattern as a literal, exactly as AWS's own example does."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #118 &middot; Security</div>
+  <h1 class="post-title">The regex is an allow-list of characters, and brackets are not parentheses</h1>
+  <p class="post-subtitle">A custom data identifier lets you bring your own pattern to log masking. The constraint on that pattern is published as a list of permitted characters &mdash; and what the list leaves out decides what you can detect.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #117 ended on the limit of managed data identifiers: detection for some of them
+      <em>&ldquo;depends on also finding certain keywords in proximity with the sensitive data&rdquo;</em>,
+      which means coverage depends on how your application happens to phrase a log line. The documented
+      answer is to bring your own pattern.
+      <em>&ldquo;Custom data identifiers (CDIs) let you define your own custom regular expressions that can
+      be used in your data protection policy&rdquo;</em>, so you can
+      <em>&ldquo;target business-specific personally identifiable information (PII) use cases that managed
+      data identifiers can't provide&rdquo;</em> &mdash; employee IDs, tenant references, internal account
+      numbers.
+    </p>
+    <p>
+      The constraints page is short. It is also the most consequential page in the feature, because of how
+      the regex restriction is written.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The constraint is an allow-list, so read it for what is absent</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS does not name a regex dialect or list unsupported constructs. It publishes the characters you
+          may use:
+        </p>
+        <p>
+          <em>&ldquo;RegEx has a maximum length of 200 characters. The following characters are
+          supported:&rdquo;</em> &mdash; alphanumerics; the symbols
+          <code>_ # = @ / ; , -</code> plus space, apostrophe and double quote; and the regex reserved
+          characters <code>^ $ ? [ ] { } | \\ * + .</code>
+        </p>
+        <p>
+          Now read the reserved list again and notice what is not on it. <strong>There is no opening or
+          closing parenthesis.</strong>
+        </p>
+        <p>
+          Parentheses are how a regular expression expresses structure, so their absence removes a family
+          of constructs at once: grouping, alternation scoped to part of a pattern, quantifiers applied to
+          a sequence, capture groups, non-capturing groups, and both lookahead and lookbehind. The
+          alternation character <code>|</code> <em>is</em> permitted &mdash; but without parentheses it can
+          only separate whole top-level patterns, never a bounded choice inside one. You can write
+          <code>cat|dog</code>; you cannot write <code>(cat|dog)-\d{4}</code>.
+        </p>
+        <p>
+          Square brackets and braces are present, which is what makes the feature useful at all: character
+          classes like <code>[A-Z]</code> and counted repetition like <code>\d{9}</code> cover most
+          fixed-format identifiers. But brackets are a character class, not a group &mdash; they choose one
+          character from a set, and no amount of them substitutes for grouping a sequence.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Design identifiers whose formats are flat and fixed, and expect to write one custom identifier per format variant rather than one clever pattern covering several. Where a managed identifier already exists for the data type, use it and keep your 10 custom slots for the formats only you have. And treat the 200-character ceiling as a real design constraint, not a safety margin &mdash; it is shorter than one careless character class expansion.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>A custom identifier has no context, so the context must be in the pattern</strong></div>
+      <div class="challenge-body">
+        <p>
+          Managed identifiers are not pure patterns. The service
+          <em>&ldquo;allows you to leverage pattern matching and machine learning models to detect sensitive
+          data&rdquo;</em>, and for some types
+          <em>&ldquo;the detection depends on also finding certain keywords in proximity with the sensitive
+          data&rdquo;</em>. That inference is doing real work: it is what stops a nine-digit number being
+          masked everywhere it appears.
+        </p>
+        <p>
+          A custom data identifier has none of it. It is the regex you wrote, matching exactly what the
+          regex matches. That cuts both ways, and both directions matter:
+        </p>
+        <p>
+          <strong>No missed detections from phrasing.</strong> A managed identifier that needs a nearby
+          keyword will miss your data when the log line does not supply one. A custom identifier will not,
+          because it is not looking for one.
+        </p>
+        <p>
+          <strong>No protection from a bare number.</strong> If your employee IDs are nine digits with no
+          prefix, a custom identifier for <code>\d{9}</code> masks every nine-digit number in the log group
+          &mdash; request IDs, byte counts, timestamps. The feature gives you no way to say
+          <em>only when it looks like an employee ID</em>, because that judgement is exactly what the
+          managed identifiers' keyword proximity provides and custom ones lack.
+        </p>
+        <p>
+          AWS's own example quietly encodes the fix. The recommended pattern is
+          <code>EmployeeID-\d{9}</code>, which
+          <em>&ldquo;will detect and mask log events with nine numbers after EmployeeID-&rdquo;</em>. The
+          literal prefix <em>is</em> the context, written by hand because the service will not infer it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Anchor every custom identifier on a literal that only appears with the sensitive value &mdash; a field name, a prefix, a delimiter. If your data format has no such literal, the honest conclusion is that this feature cannot distinguish it from ordinary numbers, and the fix belongs upstream in how the application logs the value rather than in the policy.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Ten per policy, and policies combine &mdash; so the budget is not what it looks like</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;A maximum of 10 custom data identifiers are supported for each data protection
+          policy.&rdquo;</em> Ten is a small number once each one is a single flat pattern covering a single
+          format variant.
+        </p>
+        <p>
+          The combination rule softens it, and introduces a different problem:
+          <em>&ldquo;Custom data identifiers can be specified within an account-level data protection policy
+          or in log group-level data protection policies&rdquo;</em>, and
+          <em>&ldquo;Similar to managed data identifiers, custom data identifiers defined within an
+          account-level policy work in combination with custom data identifiers defined in a log
+          group-level policy.&rdquo;</em>
+        </p>
+        <p>
+          So the effective set for a log group is the union of two policies &mdash; up to ten from the
+          account and up to ten of its own &mdash; which is generous. But it also means no single document
+          shows what is actually being detected in that log group, and #117's rule that
+          <em>&ldquo;Each log group can have only one log group-level data protection policy&rdquo;</em>
+          means a team adding one identifier must own the whole local list.
+        </p>
+        <p>
+          Two smaller constraints shape the naming:
+          <em>&ldquo;Custom data identifier names have a maximum length of 128 characters&rdquo;</em> with
+          only alphanumerics, underscore and hyphen permitted, and
+          <em>&ldquo;Custom data identifiers cannot share the same name as a managed data
+          identifier.&rdquo;</em> That second rule is a real trap for the obvious naming choice: calling
+          yours <code>EmailAddress</code> or <code>DriversLicense-US</code> collides with the managed set.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Keep custom identifiers at the account level where they are organisation-wide, and reserve log-group policies for genuinely local formats. Prefix every custom name with something that cannot collide with AWS's catalogue &mdash; a company or team token &mdash; and remember that the whole policy document, identifiers included, shares the <em>&ldquo;30,720 characters&rdquo;</em> limit.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-118-custom-data-identifiers.svg" alt="Diagram: A CloudWatch Logs custom data identifier lets you define your own regular expression in a data protection policy, targeting business-specific PII that managed data identifiers cannot provide, and custom identifiers can be used in conjunction with managed ones. The documented constraint on the pattern is published as a list of permitted characters rather than a named dialect: alphanumerics, the symbols underscore, hash, equals, at, slash, semicolon, comma, hyphen, space, apostrophe and double quote, and the regex reserved characters caret, dollar, question mark, square brackets, braces, pipe, backslash, asterisk, plus and period. The opening and closing parenthesis are not on that list, and parentheses are what grouping, alternation scoped inside a pattern, quantified sequences, capture and non-capturing groups, lookahead and lookbehind are built from, so all of those are unavailable. The pipe is permitted but without parentheses it can only separate whole top-level patterns rather than express a bounded choice. Square brackets give character classes and braces give counted repetition, which covers most fixed-format identifiers. The regex has a maximum length of 200 characters, names a maximum of 128 characters restricted to alphanumerics, underscore and hyphen, a custom identifier cannot share a name with a managed data identifier, and a maximum of 10 custom data identifiers are supported for each data protection policy, within an overall policy document limit of 30,720 characters. A custom identifier is a pure pattern with none of the machine learning or keyword proximity inference that managed identifiers use, which means it never misses a detection because a log line lacked a nearby keyword, and equally it cannot distinguish a bare nine-digit employee number from any other nine-digit number, so the context must be written into the pattern as a literal exactly as the AWS example EmployeeID followed by nine digits does. Custom identifiers may be defined in an account-level policy or in log-group-level policies and the two work in combination, so the effective set for a log group is the union of both, while each log group may have only one log-group-level data protection policy. As with all data protection, masking applies only to events ingested after the policy exists, and the audit and deidentify blocks must list exactly matching identifier arrays.">
+
+    <h3>What the permitted-character list does and does not allow</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Construct</th><th>Available?</th><th>Why</th></tr>
+      <tr><td>Character class &mdash; <code>[A-Z0-9]</code></td><td>Yes</td><td><code>[</code> and <code>]</code> are listed</td></tr>
+      <tr><td>Counted repetition &mdash; <code>\d{9}</code></td><td>Yes</td><td><code>{</code>, <code>}</code> and <code>\\</code> are listed</td></tr>
+      <tr><td>Anchors &mdash; <code>^</code>, <code>$</code></td><td>Yes</td><td>Both listed</td></tr>
+      <tr><td>Quantifiers &mdash; <code>*</code>, <code>+</code>, <code>?</code></td><td>Yes</td><td>All three listed</td></tr>
+      <tr><td>Top-level alternation &mdash; <code>a|b</code></td><td>Yes</td><td><code>|</code> is listed</td></tr>
+      <tr><td><strong>Grouping &mdash; <code>(abc)</code></strong></td><td><strong>No</strong></td><td><code>(</code> and <code>)</code> are not on the list</td></tr>
+      <tr><td><strong>Bounded alternation &mdash; <code>(a|b)x</code></strong></td><td><strong>No</strong></td><td>Needs grouping</td></tr>
+      <tr><td><strong>Quantified sequence &mdash; <code>(ab){3}</code></strong></td><td><strong>No</strong></td><td>Needs grouping</td></tr>
+      <tr><td><strong>Lookahead / lookbehind</strong></td><td><strong>No</strong></td><td>Built from parentheses</td></tr>
+    </table>
+    </div>
+    <p>
+      This is a reading of an explicit allow-list &mdash; AWS says which characters are supported, and
+      parentheses are not among them. It is worth testing against your own patterns rather than taking
+      anyone's word for it, but the list is unambiguous about what it contains.
+    </p>
+    <p>
+      The practical shape that falls out: a custom data identifier is a flat pattern with a literal anchor,
+      a character class or two, and a count. That covers an enormous proportion of real internal
+      identifiers, and covers almost none of the clever ones.
+    </p>
+
+    <h3>Managed against custom, as detectors</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Managed data identifier</th><th>Custom data identifier</th></tr>
+      <tr>
+        <td>How it decides</td>
+        <td><em>&ldquo;pattern matching and machine learning models&rdquo;</em></td>
+        <td>Your regex, exactly</td>
+      </tr>
+      <tr>
+        <td>Uses surrounding context</td>
+        <td>Sometimes &mdash; <em>&ldquo;keywords in proximity&rdquo;</em></td>
+        <td><strong>Never</strong></td>
+      </tr>
+      <tr>
+        <td>Misses data when phrasing changes</td>
+        <td>Possible</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td>Masks things you did not mean</td>
+        <td>Less likely</td>
+        <td><strong>As likely as your pattern is loose</strong></td>
+      </tr>
+      <tr>
+        <td>Budget</td>
+        <td>Many per policy</td>
+        <td>10 per policy</td>
+      </tr>
+      <tr>
+        <td>You can read what it will do</td>
+        <td>Not exactly</td>
+        <td>Yes &mdash; it is the pattern</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the real argument for custom identifiers even where a managed one exists. A regex is
+      reviewable. A model with keyword proximity is not, and when a compliance question asks <em>what
+      exactly is masked</em>, a pattern you can read aloud is a better answer than a category name.
+    </p>
+
+    <h3>Where custom identifiers sit in the policy</h3>
+    <p>
+      They are declared once in a <code>Configuration</code> block and then referenced by name in the
+      statements, which means the #117 rule applies to them unchanged:
+      <em>&ldquo;The DataIdentifer array must exactly match the DataIdentifer array in the first block of
+      the policy.&rdquo;</em> A custom identifier that appears in the audit statement and not the
+      deidentify statement is a policy that will not be accepted, which is the same guard against
+      audit-one-thing-mask-another applied to your own patterns.
+    </p>
+    <p>
+      And the timing rule from #117 is unchanged too:
+      <em>&ldquo;log events ingested to the log group before that time are not masked&rdquo;</em>. Adding a
+      custom identifier for a format you just discovered leaking does nothing about the events already
+      written.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>An allow-list is the right way to constrain a regex you will run on every log event</h3>
+    <p>
+      This pattern is evaluated at ingestion, on every event, in a managed service shared by every
+      customer. Catastrophic backtracking is a real denial-of-service vector, and the constructs that cause
+      it &mdash; nested quantified groups, in particular &mdash; are exactly what parentheses enable.
+      Removing the character removes the class of pattern, with no need to analyse submitted expressions
+      for pathological behaviour. A restriction that looks arbitrary is doing specific work.
+    </p>
+
+    <h3>Making you write the context is more honest than inferring it</h3>
+    <p>
+      A custom identifier could have tried to infer proximity the way managed ones do, and would then have
+      the same failure mode: coverage depending on phrasing nobody chose. Instead the pattern is the whole
+      specification, which makes a custom identifier auditable in a way a model is not.
+    </p>
+
+    <h3>Combining account and log-group identifiers keeps the baseline additive</h3>
+    <p>
+      The two levels work in combination rather than one replacing the other, matching the cumulative rule
+      for everything else in data protection. A team can add detection for its own formats without being
+      able to remove the organisation's.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Pattern design</td>
+        <td>Flat patterns with a literal anchor</td>
+        <td>Parentheses are absent from the permitted-character list, so grouping is unavailable</td>
+      </tr>
+      <tr>
+        <td>Format variants</td>
+        <td>One identifier per variant</td>
+        <td>Bounded alternation needs grouping; top-level <code>|</code> cannot be scoped</td>
+      </tr>
+      <tr>
+        <td>Data with no distinguishing literal</td>
+        <td>Fix the logging, not the policy</td>
+        <td>A bare number cannot be told apart from any other number without context</td>
+      </tr>
+      <tr>
+        <td>Naming</td>
+        <td>Prefix with a company or team token</td>
+        <td>Names cannot collide with managed identifiers, and the obvious names are taken</td>
+      </tr>
+      <tr>
+        <td>Where to declare them</td>
+        <td>Account level for organisation-wide formats</td>
+        <td>The two levels combine, and one log-group policy must carry every local identifier</td>
+      </tr>
+      <tr>
+        <td>Budget</td>
+        <td>Spend the 10 on formats only you have</td>
+        <td>Managed identifiers cover the standard types without using the quota</td>
+      </tr>
+      <tr>
+        <td>Compliance evidence</td>
+        <td>Prefer a custom identifier where the answer must be exact</td>
+        <td>A regex is reviewable; keyword-proximity detection is not</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Test each custom identifier against a line in your real log format.</strong> Not a synthetic
+      ideal case &mdash; the actual shape your application emits, including the surrounding fields. The
+      pattern either matches it or does not, and that is the whole of its behaviour.
+    </p>
+    <p>
+      <strong>Check every pattern for an anchoring literal.</strong> Any identifier that is purely a
+      character class and a count will mask unrelated values of the same shape, and the symptom is masked
+      request IDs rather than a reported error.
+    </p>
+    <p>
+      <strong>Count your identifiers against the 10-per-policy limit, per policy rather than in
+      total.</strong> An account policy at the limit leaves no room for the next organisation-wide format.
+    </p>
+    <p>
+      <strong>Confirm no custom name collides with a managed identifier</strong>, since the natural names
+      for common data types are the ones AWS has already used.
+    </p>
+    <p>
+      <strong>Verify each custom identifier appears in both policy statements.</strong> The arrays must
+      match exactly, and a custom identifier is just as subject to that as a managed one.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This is the seventh post in a row inside CloudWatch Logs, and the thread through all of them has been
+      the same: the documented behaviour is narrower than the name, and the narrowing is written down
+      somewhere unglamorous. An index that covers only what arrived after it. A class whose discount is
+      only at ingestion. A subscription whose permissions error skips the logs. A retention policy that
+      deletes. A mask that is applied on the way out.
+    </p>
+    <p>
+      Custom data identifiers put that lesson in its smallest possible form. There is no architectural
+      subtlety here at all &mdash; just a list of characters, published without comment, whose omissions
+      decide which of your business formats you are able to protect. Nobody will tell you that a pattern
+      you cannot write is a pattern you needed; you find out by trying to write it, or by reading the list
+      carefully enough to notice the parenthesis is missing.
+    </p>
+    <p>
+      So the rule for this feature is to design within flat patterns anchored on literals, spend the ten
+      slots on formats only you have, and accept the one thing it genuinely cannot do: tell your nine-digit
+      number apart from everyone else's. That problem is solved where the log line is written, not where it
+      is masked.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; AWS Lambda runtime deprecation and the shared responsibility model: what AWS patches and what it does not, what happens to a function left on a deprecated runtime, and how the new customer-managed runtimes change where that responsibility sits.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html" target="_blank" rel="noopener">Custom data identifiers &#8212; the definition and purpose, the complete constraints list including the 200-character regex limit and its permitted-character allow-list, the 128-character name limit and permitted name characters, the maximum of 10 per data protection policy, the rule against sharing a name with a managed data identifier, the combination of account-level and log-group-level custom identifiers, and the <code>EmployeeID-\d{9}</code> worked example</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html" target="_blank" rel="noopener">Help protect sensitive log data with masking &#8212; that detection uses pattern matching and machine learning models and that some managed identifiers depend on keywords in proximity, the 30,720-character policy limit, the one-policy-per-log-group rule, the cumulative combination of account and log-group policies, and that events ingested before the policy are not masked</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutAccountPolicy.html" target="_blank" rel="noopener">PutAccountPolicy &#8212; that the audit and deidentify blocks must carry exactly matching data identifier arrays, which applies to custom identifiers as well as managed ones</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-managed-data-identifiers.html" target="_blank" rel="noopener">CloudWatch Logs managed data identifiers for sensitive data types &#8212; further reading on the catalogue whose names a custom identifier may not reuse; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/protect-sensitive-log-data-types.html" target="_blank" rel="noopener">Types of data that you can protect &#8212; further reading on which managed identifiers require nearby keywords; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
