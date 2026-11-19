@@ -1,0 +1,416 @@
+---
+title: "Azure Architecture Series #98 — Application Gateway v2 Autoscaling and Zone Redundancy"
+date: '2026-11-19T09:00:00'
+slug: azure-architecture-application-gateway-v2-autoscaling-and-zone-redundancy
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-11-19'
+verified_claims:
+  - claim: "Microsoft announced the deprecation of Azure Application Gateway V1 on April 28, 2023, and Application Gateway V1 retired on April 28, 2026, with Microsoft no longer supporting V1 resources"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement
+  - claim: "There's no service-level agreement for Application Gateway V1 resources, and as Microsoft decommissions the hardware that supports V1, traffic passing through remaining V1 resources can't be guaranteed"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement
+  - claim: "Remaining Application Gateway V1 deployments can experience traffic disruptions as Microsoft blocks the data path and deletes the resources"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement
+  - claim: "Microsoft will notify customers of the timeline for deleting Application Gateway V1 deployments, and after that notification will delete deployments that aren't migrated to V2"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement
+  - claim: "Application Gateway and WAF v2 can be configured to scale in two modes, autoscaling and manual, and these scaling modes don't apply to Application Gateway Basic"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "With autoscaling you must specify a minimum and optionally a maximum instance count, and minimum capacity ensures Application Gateway and WAF v2 don't fall below the minimum instance count specified, even without traffic"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "The minimum instance count can range from 0 to 100, each instance is roughly equivalent to 10 more reserved Capacity Units, and zero signifies no reserved capacity and is purely autoscaling in nature"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "The instance counts can range from 0 to 125, and the default value for maximum instance count is 10 if not specified"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "With manual mode specifying instance count is mandatory and instance count can vary from 1 to 125 instances, and if there's more traffic than the gateway can handle it could result in traffic loss"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Application Gateway Basic automatically scales up to an estimated 200 connections per second, based on an RSA 2048-bit key TLS certificate"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "If the maximum instance count is updated to a value less than the current instance count the new setting doesn't take immediate effect, and is only enforced after a scale-in operation brings the current count below the newly updated maximum"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "If a scale-in operation doesn't occur because the autoscaling scale in thresholds are not met, the new maximum setting will not be applied"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Provisioning a new Application Gateway instance may take approximately three to five minutes"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Application Gateway instances scale out in groups, and the group size is increased proactively when the current instance count is higher"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Each Azure Application Gateway instance can handle up to 10 Capacity Units"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "For scale-in events Application Gateway drains existing connections for 5 minutes on the instance subject for removal, after which existing connections are closed and the instance removed, while new connections during or after that time are established to other existing instances"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "During autoscaling events brief dips in availability metrics may be observed, which is expected during scaling transitions and typically resolves within seconds"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Even if you configure autoscaling with zero minimum instances the service is still highly available, which is always included with the fixed price"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "Autoscaling should always be enabled to minimize the impact of any zonal failure"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant
+  - claim: "V2 SKU costs are billed as fixed costs plus capacity unit costs, with fixed costs based on the time the gateway is provisioned and available for processing requests, and a partial hour is billed as a full hour"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "The number of instances running at any point of time isn't considered in calculating fixed costs for V2 SKUs, and the fixed costs of running a Standard_V2 or WAF_V2 are the same per hour regardless of the number of instances running within the same Azure region"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "A single Capacity Unit consists of 2,500 persistent connections, 1 GB per hour throughput which is 2.22-Mbps, and 1 Compute Unit, and the parameter with the highest utilization among these three is used to calculate capacity units for billing"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Each instance guarantees a minimum of 10 capacity units in terms of processing capability, and the manually set scale for instance count and the minimum instance count in autoscale config reserves 10 capacity units per instance"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Reserved capacity units are billed as long as the application gateway is active regardless of the actual resource consumption, and if actual consumption crosses the 10 capacity units per instance threshold additional capacity units are billed under the variable component"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Total capacity units are calculated based on the higher of the capacity units by utilization or by instance count"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Compute units are a measure of compute capacity consumed while capacity units are a measure of capacity utilization across multiple parameters, and factors affecting compute unit consumption are TLS connections per second, URL Rewrite computations, and WAF rule processing"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Each compute unit is capable of approximately 10 connections per second for Basic_v2 and approximately 50 connections per second for Standard_v2 with an RSA 2048-bit key TLS certificate, while each WAF_v2 compute unit can support approximately 10 concurrent requests per second"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Each instance of Application Gateway Standard_v2 can handle 25,000 persistent connections, 500-Mbps throughput and 10 compute units"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "At 25,000 persistent connections per instance and 2,500 persistent connections per capacity unit, an instance is worth 10 capacity units when connections are the dominant parameter"
+    derive: "25000 / 2500"
+    expect: "10"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Where the dominant factor is either compute units or persistent connections each instance can handle 10 capacity units, but where the dominant factor is throughput each instance can handle approximately 225 capacity units"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "At 500-Mbps throughput per instance and 2.22-Mbps per capacity unit, a throughput-dominated instance is worth about 225 capacity units"
+    derive: "500 / 2.22"
+    expect: "225.2"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "In the documented worked example, the capacity units required to handle 88.8 Mbps are 40, because 1 capacity unit can handle 2.22-Mbps throughput"
+    derive: "88.8 / 2.22"
+    expect: "40"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "The illustrative East US fixed costs are $0.246 per hour for Standard_V2 and $0.443 per hour for WAF_V2, with capacity units at $0.008 per hour for Standard_V2 and $0.0144 per hour for WAF_V2"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "The illustrative WAF_V2 fixed cost is $0.443 per hour against $0.246 per hour for Standard_V2"
+    derive: "0.443 / 0.246"
+    expect: "1.80"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "Monthly price estimates are based on 730 hours of usage per month"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "When Azure DDoS Network Protection is enabled on your application gateway with WAF you're billed at the lower non-WAF rates"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "The Estimated Billed Capacity units metric is calculated as the greater value between Current capacity units and Fixed billable capacity units, where one instance translates to a minimum of 10 capacity units"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "In the documented metrics example, capacity units are calculated as the maximum of 17.38 compute units, 10.96 Mbps divided by 2.22, and 123.08k connections divided by 2500, giving 49.232"
+    source: https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing
+  - claim: "For high availability each gateway is always created with a minimum of two instances, however the Azure portal may indicate that your gateway has a single instance even though it actually has two"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Application Gateway provides two types of availability zone support for Standard_v2 or WAF_v2, zone-redundant where Azure automatically distributes the instances across two or more availability zones, and zonal where Azure deploys all instances into a single zone that you select"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "When you deploy a new gateway by using the Azure portal it's zone-redundant by default"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Pinning to a single availability zone is only recommended when cross-zone latency is too high for your needs, and by itself a zonal gateway doesn't provide resiliency to an availability zone outage"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Application Gateway supports availability zones for the Standard_v2 and WAF_v2 tiers in all of the Azure regions that support availability zones, and the gateway must have at least two instances"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "In a region that has three availability zones a zone-redundant Application Gateway v2 deployment has instances in at least two of those zones, and depending on regional capacity and platform decisions instances might be spread across two zones or three zones"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Availability zone support for Application Gateway v2 doesn't incur extra charges beyond the standard capacity unit pricing"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Availability zone support can't be disabled, all gateways in regions that support availability zones must be either zone-redundant or zonal, and moving from a zone-redundant gateway to a zonal configuration requires deploying a new gateway"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "For a zone-redundant gateway Microsoft manages the detection of zone failures and automatically initiates failover with no customer action required, while for a zonal gateway you need to detect the loss of an availability zone and initiate failover to a secondary gateway"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Microsoft doesn't automatically notify you when a zone is down, though Azure Resource Health and Azure Service Health alerts can be configured"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "During a zone outage requests being processed by instances in that zone are terminated and clients should retry, and zone failures aren't expected to cause data loss because Application Gateway is a stateless service"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "For a zone-redundant gateway during zone outages connections might experience brief interruptions that typically last a few seconds as traffic is redistributed, while for a zonal gateway the gateway is unavailable until the availability zone recovers"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Internally Application Gateway uses virtual machine scale sets which perform best-effort zone balancing, so scaling operations might not occur when the capacity can't be evenly divided between zones, plus or minus one instance"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "When the affected availability zone recovers a zone-redundant Application Gateway restores instances in the recovered zone, removes any temporary instances created in other zones during the outage, and returns to normal traffic distribution"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Health probes can be configured with an unhealthy threshold specifying the number of consecutive failed connection attempts that trigger the backend server to be marked unhealthy, and the default value of three ensures transient faults don't unnecessarily mark the server unhealthy"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "For a gateway to be eligible for the Application Gateway availability SLA it must be configured correctly to perform HTTP load balancing, and it must either be zone redundant or be configured to use autoscale"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Application Gateway v2 is a single-region service, so if the region becomes unavailable the gateway is also unavailable, and multiregion resilience requires deploying separate gateways in each region with a global load balancing solution such as Azure Traffic Manager or Azure Front Door"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Application Gateway v2 performs regular service upgrades and maintenance during which the platform automatically adds extra instances, so the gateway's subnet must have sufficient free IP address space for the temporary instances to be created"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "Application Gateway v2 is a stateless service that doesn't require traditional backup and restore operations, and all configuration data is stored in Resource Manager and can be redeployed using infrastructure as code"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+  - claim: "When planning for zone failures, instances in surviving zones can experience increased load as traffic is redistributed, and if you use manual scaling you should consider over-provisioning the number of instances"
+    source: https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2
+---
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series &middot; #098 &middot; Networking</div>
+  <h1 class="post-title">Application Gateway v2 Autoscaling and Zone Redundancy</h1>
+  <p class="post-subtitle">The billing unit is the maximum of three unrelated measurements, which means the same instance is worth 10 capacity units or about 225 depending on which one happens to dominate. And the SLA has a condition most people have never read.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>Azure Application Gateway &middot; Networking</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/azure-architecture-application-gateway-listeners-rules-and-backend-pools/">#97</a> described how a request finds its way through this gateway. This post is about the thing underneath that: how many gateways there actually are, where they sit, and what the meter is counting.
+    </p>
+    <p>
+      The first fact resolves a question yesterday's post left open. #97 set out two different mechanisms for deciding which listener wins &mdash; rule order on v1, explicit priority on v2 &mdash; and presented them as a live choice. They are not:
+    </p>
+    <div class="callout red">
+      <strong>v1 is gone, and the hardware is being decommissioned</strong>
+      <p><em>&ldquo;Microsoft announced the deprecation of Azure Application Gateway V1 on April 28, 2023. Application Gateway V1 <strong>retired on April 28, 2026</strong>, and Microsoft no longer supports V1 resources. <strong>There's no service-level agreement (SLA) for V1 resources.</strong> As Microsoft decommissions the hardware that supports V1, <strong>traffic passing through remaining V1 resources can't be guaranteed</strong>.&rdquo;</em></p>
+    </div>
+    <p>
+      So the listener-ordering tables that still carry a v1 column are documenting a SKU that retired seven months ago. The order question has one answer now: rule priority. The v1 column is history, kept because some deployments still exist &mdash; and the documentation is explicit about what happens to those: <em>&ldquo;Microsoft blocks the data path and deletes the resources&rdquo;</em>, after a notification.
+    </p>
+    <p>
+      That makes this the <strong>third retirement</strong> in four posts. <a href="/blog/azure-architecture-load-balancer-skus-rules-and-health-probes/">#95</a>: Basic Load Balancer, retired 30 September 2025. <a href="/blog/azure-architecture-load-balancer-outbound-rules/">#96</a>: default outbound access, changed 31 March 2026. Now Application Gateway v1. The Azure load-balancing family has had its entire first generation withdrawn inside about eighteen months, and in every case the documentation still reads as a comparison against the thing that is gone.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-098-application-gateway-v2-autoscaling-and-zone-redundancy.svg" alt="Diagram: Application Gateway v2 autoscaling, capacity units and zones, across four bands. The first band defines the capacity unit, which is the billing and sizing unit. One capacity unit is two thousand five hundred persistent connections, or one gigabyte per hour of throughput which is two point two two megabits per second, or one compute unit; and critically the parameter with the highest utilization among those three is the one used, so the unit is a maximum rather than a sum. A compute unit itself is roughly fifty connections per second on Standard version two with an RSA two thousand and forty eight bit certificate, roughly ten on Basic version two, and roughly ten concurrent requests per second on WAF version two. The second band shows what a single instance is worth, and the answer is not one number. One Standard version two instance handles twenty five thousand persistent connections, five hundred megabits per second of throughput, and ten compute units. Divide each by its capacity unit figure and the connections path gives ten capacity units, the compute path gives ten, but the throughput path gives about two hundred and twenty five. So an instance carrying connection-heavy or compute-heavy traffic is worth ten capacity units while the same instance carrying throughput-heavy traffic is worth roughly twenty two times more, for the same hourly fixed cost. The third band covers the scaling controls and their timing. Minimum instance count ranges from zero to one hundred and reserves ten capacity units per instance that are billed whether or not they are used; zero reserves nothing. Maximum instance count ranges to one hundred and twenty five and defaults to ten when unspecified. Manual mode requires one to one hundred and twenty five. A new instance takes roughly three to five minutes to provision, instances scale out in groups whose size grows as the current count grows, and a scale-in drains connections for five minutes before closing them. Lowering the maximum does not take effect immediately: it is applied only after a scale-in brings the count below the new value, and if scale-in thresholds are never met the new maximum is never applied. The fourth band covers zones. Zone redundant means Azure spreads instances across two or more availability zones and manages failure detection and failover itself, with interruptions lasting seconds. Zonal means every instance sits in one chosen zone, which the documentation states does not by itself provide resiliency to a zone outage. Availability zone support cannot be disabled, and converting a zone redundant gateway to zonal requires building a new one. Every gateway always runs at least two instances even when the portal displays one. And the service level agreement requires the gateway to be either zone redundant or configured to use autoscale." />
+      <figcaption>A billing unit that is a maximum, an instance worth 10 or 225 of them, and an SLA with a condition attached.</figcaption>
+    </figure>
+
+    <h3>The capacity unit is a maximum, not a sum</h3>
+    <div class="callout">
+      <strong>One capacity unit, three definitions</strong>
+      <p><em>&ldquo;A single Capacity Unit consists of the following parameters: <strong>2,500 Persistent connections</strong> &middot; <strong>1 GB per hour (2.22-Mbps) throughput</strong> &middot; <strong>1 Compute Unit</strong>. The parameter with the <strong>highest utilization</strong> among these three parameters is used to calculate capacity units for billing purposes.&rdquo;</em></p>
+    </div>
+    <p>
+      Three dissimilar measurements, and whichever is furthest along its own scale sets the number. The documented metrics example shows it working: compute units 17.38, throughput 10.96 Mbps, connections 123.08k &mdash; and the answer is <code>max(17.38, 10.96/2.22, 123.08k/2500) = 49.232</code>. Connections won, by a wide margin, and the other two measurements contributed nothing.
+    </p>
+    <p>
+      Which means capacity planning here cannot be done on an average. You need to know which of the three parameters your traffic maxes out first, because that one is your bill and the others are free.
+    </p>
+
+    <h3>What one instance is actually worth</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Parameter</th><th>Per Standard_v2 instance</th><th>Per capacity unit</th><th>Instance = how many CU</th></tr>
+      <tr><td>Persistent connections</td><td>25,000</td><td>2,500</td><td>10</td></tr>
+      <tr><td>Compute units</td><td>10</td><td>1</td><td>10</td></tr>
+      <tr><td>Throughput</td><td>500 Mbps</td><td>2.22 Mbps</td><td><strong>~225</strong></td></tr>
+    </table>
+    </div>
+    <p>
+      The documentation states the consequence plainly: <em>&ldquo;in cases where the dominant factor is either compute units or persistent connections, each instance can handle <strong>10 capacity units</strong>. In cases where the dominant factor is throughput, each instance can handle approximately <strong>225 capacity units</strong>.&rdquo;</em>
+    </p>
+    <p>
+      That is a factor of roughly twenty-two in what the same hourly fixed cost buys you, decided entirely by the shape of your traffic. A gateway fronting large file downloads and a gateway fronting a chatty API with many idle keep-alives have nothing in common from a sizing perspective, even at identical request rates.
+    </p>
+
+    <h3>What the money looks like</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Component</th><th>Standard_V2</th><th>WAF_V2</th></tr>
+      <tr><td>Fixed, per hour (illustrative, East US)</td><td>$0.246</td><td>$0.443</td></tr>
+      <tr><td>Capacity unit, per hour</td><td>$0.008</td><td>$0.0144</td></tr>
+      <tr><td>Derived: WAF premium on the fixed component</td><td colspan="2">0.443 &divide; 0.246 = <strong>about 1.8&times;</strong></td></tr>
+      <tr><td>Monthly basis</td><td colspan="2">730 hours</td></tr>
+    </table>
+    </div>
+    <p>
+      Two structural properties of that table matter more than the rates, which are illustrative and will move.
+    </p>
+    <p>
+      First, <em>&ldquo;the number of instances running at any point of time isn't considered in calculating fixed costs&rdquo;</em> &mdash; the fixed component is per gateway, per hour, flat. Second, a partial hour is billed as a full hour. So a gateway that exists is costing money whether or not anything is talking to it, and the instance count moves only the variable half.
+    </p>
+    <p>
+      One cross-service note worth carrying from <a href="/blog/azure-architecture-ddos-protection-ip-and-network-tiers/">#87</a>: <em>&ldquo;When Azure DDoS Network Protection is enabled on your application gateway with WAF you're billed at the lower non-WAF rates.&rdquo;</em> The DDoS subscription absorbs the WAF premium.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Is an Architecture Decision and Not a Checkbox</h2>
+
+    <h3>Because the minimum instance count is a bill, not a safety net</h3>
+    <div class="callout red">
+      <strong>Reserved capacity is billed whether you use it or not</strong>
+      <p><em>&ldquo;The manually set scale for instance count and the minimum instance count in autoscale config <strong>reserves 10 capacity units/instance</strong>. These reserved capacity units are <strong>billed as long as the application gateway is active regardless of the actual resource consumption</strong>.&rdquo;</em></p>
+    </div>
+    <p>
+      So a minimum instance count of 6 is a standing order for 60 capacity units an hour, forever, used or not. The documented billing metric makes the arithmetic explicit: <em>Estimated Billed Capacity units</em> is <em>&ldquo;the greater value between Current capacity units&hellip; and Fixed billable capacity units&rdquo;</em>.
+    </p>
+    <p>
+      The opposite choice is available and genuinely free of reservation: <em>&ldquo;Zero signifies no reserved capacity and is purely autoscaling in nature&rdquo;</em>, and <em>&ldquo;even if you configure autoscaling with zero minimum instances the service is still highly available, which is always included with the fixed price&rdquo;</em>. A gateway at minimum zero with no traffic bills the fixed cost and nothing else.
+    </p>
+    <p>
+      The cost of choosing zero is latency on the first burst, which brings us to the number that decides whether that is acceptable.
+    </p>
+
+    <h3>Because scale-out takes minutes and bursts do not wait</h3>
+    <p>
+      <em>&ldquo;Provisioning a new instance may take approximately <strong>three to five minutes</strong>.&rdquo;</em>
+    </p>
+    <p>
+      That is the whole argument for a non-zero minimum, and it is an argument about traffic shape rather than cost. A workload whose load ramps over tens of minutes can autoscale from zero reserved capacity and never notice. A workload that goes from quiet to peak in ninety seconds will be under-provisioned for the first few minutes of every such event, and no setting shortens that.
+    </p>
+    <p>
+      There is a partial mitigation built in, and it is unusual enough to note: <em>&ldquo;These instances scale out in groups, and the <strong>group size is increased proactively when the current instance count is higher</strong>.&rdquo;</em> A larger gateway adds instances in larger batches, so the service scales faster the bigger it already is. Which is the correct behaviour and also means the cold-start case is the slowest case.
+    </p>
+    <p>
+      On the way down, the behaviour is gentler and worth knowing for connection-sensitive workloads: <em>&ldquo;Application Gateway drains existing connections for <strong>5 minutes</strong> on the instance that is subject for removal. After 5 minutes, existing connections are closed and the instance removed.&rdquo;</em> That is a hard ceiling on a connection's survival across a scale-in, independent of the connection draining setting <a href="/blog/azure-architecture-application-gateway-listeners-rules-and-backend-pools/">#97</a> covered for backend pool changes.
+    </p>
+
+    <h3>Because lowering the maximum may never take effect</h3>
+    <div class="callout red">
+      <strong>A cost control that waits for permission</strong>
+      <p><em>&ldquo;If the maximum instance count is updated to a value less than the current instance count, the new setting <strong>will not take immediate effect</strong>. The newly updated maximum will only be enforced after a scale-in operation brings the current count below newly updated maximum count. <strong>If the scale-in operation does not occur because the autoscaling scale in thresholds are not met, the new maximum setting will not be applied.</strong>&rdquo;</em></p>
+    </div>
+    <p>
+      Read that as an operator reaching for the maximum to cap a cost overrun during sustained load. The change is accepted, the portal shows the new value, and nothing happens &mdash; because the condition for applying it is a scale-in, and sustained load is precisely what prevents one. The control works when you do not need it and does not when you do.
+    </p>
+    <p>
+      The companion default is worth checking on existing deployments too: <em>&ldquo;The default value for maximum instance count is <strong>10</strong> if not specified.&rdquo;</em> Ten instances is 100 capacity units of compute-bound or connection-bound headroom. A gateway that was never given an explicit maximum has one anyway.
+    </p>
+
+    <h3>Because &ldquo;zonal&rdquo; is not a weaker form of zone redundancy</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Zone-redundant</th><th>Zonal</th></tr>
+      <tr><td>Placement</td><td>Instances across two or more zones</td><td>All instances in one zone you choose</td></tr>
+      <tr><td>Zone outage detection</td><td>Microsoft's, automatic</td><td><strong>Yours</strong></td></tr>
+      <tr><td>Failover</td><td>Automatic, no customer action</td><td>You fail over to a secondary gateway you built</td></tr>
+      <tr><td>Expected downtime</td><td>Interruptions of a few seconds</td><td><strong>Unavailable until the zone recovers</strong></td></tr>
+      <tr><td>Default in the portal</td><td>Yes</td><td>No</td></tr>
+    </table>
+    </div>
+    <p>
+      The names suggest a spectrum. They are opposites: <em>&ldquo;By itself, a zonal gateway <strong>doesn't provide resiliency to an availability zone outage</strong>.&rdquo;</em> Zonal exists for one documented reason &mdash; <em>&ldquo;only recommended when cross-zone latency is too high for your needs&rdquo;</em> &mdash; and buying it means taking on detection, failover and failback yourself.
+    </p>
+    <p>
+      Two properties constrain how you get there. Availability zone support <em>&ldquo;can't be disabled&rdquo;</em>, so every gateway in a zone-capable region is one or the other. And the conversion is one-way in practice: <em>&ldquo;If you need to move from a zone-redundant gateway to a zonal configuration, you need to deploy a new gateway.&rdquo;</em>
+    </p>
+    <p>
+      A detail that resolves a common piece of confusion: <em>&ldquo;each gateway is always created with a minimum of two instances. <strong>However, the Azure portal may indicate that your gateway has a single instance, even though it actually has two.</strong>&rdquo;</em> The portal under-reports. Nobody is running one.
+    </p>
+    <p>
+      And the zone spread is a range rather than a guarantee: in a three-zone region a zone-redundant gateway has instances in <em>&ldquo;at least two of those zones&hellip; instances might be spread across two zones or three zones&rdquo;</em>, because the underlying scale set does <em>&ldquo;best-effort zone balancing&rdquo;</em> and <em>&ldquo;scaling operations might not occur when the capacity can't be evenly divided between zones (+/- 1 instance)&rdquo;</em>.
+    </p>
+
+    <h3>Because the SLA has a configuration condition</h3>
+    <div class="callout red">
+      <strong>Two ways to qualify, and you need one of them</strong>
+      <p><em>&ldquo;For a gateway to be eligible for the Application Gateway availability SLA, it must&hellip; <strong>either be zone redundant, or it must be configured to use autoscale</strong>.&rdquo;</em></p>
+    </div>
+    <p>
+      A manually scaled, zonal gateway is outside the SLA. That is a configuration most people would describe as deliberate and conservative &mdash; a fixed instance count, pinned to a known zone &mdash; and it is exactly the combination that forfeits the guarantee. Either lever alone satisfies it.
+    </p>
+
+    <h3>Because the subnet has to have room for instances you never asked for</h3>
+    <p>
+      Autoscaling and maintenance both create instances, and instances need addresses:
+    </p>
+    <p>
+      <em>&ldquo;To maintain your expected capacity during an upgrade, the platform <strong>automatically adds extra instances</strong> of your gateway during the upgrade process. However, you need to ensure that the gateway's subnet has <strong>sufficient free IP address space</strong> for the temporary instances to be created.&rdquo;</em>
+    </p>
+    <p>
+      The same applies during a zone outage, where <em>&ldquo;the platform attempts to maintain the capacity of your gateway by creating temporary instances in other availability zones&rdquo;</em>. A subnet sized exactly to the current instance count works perfectly until the first platform upgrade or the first zone failure &mdash; which is to say, until the moment it matters. This is <a href="/blog/azure-architecture-address-planning/">#62</a>'s address-planning argument arriving with a specific number attached to it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+      <tr>
+        <td>Running anything on v1</td>
+        <td>Migrate now</td>
+        <td>V1 retired 28 April 2026, has no SLA, and remaining deployments face data-path blocking and deletion as the hardware is decommissioned.</td>
+      </tr>
+      <tr>
+        <td>Sizing method</td>
+        <td>Identify which of the three capacity unit parameters saturates first</td>
+        <td>A capacity unit is the maximum of connections, throughput and compute &mdash; not a blend. The other two contribute nothing to the bill.</td>
+      </tr>
+      <tr>
+        <td>Estimating instances needed</td>
+        <td>10 capacity units per instance, unless throughput dominates</td>
+        <td>A throughput-bound instance carries about 225 capacity units &mdash; roughly 22 times more for the same fixed cost.</td>
+      </tr>
+      <tr>
+        <td>Minimum instance count</td>
+        <td>Set from burst shape, not from peak load</td>
+        <td>It reserves 10 capacity units per instance billed regardless of use. Zero is genuinely free of reservation and still highly available.</td>
+      </tr>
+      <tr>
+        <td>Minimum zero for spiky workloads</td>
+        <td>Avoid</td>
+        <td>A new instance takes three to five minutes, and scale-out batches are smallest when the instance count is lowest.</td>
+      </tr>
+      <tr>
+        <td>Using maximum instance count as a cost control</td>
+        <td>Don't rely on it under load</td>
+        <td>Lowering it below the current count is only applied after a scale-in, and sustained load prevents the scale-in from happening.</td>
+      </tr>
+      <tr>
+        <td>Leaving the maximum unset</td>
+        <td>Set it explicitly</td>
+        <td>The default is 10 instances, which is a cap whether or not anyone chose it.</td>
+      </tr>
+      <tr>
+        <td>Zonal deployment</td>
+        <td>Only for a measured cross-zone latency problem</td>
+        <td>It provides no resiliency to a zone outage by itself, and you own detection, failover and failback.</td>
+      </tr>
+      <tr>
+        <td>Converting zone-redundant to zonal</td>
+        <td>Treat as a rebuild</td>
+        <td>It requires deploying a new gateway; zone support cannot be disabled at all.</td>
+      </tr>
+      <tr>
+        <td>Manual scaling with a pinned zone</td>
+        <td>Avoid &mdash; it forfeits the SLA</td>
+        <td>SLA eligibility requires the gateway to be zone redundant or configured to use autoscale.</td>
+      </tr>
+      <tr>
+        <td>Gateway subnet sizing</td>
+        <td>Leave headroom beyond the maximum instance count</td>
+        <td>Platform upgrades and zone outages both create temporary instances that need free addresses in the subnet.</td>
+      </tr>
+      <tr>
+        <td>Multi-region availability</td>
+        <td>Separate gateways plus Front Door or Traffic Manager</td>
+        <td>Application Gateway v2 is a single-region service; if the region is unavailable, so is the gateway.</td>
+      </tr>
+      <tr>
+        <td>Reading instance count in the portal</td>
+        <td>Don't trust a displayed count of one</td>
+        <td>Every gateway runs at least two instances; the portal may show one.</td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The interesting thing about this service's scaling model is that it refuses to pretend capacity is one-dimensional. A capacity unit is openly a maximum across connections, bytes and compute, and the documentation publishes the arithmetic rather than hiding it behind a t-shirt size. That is more honest than most cloud sizing models, and it is also why nobody can size this gateway from a request-per-second figure alone.
+    </p>
+    <p>
+      What follows from that honesty is a set of controls that each do something slightly different from what their name suggests. Minimum instance count is a spend commitment. Maximum instance count is a cap that may decline to apply itself. Zonal is not a lighter zone redundancy, it is the absence of it. And the SLA is not automatic &mdash; it has a configuration predicate attached, which a cautious manual deployment can fail without ever being told.
+    </p>
+    <div class="callout">
+      <strong>And the one that reframes the cost conversation</strong>
+      <p>The fixed component does not move with instance count. Scaling a v2 gateway up and down changes only the variable half, and a gateway that exists at all is billing its fixed hourly rate with a partial hour counted as a whole one. The expensive decision is not how big to make it &mdash; it is how many of them to have.</p>
+    </div>
+    <p>
+      Which is the right note on which to leave the layer 7 gateway, because the next question in this series is what sits in front of several of them.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/application-gateway/understanding-pricing" target="_blank" rel="noopener">Understanding pricing for Application Gateway and WAF &mdash; the fixed and capacity unit components, the three capacity unit parameters and the maximum rule, compute unit guidance per SKU, per-instance traffic figures, the illustrative East US rates, the worked examples and the billing metrics</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/reliability-application-gateway-v2" target="_blank" rel="noopener">Reliability in Azure Application Gateway v2 &mdash; the always-two-instances rule, zone-redundant versus zonal behaviour and their failure and recovery paths, best-effort zone balancing, the SLA eligibility condition, single-region scope, maintenance instance creation and the probe unhealthy threshold default</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-autoscaling-zone-redundant" target="_blank" rel="noopener">Scaling and zone-redundant Application Gateway v2 &mdash; autoscaling and manual modes with their instance ranges, the reserved capacity per instance, the maximum-count update caveat, provisioning time, group scale-out behaviour and the five-minute scale-in drain</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement" target="_blank" rel="noopener">Application Gateway V1 retirement and migration to V2 &mdash; the deprecation and retirement dates, the absence of an SLA for V1, and what happens to remaining V1 deployments</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/application-gateway/migrate-v1-v2" target="_blank" rel="noopener">Migrate Application Gateway and WAF from V1 to V2 &mdash; the migration procedure itself, for further reading (no claims drawn from it)</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-metrics" target="_blank" rel="noopener">Application Gateway metrics &mdash; the capacity unit, compute unit and throughput metrics used for sizing, for further reading (no claims drawn from it)</a></li>
+    </ul>
+  </div>
+
+</div>
