@@ -21,8 +21,10 @@ verified_claims:
     source: https://docs.aws.amazon.com/r53recovery/latest/dg/region-switch.html
   - claim: "The sample IAM policy AWS publishes for the Amazon RDS execution block contains only rds:DescribeDBInstances, rds:PromoteReadReplica, rds:CreateDBInstanceReadReplica and rds:ModifyDBInstance"
     source: https://docs.aws.amazon.com/r53recovery/latest/dg/security_iam_region_switch_rds.html
-  - claim: "A Region switch plan execution measured 726 seconds end to end, with the database reporting no replication source after 715 seconds"
-    source: "Measured 2026-11-18 from execution us-west-2/93de3f35793a4ed6; recorded in week-28-rds-multi-region-failover/results/failover.json"
+  - claim: "RDS recorded Promoted Read Replica to a stand-alone database instance at 05:17:03 UTC and DB instance restarted at 05:17:35 UTC, 160 seconds after PromoteReadReplica was called at 05:14:55 UTC"
+    source: "aws rds describe-events for week28-failover-replica and CloudTrail lookup-events for PromoteReadReplica, both read 2026-11-18"
+  - claim: "PromoteReadReplica was called by the identity RegionSwitchExecution-93de3f35793a4ed6 rather than by a user, one second after StartPlanExecution"
+    source: "CloudTrail lookup-events in us-west-2 for 2026-11-18, read 2026-11-18"
   - claim: "ReplicaLag on an idle primary rose by exactly 60 seconds each minute: 218, 278, 38, 98, 158, 218, 278, 38"
     source: "Measured 2026-11-18, CloudWatch AWS/RDS ReplicaLag for week28-failover-replica, 60-second periods"
 ---
@@ -36,7 +38,7 @@ verified_claims:
   <div class="post-meta">
     <span>18 November 2026</span>
     <span>Terraform &middot; HCP &middot; RDS &middot; PostgreSQL &middot; ARC Region switch</span>
-    <span>726 s measured</span>
+    <span>160 s to serving</span>
   </div>
 </div>
 
@@ -67,12 +69,11 @@ verified_claims:
     protects. So the recovery time in the document is almost always a guess
     that nobody has ever been able to afford to check.</p>
 
-    <p>This week I built the setup, wrote the failover as code rather than as
-    a wiki page, and then ran it for real: a PostgreSQL primary in Virginia,
-    a cross-region read replica in Oregon, and an AWS Application Recovery
-    Controller Region switch plan that promotes the replica. Then I measured
-    two numbers nobody can tell you without running it &mdash; how far behind
-    the replica actually was, and how long the failover actually took.</p>
+    <p>So this week I ran it: a PostgreSQL primary in Virginia, a
+    cross-region read replica in Oregon, and an AWS Application Recovery
+    Controller Region switch plan to promote it &mdash; then measured the two
+    numbers nobody can tell you without running it. How far behind the
+    replica was, and how long recovery actually took.</p>
   </div>
 
   <div class="section" id="services">
@@ -131,7 +132,7 @@ verified_claims:
     <h2>Architecture and Workflow</h2>
 
     <svg viewBox="0 0 960 450" xmlns="http://www.w3.org/2000/svg" role="img"
-           aria-label="A PostgreSQL primary in us-east-1 replicates asynchronously to a cross-region read replica in us-west-2. A Lambda function in the primary's VPC writes load to the primary. An Amazon Application Recovery Controller Region switch plan, executed in us-west-2, promotes the replica to a standalone primary. Measured: replication lag of 4.2 seconds on average and 20 seconds at peak under load, and a promotion that completed in 726 seconds. After promotion the replica no longer replicates and cannot be returned to being a replica."
+           aria-label="A PostgreSQL primary in us-east-1 replicates asynchronously to a cross-region read replica in us-west-2. A Lambda function in the primary's VPC writes load to the primary. An Amazon Application Recovery Controller Region switch plan, executed in us-west-2, promotes the replica to a standalone primary. Measured: replication lag of 4.2 seconds on average and 20 seconds at peak under load, and a database serving as a standalone primary 160 seconds after the promotion was called. After promotion the replica no longer replicates and cannot be returned to being a replica."
            style="width:100%;height:auto;background:#fff;border:1px solid #e6e8eb;border-radius:8px">
         <rect width="960" height="450" fill="#ffffff"/>
         <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5A6B7B"/></marker></defs>
@@ -182,7 +183,7 @@ verified_claims:
         <text x="516" y="390" text-anchor="start" font-family="Arial,sans-serif" font-size="10.5" font-weight="700" fill="#687078">AFTER PROMOTION:</text>
         <text x="516" y="412" text-anchor="start" font-family="Arial,sans-serif" font-size="11.5" font-weight="600" fill="#D13212">standalone primary. There is no un-promote.</text>
         <text x="44" y="390" text-anchor="start" font-family="Arial,sans-serif" font-size="10.5" font-weight="700" fill="#687078">MEASURED FAILOVER:</text>
-        <text x="44" y="412" text-anchor="start" font-family="Arial,sans-serif" font-size="13" font-weight="700" fill="#1A7F37">726 s (12.1 min)</text>
+        <text x="44" y="412" text-anchor="start" font-family="Arial,sans-serif" font-size="13" font-weight="700" fill="#1A7F37">160 s to serving</text>
       </svg>
 
     <p>The numbers in the diagram are the order things happen:</p>
@@ -261,10 +262,6 @@ verified_claims:
     <p>The first apply succeeds either way. The <em>second</em> one destroys
     the database. That is what makes it a trap rather than an error.</p>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/03-primary-and-replica.png" alt="The RDS console Replication panel for the primary, listing week28-failover-primary as Primary in us-east-1d and week28-failover-replica in us-west-2 with the primary as its replication source.">
-      <figcaption>Both instances, two regions, one replication source.</figcaption>
-    </figure>
 
     <figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/04-region-switch-plan.png" alt="The ARC Region switch plan detail page showing recovery approach Active/passive, two workflows, and the activate us-west-2 workflow containing an Amazon RDS promote read replica execution block named promote-replica.">
@@ -289,13 +286,6 @@ verified_claims:
     the honest answer to "how much would we lose" &mdash; and it is two
     orders of magnitude smaller than the idle metric advertised.</p>
 
-    <p>Then the part that cannot be undone.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/06-failover-timed.png" alt="A terminal showing the recorded measurement: 6,401,000 rows written, replication lag peak 20 seconds, failover 726 seconds via the ARC plan and 715 seconds for the database, endpoint unchanged, still replicating False. A second command queries the former replica and returns a null replication source.">
-      <figcaption>726 seconds, and a database that no longer has a
-      replication source.</figcaption>
-    </figure>
 
     <table>
       <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
@@ -303,15 +293,39 @@ verified_claims:
         <tr><td>Replication established cross-region</td><td>replica reports the primary as its source</td><td>source set, status available</td><td>&#9989;</td></tr>
         <tr><td><code>ReplicaLag</code> under sustained writes</td><td>seconds, not minutes</td><td><strong>20 s peak, 4.2 s average</strong></td><td>&#9989;</td></tr>
         <tr><td>Plan execution, activate us-west-2</td><td>reaches <code>completed</code></td><td>pending &rarr; inProgress &rarr; completed</td><td>&#9989;</td></tr>
-        <tr><td>Failover duration</td><td>"about 15 minutes"</td><td><strong>726 s (12.1 min)</strong></td><td>&#9989;</td></tr>
+        <tr><td>Database serving as standalone primary</td><td>minutes</td><td><strong>160 s</strong> (promote call to restart)</td><td>&#9989;</td></tr>
+        <tr><td>Plan execution reports complete</td><td>soon after the database is up</td><td><strong>726 s</strong> &mdash; it waits out a backup</td><td>&#9989;</td></tr>
         <tr><td>Endpoint after promotion</td><td>unchanged</td><td>unchanged</td><td>&#9989;</td></tr>
         <tr><td>Replication after promotion</td><td>gone, irreversibly</td><td>source is <code>null</code></td><td>&#9989;</td></tr>
       </tbody>
     </table>
 
-    <p>Twelve minutes is good news, and it is still nearly four times longer
-    than the longest acceptable outage most teams write into an SLA without
-    thinking about it.</p>
+    <p>That table has two durations in it, and the difference between them is
+    the most useful thing I found all week. My script waited until the API
+    stopped reporting a replication source, got 726 seconds, and I nearly
+    published that as the recovery time. AWS's own event log, below, says
+    otherwise.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/07-failover-evidence.png" alt="A terminal showing CloudTrail reporting PromoteReadReplica called by the identity RegionSwitchExecution-93de3f35793a4ed6, followed by the RDS event log: shared_buffers reduced under memory pressure at 05:16:02, automated backups enabled at 05:17:02, Promoted Read Replica to a stand-alone database instance at 05:17:03, DB instance shutdown at 05:17:15, DB instance restarted at 05:17:35, backup started at 05:18:05 and finished at 05:26:48.">
+      <figcaption>The record AWS keeps, which outlives the resources. Note
+      the caller: <code>RegionSwitchExecution-…</code>, not a person. The plan
+      did the promotion.</figcaption>
+    </figure>
+
+    <p>Read the timestamps. <code>PromoteReadReplica</code> was called at
+    05:14:55. The instance restarted at <strong>05:17:35 &mdash; 160
+    seconds later</strong>, and from that moment it is a standalone primary
+    accepting writes. What ran until 05:26:48 was an automatic backup, which
+    is RDS tidying up after itself, not an outage.</p>
+
+    <p>Two honest answers, then. The database was back in under three
+    minutes; the orchestrator did not call itself finished for twelve. Quote
+    the second as your RTO and you overstate your own recovery fourfold.</p>
+
+    <p>The same log records RDS halving <code>shared_buffers</code> at
+    05:16:02, because the write load pushed a <code>db.t4g.micro</code>
+    critically low on memory. My own instrumentation never noticed.</p>
   </div>
 
   <div class="section" id="security-cost">
@@ -334,7 +348,27 @@ verified_claims:
 
     <h3>Cost</h3>
 
-    <p>COST_PENDING</p>
+    <p><strong>$0.2359 measured</strong>, read 2026-11-19 UTC once the UTC
+    billing day the lab ran on (18 November) had closed. Two <code>db.t4g.micro</code> instances and their storage came
+    to $0.1604 over about two hours and forty minutes. The Region switch plan
+    came to $0.0755.</p>
+
+    <p>That second figure is the one worth having, because the pricing page
+    says "$70 per plan per month" and "prices are prorated for partial months"
+    without saying what partial means. The bill says exactly what it means:</p>
+
+    <pre><code>Global-AmazonARCRegionSwitchPlan   0.001078 Months   $0.0755
+implied rate: $69.999998 per month</code></pre>
+
+    <p>Metered in <em>fractional months</em>, at exactly the published rate.
+    So the fee is real but the granularity is fine: a plan that exists for an
+    hour costs about seven cents, and rehearsing your failover does not cost
+    you a month of plan fees. A plan you keep, which is the point of having
+    one, is $70 a month or $840 a year per application.</p>
+
+    <p>One thing I cannot account for: the plan existed for 81 minutes by
+    CloudTrail's record, and the meter recorded 0.001078 months, which is
+    about 47. I am reporting both rather than guessing at the difference.</p>
   </div>
 
   <div class="section" id="troubleshooting">
@@ -422,7 +456,7 @@ verified_claims:
     <h2>Cleanup and Key Takeaways</h2>
 
     <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/07-destroyed.png" alt="A terminal querying both regions for week28 database instances, manual snapshots and Region switch plans. Every query returns an empty list.">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-28-rds-multi-region-failover/docs/blog/screenshots/08-destroyed.png" alt="A terminal querying both regions for week28 database instances, manual snapshots and Region switch plans. Every query returns an empty list.">
       <figcaption>Both regions, instances, snapshots and the plan. Snapshots
       are included because they outlive a destroyed instance and keep
       charging.</figcaption>
@@ -435,9 +469,13 @@ verified_claims:
       It is <code>now()</code> minus the last replayed transaction, so it
       climbs forever when nothing is being written. Read it under load or do
       not read it.</li>
+      <li><strong>Measure the database, not the orchestrator.</strong> The
+      plan reported 726 seconds; the database was serving in 160. The gap
+      is an automatic backup. Check the RDS event log rather than trusting
+      whatever your own script decided to wait for.</li>
       <li><strong>A documented RTO is a guess until someone runs it.</strong>
-      This one was 726 seconds. Yours is a different number, and you do not
-      know it.</li>
+      This one was 160 seconds to a serving database. Yours is a
+      different number, and you do not know it.</li>
       <li><strong>Promotion is irreversible</strong>, which is exactly why
       the drill never happens. Budget for rebuilding the replica afterwards,
       because that is the real cost of testing.</li>
