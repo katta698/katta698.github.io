@@ -92,6 +92,18 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 19 November 2026 - covered by posts #80 (Part A) and #81 (Part B)
+
+Two announcements from the same day, written as a pair.
+
+| Item | Service | Status | Importance | Link |
+| --- | --- | --- | --- | --- |
+| Performance status checks and new EC2 Detailed Monitoring utilization metrics | EC2 | #80 | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-performance-status-checks/) |
+| Resource and account tags in Health events | AWS Health | #81 | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-health-supports-tags/) |
+
+Dated sections for posts #72 to #79 were not recorded at the time and are not
+reconstructed here; those posts are the record of what was covered.
+
 ## 6 November 2026 — covered by post #71
 
 | Item | Service | Status | Importance | Reference |
