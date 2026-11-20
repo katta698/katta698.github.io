@@ -1,0 +1,447 @@
+---
+title: "AWS Architecture Series #119 — Three update modes, and one of them means nobody is patching you"
+date: '2026-11-20T09:00:00'
+slug: aws-architecture-lambda-runtime-responsibility
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-20'
+problem: "Lambda publishes runtime patches, but whether they reach your function depends on its runtime update mode, and the three modes divide responsibility very differently. Auto means Lambda applies them. Manual means you do, and is documented as a temporary rollback mechanism only. Function update means Lambda applies a patch when you deploy - and the documentation states the consequence plainly: if you don't update your function, then Lambda doesn't update the runtime. A stable function on that mode is an unpatched function, with no deadline, no error and no deprecation notice, because Lambda imposes no time limit on using a given runtime version. What eventually arrives is a failure, such as a certificate expiry."
+builds: "A reading of who is actually responsible for a patched Lambda runtime: the three update modes and what each delegates, why the middle mode is the one that silently stops patching, how published function versions behave differently per mode, what changes when the runtime is customer-managed, and how to enforce a patching posture with IAM rather than with intent."
+verified_claims:
+  - claim: "Lambda is responsible for curating and publishing security updates for all supported managed runtimes and container images. Responsibility for updating existing Event Functions to use the latest runtime version varies depending on which runtime update mode you use"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Lambda is responsible for applying runtime updates to all functions configured to use the Auto runtime update mode"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "For functions configured with the Function update runtime update mode, you're responsible for regularly updating your function. Lambda is responsible for applying runtime updates when you make those updates. If you don't update your function, then Lambda doesn't update the runtime"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "If you don't regularly update your function, then we strongly recommend configuring it for automatic runtime updates so that it continues to receive security updates"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "For functions configured to use the Manual runtime update mode, you're responsible for updating your function to use the latest runtime version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "We strongly recommend that you use this mode only to roll back the runtime version as a temporary mitigation in the rare event of runtime update incompatibility"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Lambda doesn't impose a time limit on how long you can use any particular runtime version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Functions using an earlier runtime version for an extended period might eventually experience degraded performance or issues, such as a certificate expiry, which can cause them to stop working properly"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "If you're using container images to deploy your functions, then Lambda is responsible for publishing updated base images. In this case, you're responsible for rebuilding your function's container image from the latest base image and redeploying the container image"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "If your function uses a customer-managed runtime, the runtime publisher, rather than Lambda, is responsible for publishing runtime versions with the latest patches and for updating runtime aliases"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Lambda applies the runtime version that the alias points to, based on the function's runtime update mode. The function owner's responsibilities for each mode are the same as for Lambda-managed runtimes"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "In Auto mode, Lambda automatically updates the runtime version of published function versions during phase two of the runtime version rollout. In Function update mode, Lambda doesn't update the runtime version of published function versions"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Published function versions using Function update mode therefore create a static snapshot of the function code, configuration, and runtime version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Published function versions are an immutable snapshot of the $LATEST function code and configuration at the time that you created them"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "You can restrict Lambda's runtime management controls by using AWS Identity and Access Management (IAM) to deny users in your AWS account access to the PutRuntimeManagementConfig API operation"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Denying access to this operation causes all functions to default to the Auto mode"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "You can apply this restriction across your organization by using a service control policies (SCP)"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "For functions that use customer-managed runtimes, pinning a function to a runtime version also requires the lambda:AssociateRuntimeVersion permission. You can deny this action to prevent pinning to specific runtime versions"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "If the $LATEST version of your function is configured to use Manual mode, then you can't change the CPU architecture or runtime version that your function uses"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "You can configure runtime management settings separately for each function version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "Lambda provides the option to roll back to an earlier runtime version only as a temporary mitigation in the rare event of a runtime update compatibility issue"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "For a customer-managed runtime, the runtime publisher can also roll back a runtime alias for all functions that use it"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+  - claim: "There are exactly 3 runtime update modes, Auto, Function update and Manual"
+    derive: "1 + 1 + 1"
+    expect: "3"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html
+catch: "Lambda publishes the patches; whether they reach your function is decided by its runtime update mode. Auto means Lambda applies them. Manual means you do, and is documented for temporary rollback only. Function update is the one to look for: if you don't update your function, then Lambda doesn't update the runtime, so a stable function stops being patched with no deadline and no notice - Lambda imposes no time limit on a runtime version, and what eventually arrives is a failure such as a certificate expiry. Published function versions differ by mode too: Auto updates them in phase two of a rollout, Function update freezes them. And denying PutRuntimeManagementConfig makes every function default to Auto, which is a patching posture you can enforce rather than request."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #119 &middot; Operational Excellence</div>
+  <h1 class="post-title">Three update modes, and one of them means nobody is patching you</h1>
+  <p class="post-subtitle">Lambda publishes runtime security updates. Whether they ever reach your function is decided by a setting most teams never open, and the middle option stops patching a function that nobody deploys.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Operational Excellence &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Yesterday's daily covered customer-managed runtimes, where a platform team owns the runtime image.
+      That raises the prior question: on an ordinary Lambda function, who is responsible for the runtime
+      being patched? The documentation answers it in two sentences, and the second one is the whole post.
+    </p>
+    <p>
+      <em>&ldquo;Lambda is responsible for curating and publishing security updates for all supported
+      managed runtimes and container images. <strong>Responsibility for updating existing Event Functions
+      to use the latest runtime version varies depending on which runtime update
+      mode you use.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Publishing and applying are different jobs. AWS does the first unconditionally. The second depends on
+      a per-function setting with three values, and the three divide the work very differently.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Function update mode patches on deploy, so a stable function is never patched</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;For functions configured with the Function update runtime update mode, you're
+          responsible for regularly updating your function. Lambda is responsible for applying runtime
+          updates when you make those updates. <strong>If you don't update your function, then Lambda
+          doesn't update the runtime.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That is a conditional patching contract, and the condition is deployment activity. It works
+          beautifully for a function under active development, where every release carries the latest
+          runtime and runtime changes are synchronised with code changes you are already testing.
+        </p>
+        <p>
+          It fails silently for the opposite case, which is extremely common: the function that works. A
+          webhook handler written eighteen months ago, a nightly report, a glue function between two
+          services &mdash; nobody deploys them because nothing about them needs changing. On
+          <strong>Function update</strong> mode those are the functions receiving no security patches at
+          all, and the only way to tell is to compare each function's last modification date against its
+          mode.
+        </p>
+        <p>
+          AWS states the remedy directly:
+          <em>&ldquo;If you don't regularly update your function, then we strongly recommend configuring it
+          for automatic runtime updates so that it continues to receive security updates.&rdquo;</em> The
+          judgement it leaves to you &mdash; what counts as regularly &mdash; is the part nobody writes
+          down.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make the mode a function of deployment cadence rather than a default: Auto for anything you do not deploy on a known schedule, Function update only where releases are frequent enough to be a patching mechanism. Then measure it &mdash; a list of functions whose last modification predates their runtime's current version is a patching backlog, and nothing in Lambda produces that list for you.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>There is no deadline, and the failure arrives as an outage</strong></div>
+      <div class="challenge-body">
+        <p>
+          Most deprecation mechanics in AWS come with dates. This one does not:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Lambda doesn't impose a time limit on how long you can use any particular
+          runtime version.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Read as reassurance, that is a promise your function will keep running. Read as a warning, it
+          means nothing will ever stop you, notify you, or escalate. There is no blocked deployment, no
+          console banner counting down, no API error. The function simply continues on an increasingly old
+          runtime version.
+        </p>
+        <p>
+          And then the sentence that follows it:
+          <em>&ldquo;<strong>Functions using an earlier runtime version for an extended period might
+          eventually experience degraded performance or issues, such as a certificate expiry, which can
+          cause them to stop working properly.</strong>&rdquo;</em>
+        </p>
+        <p>
+          A certificate expiry is a precise and unsettling example, because it is a cliff rather than a
+          slope. The function works, works, works, and then every outbound TLS connection fails on a date
+          determined by a trust store nobody in your organisation chose. There is no gradual degradation to
+          notice, and the triggering event is invisible from your side until it happens.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat runtime version age as a metric you own, because AWS is explicit that it will not enforce one. The <code>INIT_START</code> line in a function's logs carries the runtime version ARN, which makes the current version observable per function without an API call. Anything materially behind is accumulating risk that will present as a sudden failure rather than a warning.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Published function versions behave differently per mode, and that is both a feature and a trap</strong></div>
+      <div class="challenge-body">
+        <p>
+          Function versions are
+          <em>&ldquo;an immutable snapshot of the $LATEST function code and configuration at the time that
+          you created them&rdquo;</em> &mdash; except that the runtime underneath them is not necessarily
+          part of the snapshot. It depends on the mode:
+        </p>
+        <p>
+          <em>&ldquo;In Auto mode, Lambda automatically updates the runtime version of published function
+          versions during phase two of the runtime version rollout. In Function update mode, Lambda doesn't
+          update the runtime version of published function versions.&rdquo;</em>
+        </p>
+        <p>
+          Hence:
+          <em>&ldquo;Published function versions using Function update mode therefore create a static
+          snapshot of the function code, configuration, and runtime version.&rdquo;</em>
+        </p>
+        <p>
+          That is a genuinely valuable property. A fully reproducible deployment artefact &mdash; code,
+          configuration <em>and</em> runtime &mdash; is exactly what you want for a rollback you can trust,
+          and the documentation recommends exactly that, integrating it into
+          <em>&ldquo;continuous integration and continuous delivery (CI/CD) for fully automatic rollback in
+          the rare event of runtime update incompatibility&rdquo;</em>.
+        </p>
+        <p>
+          It is also a frozen runtime serving production traffic. The same paragraph carries the condition:
+          <em>&ldquo;When using this approach, you must update your function regularly and publish new
+          function versions to pick up the latest runtime updates.&rdquo;</em> Reproducibility and patching
+          are in direct tension here, and the setting that buys you one costs you the other unless you
+          deploy.
+        </p>
+        <p>
+          One more sharp edge, since the setting is per version &mdash;
+          <em>&ldquo;You can configure runtime management settings separately for each function
+          version&rdquo;</em> &mdash; and Manual mode constrains more than the runtime:
+          <em>&ldquo;If the $LATEST version of your function is configured to use Manual mode, then you
+          can't change the CPU architecture or runtime version that your function uses.&rdquo;</em> A
+          temporary rollback left in place blocks an architecture migration later, for a reason that will
+          not be obvious.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>If you use published versions with Function update mode for reproducible rollback, pair it with a release cadence and treat publishing as the patching event. And audit for functions whose <code>$LATEST</code> is still on Manual mode from a past incident &mdash; that is where <em>&ldquo;temporary mitigation&rdquo;</em> becomes permanent.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-119-lambda-runtime-responsibility.svg" alt="Diagram: Lambda is responsible for curating and publishing security updates for all supported managed runtimes and container images, but responsibility for updating existing Event Functions to use the latest runtime version varies depending on the runtime update mode. There are three modes. In Auto mode Lambda applies runtime updates to all functions configured to use it, and the customer's responsibility is to roll back in the rare event of an incompatibility. In Function update mode Lambda applies runtime updates when you update your function, and the documentation states that if you don't update your function then Lambda doesn't update the runtime, so a function nobody deploys stops being patched; AWS recommends switching such functions to Auto. In Manual mode you are responsible for updating to the latest version, and the mode is documented for use only as a temporary rollback in the rare event of a compatibility issue. Two further deployment shapes have their own splits: with container images Lambda publishes updated base images and you are responsible for rebuilding from the latest base image and redeploying, and with a customer-managed runtime the runtime publisher rather than Lambda publishes versions with the latest patches and updates runtime aliases, while Lambda applies whatever version the alias points to according to the function's update mode and the function owner's per-mode responsibilities are unchanged. There is no deadline: Lambda does not impose a time limit on how long you can use a particular runtime version, but functions using an earlier version for an extended period might eventually experience degraded performance or issues such as a certificate expiry which can cause them to stop working properly, so the failure arrives as a cliff rather than a slope with no banner, blocked deployment or API error beforehand. Published function versions are immutable snapshots of code and configuration, and the runtime underneath them follows the mode: in Auto mode Lambda updates the runtime version of published function versions during phase two of a rollout, while in Function update mode it does not, which makes those published versions a static snapshot of code, configuration and runtime that is excellent for reproducible rollback and is simultaneously a frozen runtime unless you publish regularly. Runtime management settings are configurable separately for each function version, and if the dollar-LATEST version uses Manual mode you cannot change the CPU architecture or runtime version. Finally, the posture is enforceable rather than requested: denying access to the PutRuntimeManagementConfig API operation causes all functions to default to Auto mode, this can be applied organisation-wide with a service control policy, and for customer-managed runtimes denying lambda:AssociateRuntimeVersion prevents pinning to specific runtime versions.">
+
+    <h3>Who patches, by deployment shape</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Shape</th><th>AWS does</th><th>You do</th></tr>
+      <tr>
+        <td>Managed runtime, <strong>Auto</strong></td>
+        <td>Publishes versions <em>and</em> applies them</td>
+        <td>Roll back if an update breaks you</td>
+      </tr>
+      <tr>
+        <td>Managed runtime, <strong>Function update</strong></td>
+        <td>Publishes versions; applies them <em>when you deploy</em></td>
+        <td><strong>Deploy regularly, or receive nothing</strong></td>
+      </tr>
+      <tr>
+        <td>Managed runtime, <strong>Manual</strong></td>
+        <td>Publishes versions only</td>
+        <td>Everything &mdash; and leave this mode quickly</td>
+      </tr>
+      <tr>
+        <td>Container image</td>
+        <td>Publishes updated base images</td>
+        <td><em>&ldquo;rebuilding your function's container image from the latest base image and redeploying&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Customer-managed runtime</td>
+        <td>Applies whatever the alias points to</td>
+        <td>Publisher patches and moves the alias; owner picks the alias</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      Reading the middle column down, AWS's commitment is constant: it publishes. Reading the right column
+      down, your obligation grows from <em>react if something breaks</em> to <em>rebuild and redeploy</em>.
+      The mode is not a convenience setting; it is where you sit on that gradient.
+    </p>
+
+    <h3>The customer-managed shift, stated precisely</h3>
+    <p>
+      <em>&ldquo;If your function uses a customer-managed runtime, the runtime publisher, rather than
+      Lambda, is responsible for publishing runtime versions with the latest patches and for updating
+      runtime aliases.&rdquo;</em> And the division underneath it:
+      <em>&ldquo;Lambda applies the runtime version that the alias points to, based on the function's
+      runtime update mode. The function owner's responsibilities for each mode are the same as for
+      Lambda-managed runtimes.&rdquo;</em>
+    </p>
+    <p>
+      So a customer-managed runtime moves the <em>publishing</em> half of AWS's job to your platform team
+      and leaves the <em>applying</em> half with Lambda, gated by the same three modes. A function on
+      Function update mode consuming a customer-managed runtime has two conditions to satisfy before it
+      gets a patch: the publisher must move the alias, and the function owner must deploy. Two teams, each
+      able to stall it, neither alerted when the other does.
+    </p>
+    <p>
+      The rollback capability mirrors that:
+      <em>&ldquo;For a customer-managed runtime, the runtime publisher can also roll back a runtime alias
+      for all functions that use it&rdquo;</em> &mdash; a blast radius worth knowing about from the
+      consumer side.
+    </p>
+
+    <h3>Enforcing a posture instead of asking for one</h3>
+    <p>
+      This is the most useful operational detail on the page, and it is easy to miss. You can remove the
+      choice:
+      <em>&ldquo;You can restrict Lambda's runtime management controls by using AWS Identity and Access
+      Management (IAM) to deny users in your AWS account access to the PutRuntimeManagementConfig API
+      operation&rdquo;</em>, with the consequence stated plainly:
+      <em>&ldquo;<strong>Denying access to this operation causes all functions to default to the Auto
+      mode.</strong>&rdquo;</em>
+    </p>
+    <p>
+      That is a patching guarantee implemented as a permission boundary, applicable organisation-wide
+      because <em>&ldquo;You can apply this restriction across your organization by using a service control
+      policies (SCP)&rdquo;</em>, with exceptions granted case by case when a rollback is genuinely needed.
+    </p>
+    <p>
+      And the equivalent lever for customer-managed runtimes:
+      <em>&ldquo;pinning a function to a runtime version also requires the
+      lambda:AssociateRuntimeVersion permission. You can deny this action to prevent pinning to specific
+      runtime versions.&rdquo;</em>
+    </p>
+    <p>
+      The pattern is the same one #116 found in the account-level policy API: the organisation's position
+      is expressible as a denial rather than as a convention, which means it survives people who have not
+      read the convention.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Not imposing a deadline is the right call, given what a forced update can break</h3>
+    <p>
+      A runtime update is a change to the environment under running code, and the documentation is candid
+      that incompatibility happens, which is why rollback exists. Hard-stopping functions on old versions
+      would convert a security problem into an availability one on AWS's schedule rather than yours. The
+      cost of that choice is that nothing escalates, which is why the responsibility table exists at all.
+    </p>
+
+    <h3>Three modes is the right number, and the middle one is genuinely useful</h3>
+    <p>
+      Synchronising runtime changes with deployments is a real engineering preference: it means a runtime
+      change is tested by the same pipeline that tests your code, rather than arriving on a Tuesday. The
+      mode is not a mistake. The mistake is leaving it on a function that stopped being deployed, and AWS
+      names that case and tells you to switch.
+    </p>
+
+    <h3>Making the posture enforceable through IAM is better than documenting a policy</h3>
+    <p>
+      A rule that says <em>use Auto mode</em> is a rule people forget. Denying
+      <code>PutRuntimeManagementConfig</code> makes Auto the only reachable state, with rollback available
+      by exception. That converts a patching standard into a control, which is the difference between an
+      intention and a guarantee.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Default mode</td>
+        <td>Auto</td>
+        <td>It is the only mode where patching does not depend on your activity</td>
+      </tr>
+      <tr>
+        <td>Function update mode</td>
+        <td>Only where releases are frequent and scheduled</td>
+        <td><em>&ldquo;If you don't update your function, then Lambda doesn't update the runtime&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Manual mode</td>
+        <td>Temporary rollback only, with an exit date</td>
+        <td>Documented for that purpose, and it blocks architecture changes on <code>$LATEST</code></td>
+      </tr>
+      <tr>
+        <td>Enforcing a patching standard</td>
+        <td>Deny <code>PutRuntimeManagementConfig</code> via SCP</td>
+        <td>It makes every function default to Auto rather than asking people to</td>
+      </tr>
+      <tr>
+        <td>Customer-managed runtimes</td>
+        <td>Also deny <code>lambda:AssociateRuntimeVersion</code></td>
+        <td>That is the permission that lets a function pin to an old runtime version</td>
+      </tr>
+      <tr>
+        <td>Reproducible rollback</td>
+        <td>Published versions with Function update mode</td>
+        <td>They snapshot code, configuration <em>and</em> runtime &mdash; at the cost of freezing the runtime</td>
+      </tr>
+      <tr>
+        <td>Container-image functions</td>
+        <td>A scheduled rebuild, not an event-driven one</td>
+        <td>AWS publishes base images; rebuilding and redeploying is entirely yours</td>
+      </tr>
+      <tr>
+        <td>Tracking runtime age</td>
+        <td>Read the version ARN from <code>INIT_START</code></td>
+        <td>There is no deadline and no notification, so age is a metric you have to own</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every function on Function update mode with its last modified date.</strong> Anything
+      not deployed in months is unpatched, and this is the single query that finds it. Nothing in the
+      service surfaces this pairing.
+    </p>
+    <p>
+      <strong>Find every <code>$LATEST</code> still on Manual mode.</strong> Each one is either an
+      incident nobody closed out or a deliberate pin nobody documented, and it silently blocks CPU
+      architecture changes.
+    </p>
+    <p>
+      <strong>Check whether <code>PutRuntimeManagementConfig</code> is restricted at all.</strong> If
+      anyone with function-write access can switch a function off Auto, your patching posture is a
+      convention rather than a control.
+    </p>
+    <p>
+      <strong>For container-image functions, compare base-image age against your rebuild cadence.</strong>
+      This shape has no automatic path whatsoever &mdash; AWS publishes, you rebuild, and nothing connects
+      the two.
+    </p>
+    <p>
+      <strong>For customer-managed runtimes, confirm somebody owns alias movement.</strong> The publisher
+      half of the responsibility now belongs to a team in your organisation, and a platform team that
+      publishes versions without moving aliases has patched nothing.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The long run of posts before this one was about signals that go quiet: an alarm in
+      <code>INSUFFICIENT_DATA</code>, a canary that stopped running, a query that outran its own data, a
+      subscription that skipped. This is the same shape moved from monitoring into patching, and it is
+      arguably worse, because here the quiet thing is a security control and the eventual symptom is a
+      certificate expiry taking down a function that nobody had touched in two years.
+    </p>
+    <p>
+      What makes it tractable is that AWS writes the division down. The responsibility table is unusually
+      honest for a shared-responsibility document: it names the mode where
+      <em>&ldquo;Lambda doesn't update the runtime&rdquo;</em>, says what to do instead, and admits there is
+      no deadline enforcing any of it. All of the ambiguity is in one word &mdash;
+      <em>regularly</em> &mdash; and that word is yours to define.
+    </p>
+    <p>
+      So define it, then enforce it with the permission rather than the policy document. Auto by default;
+      Function update only where a release cadence genuinely exists; Manual with an exit date written into
+      the ticket that created it. And keep a list of functions whose runtime version is older than their
+      last deployment, because that list is the one thing nothing in Lambda will build for you.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 automatic instance recovery: which status checks it acts on, what a recovered instance keeps and what it loses, why recovery is not replacement, and what happens to an instance whose impairment is a performance condition rather than a terminal one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-shared.html" target="_blank" rel="noopener">Managing Lambda runtime updates &#8212; that Lambda publishes security updates for all supported managed runtimes while responsibility for applying them varies by runtime update mode, the per-mode division including that Lambda does not update the runtime if you do not update the function, the recommendation to use Auto when you do not deploy regularly, that Manual mode is for temporary rollback only, that there is no time limit on a runtime version and that an old version may eventually fail through something like a certificate expiry, the container-image and customer-managed runtime splits, how published function versions behave per mode, the <code>$LATEST</code> Manual mode restriction on architecture changes, and the enforcement of Auto mode by denying <code>PutRuntimeManagementConfig</code> or <code>lambda:AssociateRuntimeVersion</code></a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html" target="_blank" rel="noopener">Understanding how Lambda manages runtime updates &#8212; further reading on the runtime update modes, the two-phase rollout and how to identify a runtime version change; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/runtimes-customer-managed.html" target="_blank" rel="noopener">Customer-managed runtimes &#8212; further reading on the runtime resource whose publisher takes on the patching half of the responsibility, covered in Daily #79; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/configuration-versions.html" target="_blank" rel="noopener">Lambda function versions &#8212; further reading on published versions as immutable snapshots; no claims in this post are drawn from it</a></li>
+      <li><a href="https://aws.amazon.com/compliance/shared-responsibility-model/" target="_blank" rel="noopener">Shared Responsibility Model &#8212; further reading on the general model this page specialises; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
