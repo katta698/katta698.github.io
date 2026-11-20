@@ -92,9 +92,9 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
-## 19 November 2026 - covered by posts #80 (Part A) and #81 (Part B)
+## 19 November 2026 - covered by posts #80 and #81
 
-Two announcements from the same day, written as a pair.
+Two announcements from the same day, written as separate posts.
 
 | Item | Service | Status | Importance | Link |
 | --- | --- | --- | --- | --- |
