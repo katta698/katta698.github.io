@@ -92,6 +92,38 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 20 November 2026 - covered by posts #82 and #83
+
+74 announcements this day, the heaviest of the pre-re:Invent wave.
+
+| Item | Service | Status | Importance | Link |
+| --- | --- | --- | --- | --- |
+| CloudWatch metrics for VPC resources | VPC Lattice | #82 | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/vpc-lattice-cloudwatch-metrics/) |
+| Data quality monitoring for catalogs and databases | Glue Data Catalog | #83 | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/) |
+| Default stacks per account quota raised to 300,000 | CloudFormation | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/cloudformation-stacks-per-account-quota/) |
+| Read request rate raised to at least 11,000 GET/HEAD per second | S3 | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-s3-increases-read-request-rate/) |
+| T9g instances on Graviton5 | EC2 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-t9g-instances-ga/) |
+| Availability Zone affinity routing | Route 53 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/route-53-affinity-routing/) |
+| Automated Internet firewall, public preview | Network Firewall | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/network-firewall-automated-internet/) |
+
+## 16-18 November 2026 - recovered after the What's New feed truncated
+
+The 100-item feed had rolled past these days by Saturday. Recovered by search and
+confirmed against each announcement's own posted date, scoped to the services this
+series tracks, so this list is not a complete inventory of those three days.
+
+| Date | Item | Service | Status | Link |
+| --- | --- | --- | --- | --- |
+| 16 Nov | Associate additional KMS keys with snapshots | EBS | #77 | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ebs-snapshots-associate-kms-keys/) |
+| 16 Nov | Hybrid search combining vector and full text | S3 Vectors | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/s3-vectors-hybrid-search/) |
+| 16 Nov | Runtime instances in six more Regions | Bedrock AgentCore | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/agentcore-aws-regions/) |
+| 17 Nov | Queues for Kinesis Data Streams | Kinesis | #78 | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/kinesis-data-streams-queues/) |
+| 17 Nov | Resource context shared with firewalls | Transit Gateway | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/transit-gateway-firewall-context-sharing/) |
+| 17 Nov | C8gn instances in Israel (Tel Aviv) | EC2 | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-ec2-c8gn/) |
+| 18 Nov | Customer-managed runtimes | Lambda | #79 | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-lambda-customer-managed-runtimes/) |
+| 18 Nov | GPU instances on Lambda Managed Instances | Lambda | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-lambda-gpu-managed-instances/) |
+| 18 Nov | Network path performance monitors for VPC | CloudWatch | open | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/cloudwatch-network-path-monitoring/) |
+
 ## 19 November 2026 - covered by posts #80 and #81
 
 Two announcements from the same day, written as separate posts.

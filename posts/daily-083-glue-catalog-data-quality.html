@@ -1,0 +1,431 @@
+---
+title: "AWS Daily Intelligence #83 - Catalog-scale anomaly detection, and the anomaly it learns to call normal"
+date: '2026-11-21T10:00:00'
+slug: aws-daily-intelligence-glue-catalog-data-quality
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-11-21'
+verified_claims:
+  - claim: "AWS Glue Data Catalog introduces data quality monitoring for catalogs and databases, powered by AWS Glue Data Quality, which profiles and evaluates your tables at catalog scale from a single configuration"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "You define data quality checks once for a catalog, a database, or a single table, and AWS Glue Data Quality evaluates every table in scope, including tables added later, on the cadence you choose"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "You have the flexibility to run evaluations once when you create the configuration or set up triggers, so evaluations run on a schedule or whenever table metadata changes, including every Apache Iceberg commit"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "After three runs on a table, AWS Glue Data Quality flags anomalous statistics that drift outside expected bounds, surfacing changes that no rule covers"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "Results are accessible through the existing AWS Glue Data Quality APIs, or you can opt-in to write them to Apache Iceberg tables in the AWS Glue Data Catalog or to Amazon S3"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "Data quality monitoring for catalogs and databases in AWS Glue Data Catalog is available in all AWS Commercial, AWS GovCloud (US), and AWS China regions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/
+  - claim: "AWS Glue Data Quality requires a minimum of three data points to detect anomalies"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "When an anomaly is detected, it is considered normal for subsequent runs. The machine learning algorithm will consider this anomalous value as input unless it is explicitly excluded"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "When anomalies are generated, data quality scores are not impacted"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "Retraining the anomaly detection model is critical to detect the right anomalies. When anomalies are detected, AWS Glue Data Quality includes the anomaly in the model as a normal value"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "Linear (default) models trends and seasonality in your data over time"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "Fixed treats all data points as equally spaced regardless of the actual time intervals between evaluation runs"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "If you do not specify a mode, anomaly detection uses the LINEAR mode by default"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "The limits will differ for the same values over a one-minute interval, an hourly interval, or a daily interval"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "AWS Glue Data Quality will gather statistics only once, even if you have both Rule and Analyzer for the same columns"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "Every statistic is charged 1 DPU for the time it takes to detect anomalies"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "There is no cost to store the statistics. However, there is a limit of 100,000 statistics per account. These statistics will be stored for maximum of two years"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+  - claim: "You will incur 1 DPU per statistic for the time it takes to detect anomalies. On average, it takes between 10 -20 seconds to detect anomaly for 1 statistic"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "There is no additional charge for detecting anomalies in AWS Glue ETL jobs"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "$0.44 per DPU-hour, billed per second with a 1-minute minimum"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "Anomaly detection cost for a catalog pass is the per-statistic DPU charge multiplied by the statistics in scope"
+    derive: "10000 * 1 * (15/3600) * 0.44"
+    expect: "18.33"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "A catalog-wide configuration consumes the per-account statistics allowance in a small number of passes"
+    derive: "100000 / 10000"
+    expect: "10"
+    source: https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html
+catch: "Glue Data Catalog can now run data quality profiling and DQDL rulesets across a whole catalog or database from one configuration, covering tables added later, triggered on a schedule or on table metadata changes including every Iceberg commit. Two things decide whether it helps. The anomaly detection it headlines depends on human feedback: when an anomaly is detected it is considered normal for subsequent runs unless explicitly excluded, so at catalog scale a genuine regression is absorbed into the baseline within a few runs - and an anomaly does not impact the data quality score anyway. And the default LINEAR mode is documented for regular schedules, which is exactly what the headline Iceberg-commit trigger is not. Cost is per statistic, 1 DPU each, and the same anomaly detection is free in Glue ETL."
+---
+<div id="jk-post">
+
+<p class="lead">
+  The scaling story is the real one: define checks once for a catalog and every table in it gets them,
+  including tables that do not exist yet. The part to think about before switching it on is what happens
+  to an anomaly nobody looks at, because the documented answer is that it becomes normal.
+</p>
+
+<p>
+  <em>&ldquo;<strong>When an anomaly is detected, it is considered normal for subsequent runs. The machine
+  learning algorithm will consider this anomalous value as input unless it is explicitly
+  excluded.</strong>&rdquo;</em>
+</p>
+
+<div class="section" id="summary">
+  <h2>Executive summary</h2>
+  <p>
+    <em>&ldquo;AWS Glue Data Catalog introduces data quality monitoring for catalogs and databases,
+    powered by AWS Glue Data Quality, which profiles and evaluates your tables at catalog scale from a
+    single configuration&rdquo;</em>. The scoping is the feature:
+    <em>&ldquo;You define data quality checks once for a catalog, a database, or a single table, and AWS
+    Glue Data Quality evaluates every table in scope, including tables added later, on the cadence you
+    choose&rdquo;</em>.
+  </p>
+  <p>
+    Triggers are flexible and one option is new:
+    <em>&ldquo;evaluations run on a schedule or whenever table metadata changes, including every Apache
+    Iceberg commit&rdquo;</em>. Results go
+    <em>&ldquo;through the existing AWS Glue Data Quality APIs&rdquo;</em> or, opt-in, to Iceberg tables or
+    S3. It is available
+    <em>&ldquo;in all AWS Commercial, AWS GovCloud (US), and AWS China regions&rdquo;</em>.
+  </p>
+  <p>
+    The anomaly detection is the headline &mdash;
+    <em>&ldquo;After three runs on a table, AWS Glue Data Quality flags anomalous statistics that drift
+    outside expected bounds, surfacing changes that no rule covers&rdquo;</em> &mdash; and it is the part
+    whose documented behaviour changes how you should deploy this. It needs feedback it will not get at
+    catalog scale, its default mode does not match the trigger being promoted, and it is billed per
+    statistic here while being free in the other place you can run it.
+  </p>
+</div>
+
+<div class="section" id="changed">
+  <h2>What changed</h2>
+  <p>
+    Previously a DQDL ruleset was attached to a table or run inside an ETL job. The unit of configuration
+    is now the catalog or the database, and membership is dynamic &mdash; tables added later inherit the
+    checks with no action.
+  </p>
+  <p>
+    That removes the failure mode where a new table lands in a governed database and simply has no
+    quality checks because nobody remembered. In a lake where tables arrive from pipelines rather than
+    from people, that is most of them.
+  </p>
+  <p>
+    You can supply <em>&ldquo;built-in profiling options that AWS Glue provides for common baseline
+    statistics&rdquo;</em> or your own DQDL ruleset
+    <em>&ldquo;with analyzers, rules, or both&rdquo;</em>. Rules assert expectations; analyzers gather
+    statistics without asserting anything. Useful detail if you use both:
+    <em>&ldquo;AWS Glue Data Quality will gather statistics only once, even if you have both Rule and
+    Analyzer for the same columns&rdquo;</em>.
+  </p>
+</div>
+
+<div class="section" id="architecture">
+  <h2>Architecture</h2>
+
+  <img src="/blog/assets/diagrams/daily-083-glue-catalog-data-quality.svg" alt="Diagram: AWS Glue Data Catalog introduces data quality monitoring for catalogs and databases, powered by AWS Glue Data Quality, profiling and evaluating tables at catalog scale from a single configuration, where checks defined once for a catalog, database or table are evaluated against every table in scope including tables added later. Built-in profiling or a custom DQDL ruleset with analyzers, rules or both can be used, and evaluations run once at creation or on triggers, on a schedule or whenever table metadata changes including every Apache Iceberg commit. After three runs on a table Glue flags anomalous statistics that drift outside expected bounds, matching the documented minimum of three data points to detect anomalies. The feedback loop is the key constraint: when an anomaly is detected it is considered normal for subsequent runs and the machine learning algorithm considers that anomalous value as input unless explicitly excluded, so retraining by acknowledging or rejecting anomalies is critical, and at catalog scale across thousands of tables that per-table triage does not happen, meaning a genuine regression is absorbed into the baseline within a few runs. Compounding it, when anomalies are generated data quality scores are not impacted, so an anomaly does not fail anything by itself. Mode selection matters: Linear is the default and models trends and seasonality and suits evaluations on a regular schedule, while Fixed treats all data points as equally spaced and suits irregular or unpredictable intervals, so the headline trigger firing on every Iceberg commit produces the irregular case that the default mode is documented as unsuited to. Cost carries an asymmetry: there is no additional charge for detecting anomalies in AWS Glue ETL jobs, but in the Data Catalog every statistic is charged 1 DPU for the time it takes to detect anomalies, on average 10 to 20 seconds per statistic, at 0.44 dollars per DPU-hour billed per second with a one-minute minimum, so roughly 18 dollars for ten thousand statistics across a thousand tables. Statistics storage is free but limited to 100,000 statistics per account and retained for a maximum of two years, so ten passes of ten thousand statistics reaches the cap. Glue gathers statistics only once when a rule and an analyzer cover the same columns, and the time component is crucial because limits differ for the same values over one-minute, hourly and daily intervals. Available in all AWS Commercial, GovCloud US and China regions.">
+
+  <h3>The feedback loop, and why catalog scale breaks it</h3>
+  <p>
+    Anomaly detection here is not a threshold. It learns:
+    <em>&ldquo;AWS Glue Data Quality requires a minimum of three data points to detect
+    anomalies&rdquo;</em>, then predicts a range and flags values outside it. Fine so far.
+  </p>
+  <p>
+    What matters is what happens next.
+    <em>&ldquo;Retraining the anomaly detection model is critical to detect the right anomalies. When
+    anomalies are detected, AWS Glue Data Quality includes the anomaly in the model as a normal
+    value.&rdquo;</em> The documentation is explicit that correcting this is a human action &mdash;
+    acknowledging or rejecting the anomaly through Glue Studio or the APIs.
+  </p>
+  <p>
+    Per table, with an owner watching, that is a reasonable design. Applied to a catalog it inverts.
+    A row count that halves because an upstream extract silently failed gets flagged once. If nobody
+    rejects it, the model takes the halved value as a legitimate observation, and within a run or two the
+    new normal is the broken normal. The detector quietly stops being able to see the problem it
+    detected.
+  </p>
+  <p>
+    And it will not have blocked anything on the way past:
+    <em>&ldquo;When anomalies are generated, data quality scores are not impacted.&rdquo;</em> An anomaly
+    is an observation, not a failure. Nothing downstream fails because of one unless you build the thing
+    that makes it fail.
+  </p>
+  <p>
+    So the honest reading is that this launch scales the <em>generation</em> of anomalies without scaling
+    the <em>triage</em> of them. Which is fine &mdash; as long as you deploy it knowing that is what you
+    bought, and put the queue somewhere a person actually works.
+  </p>
+
+  <h3>The default mode does not match the headline trigger</h3>
+  <p>
+    There are two modes.
+    <em>&ldquo;Linear (default) models trends and seasonality in your data over time&rdquo;</em>, and the
+    documentation says to use it when evaluations run on a regular schedule.
+    <em>&ldquo;Fixed treats all data points as equally spaced regardless of the actual time intervals
+    between evaluation runs&rdquo;</em>, for irregular or unpredictable intervals.
+    <em>&ldquo;If you do not specify a mode, anomaly detection uses the LINEAR mode by default.&rdquo;</em>
+  </p>
+  <p>
+    Now put that beside the trigger the announcement leads with: evaluations that run
+    <em>&ldquo;whenever table metadata changes, including every Apache Iceberg commit&rdquo;</em>. Commits
+    are not a schedule. A table might get forty in an hour during a backfill and none for two days.
+  </p>
+  <p>
+    That is the textbook case for <code>FIXED</code>, and the default is <code>LINEAR</code>. Worse, the
+    interval is load-bearing for the model:
+    <em>&ldquo;The limits will differ for the same values over a one-minute interval, an hourly interval,
+    or a daily interval.&rdquo;</em> A trend-and-seasonality model fed irregularly spaced points will
+    produce bounds that reflect commit cadence as much as data behaviour.
+  </p>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>How you trigger evaluations</th><th>Mode to set</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Nightly or hourly schedule</td><td><code>LINEAR</code> (default)</td><td>Regular spacing; trends and seasonality are real signal</td></tr>
+        <tr><td>On every Iceberg commit</td><td><code>FIXED</code>, explicitly</td><td>Irregular intervals; documented as the Fixed case</td></tr>
+        <tr><td>On metadata change, low-churn tables</td><td><code>FIXED</code></td><td>Long unpredictable gaps between points</td></tr>
+        <tr><td>Mixed estate</td><td>Separate configurations</td><td>Mode is set per run, so one cadence per configuration</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The mode is set with <code>ObservationMode</code> in <code>AdditionalRunOptions</code>, alongside the
+    <code>ObservationScope: ALL</code> that enables anomaly detection for Catalog tables at all. Both are
+    opt-in fields, which means the quiet path &mdash; create a configuration, accept the defaults &mdash;
+    gives you the schedule-shaped model regardless of how you actually trigger it.
+  </p>
+
+  <h3>Cost is per statistic, and free somewhere else</h3>
+  <p>
+    <em>&ldquo;Every statistic is charged 1 DPU for the time it takes to detect anomalies.&rdquo;</em> The
+    pricing page puts a duration on it:
+    <em>&ldquo;You will incur 1 DPU per statistic for the time it takes to detect anomalies. On average, it
+    takes between 10 -20 seconds to detect anomaly for 1 statistic&rdquo;</em>, against
+    <em>&ldquo;$0.44 per DPU-hour, billed per second with a 1-minute minimum&rdquo;</em>.
+  </p>
+  <p>
+    At the 15-second midpoint that is roughly $0.0018 per statistic. A thousand tables carrying ten
+    statistics each is 10,000 statistics, or about <strong>$18.33</strong> per full catalog pass for the
+    anomaly detection alone, before the evaluation tasks that produced the statistics. Modest per pass;
+    the variable is how often your trigger fires, and the Iceberg-commit trigger is the one that can fire
+    a lot.
+  </p>
+  <p>
+    The asymmetry is the thing worth knowing:
+    <em>&ldquo;There is no additional charge for detecting anomalies in AWS Glue ETL jobs.&rdquo;</em> The
+    same capability, on the same statistics, is free inside an ETL job and billed per statistic in the
+    Data Catalog. If your tables are already written by Glue ETL jobs, running detection there instead is
+    a legitimate cost decision rather than a workaround.
+  </p>
+
+  <h3>The account-level ceiling nobody mentions</h3>
+  <p>
+    <em>&ldquo;There is no cost to store the statistics. However, there is a limit of 100,000 statistics
+    per account. These statistics will be stored for maximum of two years.&rdquo;</em>
+  </p>
+  <p>
+    Catalog-scale configuration meets an account-scale cap. At 10,000 statistics per pass that is
+    <strong>10 passes</strong> before the limit, on the reading that the cap counts stored statistics
+    cumulatively. The documentation does not say whether 100,000 counts distinct statistic series or
+    individual stored data points, and the difference is enormous &mdash; so this is a limit to measure
+    against your own catalog early rather than a number to plan around confidently.
+  </p>
+  <p>
+    Either way it is an account-level resource that a single catalog-wide configuration can consume on
+    behalf of every other user of that account. Worth knowing before enabling it broadly in a shared
+    account.
+  </p>
+</div>
+
+<div class="section" id="value">
+  <h2>Business value</h2>
+  <p>
+    The dynamic-membership property is what justifies this. Data quality coverage decays because tables
+    are created faster than checks are attached to them, and every catalog has a long tail of tables
+    nobody ever configured. Scoping checks to a database and having new tables inherit them fixes the
+    decay rather than the symptom.
+  </p>
+  <p>
+    Analyzers without rules is underrated here. For a catalog you do not understand well enough to write
+    assertions about, gathering baseline statistics on everything and letting drift surface is genuinely
+    more useful than a handful of carefully authored rules on the five tables somebody had time for.
+  </p>
+  <p>
+    The Iceberg-commit trigger is the most interesting operational capability, because it moves evaluation
+    from a schedule to the actual event that changes the data. Just set the mode to match.
+  </p>
+</div>
+
+<div class="section" id="security">
+  <h2>Security considerations</h2>
+  <p>
+    Statistics are data about data, and some of them are close to being data. Column-level statistics such
+    as minimums, maximums and distinct counts can disclose information about a sensitive column to anyone
+    who can read the quality results &mdash; a minimum and maximum on a salary or date-of-birth column is
+    a meaningful leak even without a single row.
+  </p>
+  <p>
+    The statistics are stored in the Glue service and can be encrypted with customer-managed KMS keys. If
+    you opt in to writing results to Iceberg tables or S3, that output is a new copy of this metadata in a
+    location with its own access policy, and it should be treated as being as sensitive as the most
+    sensitive column it profiles.
+  </p>
+  <p>
+    A catalog-wide configuration is also a broad grant by construction: the role running evaluations needs
+    read access to every table in scope. Scoping to a database rather than a whole catalog keeps that
+    blast radius proportionate.
+  </p>
+</div>
+
+<div class="section" id="cost">
+  <h2>Cost considerations</h2>
+  <p>
+    Two charges: the evaluation tasks that produce statistics, at
+    <em>&ldquo;$0.44 per DPU-hour, billed per second with a 1-minute minimum&rdquo;</em>, and anomaly
+    detection at 1 DPU per statistic. The one-minute minimum matters at catalog scale, because a very fast
+    evaluation on a small table still bills a minute of its DPUs.
+  </p>
+  <p>
+    The cost driver is trigger frequency multiplied by tables in scope multiplied by statistics per table.
+    A catalog-wide configuration on an Iceberg lake with per-commit triggers multiplies all three at once,
+    which is the combination to model before enabling rather than after.
+  </p>
+  <p>
+    Run anomaly detection in Glue ETL where the tables are already produced by Glue ETL, since there it
+    carries no additional charge.
+  </p>
+</div>
+
+<div class="section" id="operational">
+  <h2>Operational considerations</h2>
+  <p>
+    Decide who reads the anomalies before you generate them. Results surface through the Glue Data Quality
+    APIs, so the queue needs a consumer &mdash; a ticket, a channel, an owner per database. Without one,
+    the feature is generating observations that will be absorbed back into the baseline unreviewed.
+  </p>
+  <p>
+    New tables are unmonitored at first: three data points are required before anything can be flagged, so
+    a table created today is not protected by anomaly detection today. Rules, unlike anomalies, work on
+    the first run.
+  </p>
+  <p>
+    Do not change the evaluation cadence casually once a model has learned, since the bounds depend on the
+    interval between points.
+  </p>
+</div>
+
+<div class="section" id="tradeoffs">
+  <h2>Tradeoffs</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Approach</th><th>What you get</th><th>What it costs</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Catalog-wide profiling with analyzers</td>
+          <td>Coverage of every table including future ones, with no authoring</td>
+          <td>Per-statistic cost, account statistic cap, and an anomaly queue nobody owns yet</td>
+        </tr>
+        <tr>
+          <td>Database-scoped DQDL rulesets</td>
+          <td>Assertions that actually fail, on a proportionate blast radius</td>
+          <td>Authoring effort, and rules go stale as the business changes</td>
+        </tr>
+        <tr>
+          <td>Anomaly detection in Glue ETL instead</td>
+          <td>The same detection at no additional charge</td>
+          <td>Only covers tables written by Glue ETL jobs</td>
+        </tr>
+        <tr>
+          <td>Per-commit triggers on Iceberg tables</td>
+          <td>Evaluation tied to the event that changed the data</td>
+          <td>Unpredictable cost, and <code>FIXED</code> mode must be set explicitly</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section" id="implementation">
+  <h2>Implementation guidance</h2>
+  <p>
+    Start with one database rather than a catalog, with built-in profiling and a schedule. Measure the
+    statistics produced per table and the DPU time consumed over a week, then extrapolate before widening
+    scope.
+  </p>
+  <p>
+    Set <code>ObservationScope: ALL</code> to get anomaly detection at all, and set
+    <code>ObservationMode</code> deliberately &mdash; <code>FIXED</code> for metadata-change and
+    per-commit triggers, <code>LINEAR</code> only where evaluations genuinely run on a schedule.
+  </p>
+  <p>
+    Wire the results API to something a person reads, and make acknowledging or rejecting an anomaly part
+    of that workflow. That single step is what keeps the model from learning your outages as normal.
+  </p>
+</div>
+
+<div class="section" id="practices">
+  <h2>Best practices</h2>
+  <ul>
+    <li>Set the observation mode explicitly; the default assumes a regular schedule.</li>
+    <li>Give every anomaly a reviewer, because an unreviewed anomaly is absorbed as normal.</li>
+    <li>Use rules, not anomalies, for anything that must actually fail &mdash; anomalies do not affect the score.</li>
+    <li>Scope to a database rather than a catalog, to bound both the IAM grant and the cost.</li>
+    <li>Treat statistics output as sensitive metadata; encrypt it and restrict the opt-in S3 or Iceberg destination.</li>
+    <li>Measure against the 100,000-statistic account limit early, since the documentation does not define what it counts.</li>
+  </ul>
+</div>
+
+<div class="section" id="adopt">
+  <h2>Who should adopt this and when</h2>
+  <p>
+    <strong>Now:</strong> teams with a governed database whose table count grows faster than their check
+    coverage. Built-in profiling on a database scope, on a schedule, is a clear improvement over nothing
+    and needs no DQDL authoring.
+  </p>
+  <p>
+    <strong>Now, with a reviewer named:</strong> anyone turning on anomaly detection. The feature's
+    accuracy is a function of someone triaging its output.
+  </p>
+  <p>
+    <strong>Model the cost first:</strong> Iceberg-heavy lakes considering per-commit triggers across a
+    catalog. That is the configuration where all three cost multipliers move together.
+  </p>
+</div>
+
+<div class="section" id="takeaways">
+  <h2>Key takeaways</h2>
+  <p>
+    The scaling is genuine and well designed:
+    <em>&ldquo;AWS Glue Data Quality evaluates every table in scope, including tables added later, on the
+    cadence you choose&rdquo;</em>, which attacks the real reason quality coverage decays.
+  </p>
+  <p>
+    The sentence to plan around:
+    <em>&ldquo;When an anomaly is detected, it is considered normal for subsequent runs.&rdquo;</em>
+    Generating anomalies across a catalog without triaging them produces a detector that learns to ignore
+    your failures, and anomalies do not affect the quality score in the meantime.
+  </p>
+  <p>
+    Two concrete defaults to override: the mode, because <code>LINEAR</code> assumes a schedule and the
+    headline trigger is per-commit; and the venue, because detection is billed per statistic in the
+    Catalog and carries
+    <em>&ldquo;no additional charge for detecting anomalies in AWS Glue ETL jobs&rdquo;</em>.
+  </p>
+</div>
+
+<div class="section" id="references">
+  <h2>Official AWS references</h2>
+  <ul>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-data-quality-monitoring/" target="_blank" rel="noopener">AWS Glue Data Catalog introduces data quality monitoring for catalogs and databases &#8212; the announcement: profiling and evaluation at catalog scale from a single configuration, checks defined once for a catalog, database or table covering every table in scope including tables added later, built-in profiling or a custom DQDL ruleset with analyzers and rules, triggers on a schedule or on table metadata changes including every Apache Iceberg commit, anomalous statistics flagged after three runs, results through the existing APIs or opt-in to Iceberg tables or S3, and availability in all Commercial, GovCloud (US) and China regions</a></li>
+    <li><a href="https://docs.aws.amazon.com/glue/latest/dg/data-quality-anomaly-detection.html" target="_blank" rel="noopener">Anomaly detection in AWS Glue Data Quality &#8212; the minimum of three data points, that a detected anomaly is considered normal for subsequent runs and is included in the model unless explicitly excluded, that retraining through acknowledgement or rejection is critical, that anomalies do not impact data quality scores, the Linear and Fixed observation modes with Linear as the default, that bounds differ by evaluation interval, that statistics are gathered only once when a rule and analyzer overlap, the charge of 1 DPU per statistic, and the free storage with a 100,000-statistic account limit retained for a maximum of two years</a></li>
+    <li><a href="https://aws.amazon.com/glue/pricing/" target="_blank" rel="noopener">AWS Glue pricing &#8212; the $0.44 per DPU-hour rate billed per second with a 1-minute minimum, that anomaly detection incurs 1 DPU per statistic taking on average 10 to 20 seconds per statistic, and that there is no additional charge for detecting anomalies in AWS Glue ETL jobs</a></li>
+    <li><a href="https://docs.aws.amazon.com/glue/latest/dg/data-quality-getting-started.html" target="_blank" rel="noopener">Getting started with AWS Glue Data Quality &#8212; further reading on rulesets and evaluation runs; no claims in this post are drawn from it</a></li>
+    <li><a href="https://docs.aws.amazon.com/glue/latest/dg/dqdl.html" target="_blank" rel="noopener">Data Quality Definition Language (DQDL) reference &#8212; further reading on the rule and analyzer syntax; no claims in this post are drawn from it</a></li>
+  </ul>
+</div>
+
+</div>
