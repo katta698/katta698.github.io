@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #99 — DNS Peering and Forwarding Zones | Jayanth Katta Blog</title>
+<meta name="description" content="A forwarding zone and a peering zone look like the same feature with different wiring, and choosing wrongly produces a failure that no connectivity test reproduces. Forwarding cannot be transitive — the documentation proves it with a scenario where the name server is reachable from the VM and resolution still fails — while peering is transitive exactly once. And neither has anything to do with VPC Network Peering, which does not share DNS at all."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="DNS Peering and Forwarding Zones"/>
+<meta property="og:description" content="A forwarding zone and a peering zone look like the same feature with different wiring, and choosing wrongly produces a failure that no connectivity test reproduces. Forwarding cannot be transitive — the documentation proves it with a scenario where the name server is reachable from the VM and resolution still fails — while peering is transitive exactly once. And neither has anything to do with VPC Network Peering, which does not share DNS at all."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-dns-peering-and-forwarding-zones/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="DNS Peering and Forwarding Zones"/>
+<meta name="twitter:description" content="A forwarding zone and a peering zone look like the same feature with different wiring, and choosing wrongly produces a failure that no connectivity test reproduces. Forwarding cannot be transitive — the documentation proves it with a scenario where the name server is reachable from the VM and resolution still fails — while peering is transitive exactly once. And neither has anything to do with VPC Network Peering, which does not share DNS at all."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-dns-peering-and-forwarding-zones/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #99 — DNS Peering and Forwarding Zones…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #99 — DNS Peering and Forwarding Zones</h1>
+      <p class="post-description">A forwarding zone and a peering zone look like the same feature with different wiring, and choosing wrongly produces a failure that no connectivity test reproduces. Forwarding cannot be transitive — the documentation proves it with a scenario where the name server is reachable from the VM and resolution still fails — while peering is transitive exactly once. And neither has anything to do with VPC Network Peering, which does not share DNS at all.</p>
+      <div class="post-info">
+        <span>Nov 20, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>15 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 20 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-dns-peering-and-forwarding-zones" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Both of today's zone types are private zones, both are created by the same command with a different flag, and both are empty by design. A forwarding zone is <em>a type of Cloud DNS managed private zone that forwards requests for that zone to the IP addresses of its forwarding targets</em>; a peering zone is <em>a type of Cloud DNS managed private zone that follows the name resolution order of another VPC network.</em>
+    </p>
+    <p>
+      The resemblance is the problem. They solve different halves of hybrid resolution, they fail in different ways, and the way forwarding fails is specifically designed to defeat the test you would reach for.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"The on-premises name server is reachable from the VM, and forwarding still fails"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          This is the documented headline behaviour: <em>Cloud DNS cannot use transitive routing to connect to a forwarding target.</em> The page walks a setup where on-premises is joined to <code>vpc-net-a</code>, <code>vpc-net-a</code> is peered to <code>vpc-net-b</code> with custom routes exported and imported, and the forwarding zone is authorized for <code>vpc-net-b</code> &mdash; then gives you two tests to run from the same VM.
+        </p>
+        <p>
+          Query the metadata server for the forwarded name: <em>this query fails (expectedly) because Cloud DNS does not support transitive routing to forwarding targets.</em> Query the target name server directly for the same name: <em>although Cloud DNS does not use this path, this query demonstrates that transitive connectivity succeeds.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Stop looking for a route or a firewall rule, because both are already correct &mdash; the second test proves it. <em>You can use a Cloud DNS peering zone to fix this invalid scenario</em>: peer from <code>vpc-net-b</code> to <code>vpc-net-a</code>, and authorize the forwarding zone for <code>vpc-net-a</code>, which is the network that can actually reach the target. The documentation notes you can perform these steps in any order.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We set up VPC Network Peering, so DNS should follow"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It does not, and this is the single most useful sentence in the Cloud DNS documentation for anyone who read #81: <em>DNS peering and VPC Network Peering are different services.</em> Then, explicitly: <em>VPC Network Peering doesn't automatically share DNS information.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat them as unrelated, in both directions. VPC Network Peering exchanges subnet routes and nothing else &mdash; names were never part of that deal. And the converse holds too: <em>DNS peering can be used with VPC Network Peering, but VPC Network Peering is not required for DNS peering</em>, and <em>peering zones don't depend on VPC Network Peering.</em> You can have either without the other, and most confusion here comes from assuming one implies the other.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Forwarding worked in dev and times out in production"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Usually the return path, which is the requirement most easily satisfied by accident in a simple network and most easily missed in a real one. Forwarded queries do not come from your VM &mdash; <em>by default, queries forwarded to private targets originate from 35.199.192.0/19</em>, and <em>Cloud DNS uses the 35.199.192.0/19 source range for all customers.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Verify the reply has a way home, and specifically the right way home: <em>your on-premises network must have a route for the 35.199.192.0/19 destination, whose next hop is in the same VPC network where the request originated.</em> The constraint is sharper than "a route exists" &mdash; <em>Cloud DNS cannot send responses from Type 2 forwarding targets over the internet or through a different VPC network.</em> A second tunnel into a different VPC network does not count, however healthy it looks.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Forwarding reaches name servers. Peering reaches resolution orders. Only one of them crosses a VPC boundary.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-099-dns-peering-and-forwarding-zones.svg" alt="Diagram: DNS peering and forwarding zones in Google Cloud; both are private zones holding no records, a forwarding zone taking data from configured target name servers and a peering zone taking data from the producer VPC network's own resolution order; forwarded queries to private targets originate from 35.199.192.0/19, which spans 8,192 addresses and is reachable only from a VPC network or a connected on-premises network, needing an ingress allow rule for TCP and UDP port 53, a route to the target, a return route for that range whose next hop is in the same VPC network the query came from, and a reply from the target itself since a response from another name server is ignored; forwarding cannot use transitive routing, shown by the documented scenario where the on-premises name server answers a direct query from the VM while forwarded resolution fails, with a peering zone as the documented fix; and DNS peering is one-way, follows the producer network's resolution order, allows one transitive hop across no more than three VPC networks, and is a different service from VPC Network Peering, which does not share DNS information and is not required" />
+      <figcaption>The same command, a different flag, and two different failure modes.</figcaption>
+    </figure>
+
+    <h3>Neither zone accepts a record</h3>
+    <p>
+      Worth stating first because it reframes both features. <em>You cannot add records to a forwarding zone directly; the data comes from one or more configured target name servers.</em> And <em>you cannot add records to a peering zone directly; the data comes from the producer VPC network according to its VPC name resolution order.</em>
+    </p>
+    <p>
+      So what you are creating is not a zone in the ordinary sense. It is an entry in the resolution order from #98 &mdash; a claim over a suffix, with a delegation of the answer to somewhere else. Everything #98 established still applies: the authorized-network list is the whole of visibility, matching is by longest suffix, and a zone that wins the match and cannot answer returns NXDOMAIN rather than falling through.
+    </p>
+
+    <h3>Forwarding: four conditions, three of them outside Cloud DNS</h3>
+    <p>
+      A forwarding zone is the only thing in this block that needs you to configure something on a device Google does not operate, which is why it accounts for a disproportionate share of hybrid DNS tickets.
+    </p>
+    <p>
+      <strong>The firewall.</strong> <em>For Type 1 targets, create an ingress allow firewall rule for TCP and UDP port 53 traffic, applicable to your forwarding targets in each authorized VPC network.</em> On-premises needs the same &mdash; <em>for Type 2 targets, configure an on-premises network firewall and similar equipment to permit TCP and UDP port 53.</em> Both protocols. A UDP-only rule works until a response needs TCP, which is to say until DNSSEC or a large record set appears.
+    </p>
+    <p>
+      <strong>The route out.</strong> A subnet route for a target inside the VPC network, or a custom dynamic or static route for one on-premises &mdash; with one exclusion worth noting, since tagged static routes are invisible to Cloud DNS.
+    </p>
+    <p>
+      <strong>The route back.</strong> Covered above, and the one that breaks real estates: the reply must return through the same VPC network the query left from.
+    </p>
+    <p>
+      <strong>The reply must come from the target itself.</strong> This is the condition nobody anticipates. <em>Cloud DNS requires that the forwarding target that receives packets be the one that sends replies to 35.199.192.0/19.</em> Specifically: <em>if your forwarding target sends the request to a different name server, and that other name server responds to 35.199.192.0/19, Cloud DNS ignores the response.</em> The reason is stated &mdash; <em>for security reasons, Google Cloud expects the source address of each target name server's DNS reply to match the IP address of the forwarding target.</em>
+    </p>
+
+    <div class="callout">
+      <strong>Why that last one bites in enterprise networks</strong>
+      <p>A great many corporate DNS deployments are a load-balanced front end that hands queries to a pool of resolvers, and a pool member replying directly is normal, efficient behaviour everywhere else. Here it is silently discarded, because the source address of the reply does not match the forwarding target you configured.</p>
+      <p>The symptom is a timeout followed by <em>SERVFAIL</em>, not a refusal, so it reads as unreachability &mdash; and a packet capture on the on-premises side shows the query arriving and a reply being sent, which makes the Google side look like the problem. Point the forwarding target at whatever address actually answers.</p>
+    </div>
+
+    <h3>Forwarding: choosing targets, and what happens when they stop answering</h3>
+    <p>
+      Multiple targets are ranked, not round-robined. <em>When you configure two or more forwarding targets, Cloud DNS uses an internal algorithm to select a forwarding target</em>, and the two inputs are the ones you would hope for: <em>the higher the number of successful DNS responses processed by the forwarding target</em>, and <em>the lower the latency (round-trip time) for communicating with the forwarding target.</em> When nothing answers at all, <em>Cloud DNS synthesizes a SERVFAIL response.</em>
+    </p>
+    <p>
+      The caching behaviour is the part worth designing around. Normally <em>Cloud DNS maintains a cache of responses from reachable forwarding targets for the shorter of the following time spans</em> &mdash; 60 seconds, or the record's own TTL. But the failure case is deliberately generous: <em>when all of the forwarding targets for a forwarding zone become unreachable, Cloud DNS maintains its cache of the previously requested records in that zone for the duration of each record's TTL.</em>
+    </p>
+    <p>
+      That is a real availability property and it is worth knowing which way it cuts. A long TTL on your on-premises records buys you a grace period when the tunnel drops; a short one means resolution fails almost immediately. If hybrid DNS is on your critical path, the TTL on the records you forward to is an availability decision, made on a server Google does not manage.
+    </p>
+    <p>
+      One asymmetry in the target configuration catches people building from Terraform: <em>when using an FQDN as a forwarding target, you can only use one</em>, where IP targets go up to <em>number of forwarding targets in a forwarding zone 50</em>. An FQDN target does resolve wide &mdash; <em>the forwarding target can resolve to up to 50 IP addresses</em> &mdash; but it is one entry, and <em>you can't use an FQDN as an alternative name server in server policies</em> at all, which is #100's territory.
+    </p>
+
+    <h3>Peering: borrowing a resolution order</h3>
+    <p>
+      A peering zone does something more sweeping than its name suggests, and the vocabulary matters. <em>The VPC network where the DNS peering zone performs lookups is called the DNS producer network</em>, and <em>the VPC network that is authorized to use the peering zone is called the DNS consumer network.</em>
+    </p>
+    <p>
+      What the consumer gets is not a zone. <em>Lookups for records in the peering zone's namespace follow the DNS producer network's name resolution order</em> &mdash; the whole ordered list from #98, as evaluated in the producer network: its private zones, its forwarding zones, its Compute Engine internal names, its alternative name server. The resolution-order page says it exactly: <em>if the most specific match for the query is the name of a VPC network-scoped peering zone, Cloud DNS stops the current name resolution process and begins a new name resolution process from the perspective of the peering zone's target VPC network.</em>
+    </p>
+    <p>
+      Two properties follow. <em>DNS peering is a one-way relationship</em> &mdash; the producer gains nothing, and bidirectional resolution needs two zones in two projects. And the transitivity is bounded but non-zero: <em>transitive DNS peering is supported, but only through a single transitive hop</em>, meaning <em>no more than three VPC networks (with the network in the middle being the transitive hop) can be involved.</em>
+    </p>
+    <p>
+      That is the sharpest contrast with #81 available anywhere in this block. VPC Network Peering is non-transitive, full stop. DNS peering is transitive exactly once. Same word, different service, different rule.
+    </p>
+
+    <div class="callout">
+      <strong>The permission that stops a peering zone being self-service</strong>
+      <p>Creating a peering zone requires a grant in a project you may not administer: <em>you must be signed in to the Google Cloud console as an Identity and Access Management (IAM) member who has the DNS Peer role (roles/dns.peer) to the project that contains the producer VPC network</em>, backed by the permission <em>dns.networks.targetWithPeeringZone to create a peering zone.</em></p>
+      <p>That is deliberate and it is the right shape. A peering zone exposes the producer network's entire resolution order to the consumer, so the producer's owner has to agree &mdash; which also means a consumer team cannot build this alone, and the request belongs in the design conversation rather than at the end of it. The relationship can cross organisations: <em>while DNS producer and consumer networks are typically part of the same organization, cross-organizational DNS peering is also supported.</em></p>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The asymmetry looks arbitrary until you ask where the packet goes in each case, at which point it becomes the only possible answer.
+    </p>
+    <p>
+      A forwarding zone produces <strong>a packet on the network</strong>. Cloud DNS sends a real UDP or TCP query from <code>35.199.192.0/19</code> &mdash; a /19, so 8,192 addresses, shared by every Google Cloud customer &mdash; to an IP address, and that packet needs a route out, a firewall that permits it, and a route home, all of which exist in exactly one VPC network. The range is not internet-routable: <em>this range is only accessible from a Google Cloud VPC network or from an on-premises network connected to a VPC network.</em> So a forwarding zone's reach is the reach of one network's routing table, and asking it to traverse a peering to a second network asks a packet to come home down a path that does not exist.
+    </p>
+    <p>
+      A peering zone produces <strong>no packet at all</strong>. It restarts the resolution process in the producer network's context &mdash; a control-plane operation inside Cloud DNS, with no source address and no return route to arrange. Which is why it can cross a boundary that forwarding cannot, why it needs no VPC Network Peering underneath, and why its limit is a hop count chosen by Google rather than a routing constraint.
+    </p>
+
+    <div class="callout">
+      <strong>The practical reading</strong>
+      <p><strong>Forwarding is data plane. Peering is control plane.</strong> That one line predicts every difference in this post.</p>
+      <p>Forwarding needs firewall rules, routes, a return path and a matching source address, because it puts a packet on a wire. Peering needs an IAM grant, because it changes who may ask Cloud DNS a question. Forwarding stops at the VPC boundary; peering is the thing that crosses it. And when a query must cross a boundary <em>and then</em> reach a name server, you need both &mdash; peer to the network that can forward, and forward from there. Which is precisely the fix the documentation gives for its own invalid scenario.</p>
+    </div>
+
+    <h3>Choosing between them, stated once</h3>
+    <p>
+      If the answer lives on a name server &mdash; on-premises BIND, Active Directory, a third-party private resolver &mdash; forward to it. If the answer lives in another VPC network's resolution order &mdash; its private zones, or a forwarding zone it already owns &mdash; peer to it. The most common real design is both at once, and in that case the forwarding zone belongs in the network that has the connectivity, not the network that has the question.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>The answer is on a name server you run</td>
+            <td>Forwarding zone</td>
+            <td>Its data comes from configured target name servers.</td>
+          </tr>
+          <tr>
+            <td>The answer is in another VPC network's resolution order</td>
+            <td>Peering zone</td>
+            <td>Its data comes from the producer network's own order.</td>
+          </tr>
+          <tr>
+            <td><strong>Forwarding target reachable from the VM, resolution still failing</strong></td>
+            <td><strong>Add a peering zone; move the forwarding zone</strong></td>
+            <td><strong>Forwarding cannot use transitive routing, by design.</strong></td>
+          </tr>
+          <tr>
+            <td>You have VPC Network Peering and expect DNS to follow</td>
+            <td>It does not; configure DNS peering separately</td>
+            <td>VPC Network Peering doesn't automatically share DNS information.</td>
+          </tr>
+          <tr>
+            <td>Considering VPC Network Peering just to enable DNS peering</td>
+            <td>Unnecessary</td>
+            <td>Peering zones don't depend on VPC Network Peering.</td>
+          </tr>
+          <tr>
+            <td>Writing the firewall rule for forwarding</td>
+            <td>Allow TCP and UDP port 53 from 35.199.192.0/19</td>
+            <td>Both protocols are documented as required.</td>
+          </tr>
+          <tr>
+            <td>Reply path for an on-premises target</td>
+            <td>Route 35.199.192.0/19 back through the same VPC network</td>
+            <td>Responses cannot return via the internet or another VPC.</td>
+          </tr>
+          <tr>
+            <td>Corporate DNS behind a load balancer or resolver pool</td>
+            <td>Target the address that actually answers</td>
+            <td>A reply from a different name server is ignored.</td>
+          </tr>
+          <tr>
+            <td>Using a tagged static route to reach the target</td>
+            <td>Use an untagged custom route instead</td>
+            <td>Tagged static routes are excluded for forwarding.</td>
+          </tr>
+          <tr>
+            <td>Hybrid DNS on the critical path</td>
+            <td>Treat the forwarded records' TTL as an availability setting</td>
+            <td>When all targets go unreachable, the cache holds for the TTL.</td>
+          </tr>
+          <tr>
+            <td>Wanting several FQDN forwarding targets</td>
+            <td>Not possible; use IP addresses</td>
+            <td>Only one FQDN target is allowed per zone.</td>
+          </tr>
+          <tr>
+            <td>Needing resolution in both directions</td>
+            <td>Two peering zones, one each way</td>
+            <td>DNS peering is a one-way relationship.</td>
+          </tr>
+          <tr>
+            <td>A chain of four VPC networks</td>
+            <td>Redesign &mdash; peer directly to the producer</td>
+            <td>Only one transitive hop, so at most three networks.</td>
+          </tr>
+          <tr>
+            <td>Planning a peering zone against another team's network</td>
+            <td>Get roles/dns.peer in their project first</td>
+            <td>The grant lives in the producer's project, not yours.</td>
+          </tr>
+          <tr>
+            <td>Forwarding to an external resolver on the internet</td>
+            <td>Standard routing only</td>
+            <td>Private routing to Type 3 targets is not supported.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      For every forwarding zone you have, check two things that are not in Cloud DNS. First, that the on-premises or peer-network side has a route for <code>35.199.192.0/19</code> whose next hop is in the same VPC network the queries leave from &mdash; not merely that a route exists. Second, that the IP you configured as the forwarding target is the IP that sends replies, rather than a virtual address in front of a pool. Both are satisfied by accident in a simple network and both fail silently once the network grows.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thing I will carry out of this post is the two-test diagnostic, because it is a better piece of engineering writing than most documentation attempts. Rather than asserting that forwarding is non-transitive, the page hands you a pair of queries from the same VM whose results can only be explained by that fact: the resolver path fails, the direct path succeeds, and no amount of route inspection will reconcile them. It converts an architectural rule into something you can observe in thirty seconds.
+    </p>
+    <p>
+      It also quietly makes the general point. Connectivity and resolution are different systems with different rules, and a successful ping has never been evidence about DNS. This block has shown the same lesson from several angles &mdash; #91's one-way reachability, #96's ignored default route, #98's NXDOMAIN under a working public zone. Here it is at its cleanest: everything is reachable, nothing resolves, and both facts are correct.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#100 finishes the Cloud DNS block with server policies &mdash; inbound, which lets on-premises hosts query Cloud DNS, and outbound, which supersedes the entire resolution order this post has been standing on.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/dns/docs/zones/zones-overview" target="_blank" rel="noopener">DNS zones overview</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/zones/forwarding-zones" target="_blank" rel="noopener">Create a forwarding zone</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/zones/peering-zones" target="_blank" rel="noopener">Create a peering zone</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/vpc-name-res-order" target="_blank" rel="noopener">Name resolution order</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/key-terms" target="_blank" rel="noopener">Cloud DNS key terms</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/overview" target="_blank" rel="noopener">Cloud DNS overview</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/quotas" target="_blank" rel="noopener">Cloud DNS quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/best-practices" target="_blank" rel="noopener">Best practices for Cloud DNS</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/troubleshooting" target="_blank" rel="noopener">Cloud DNS troubleshooting</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/server-policies-overview" target="_blank" rel="noopener">DNS server policies overview</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/outbound-endpoints-overview" target="_blank" rel="noopener">Outbound endpoints overview</a></li>
+      <li><a href="https://docs.cloud.google.com/dns/docs/access-control" target="_blank" rel="noopener">Cloud DNS access control</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-architecture-lambda-runtime-responsibility/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Architecture Series #119 — Three update modes, and one of them means nobody is patching you</span></a><a href="/blog/aws-daily-intelligence-ec2-performance-status-checks/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #80 - A fifth status check, and it increments the metric your automation already watches</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-dns-peering-and-forwarding-zones/';
+      this.page.identifier = 'gcp-architecture-dns-peering-and-forwarding-zones';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
