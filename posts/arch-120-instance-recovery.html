@@ -4,7 +4,7 @@ date: '2026-11-21T09:00:00'
 slug: aws-architecture-instance-recovery
 labels: [AWS, "AWS Architecture Series"]
 verified: '2026-11-21'
-problem: "EC2 has two automatic recovery mechanisms, one of them on by default, and both are started by exactly one signal: a failed system status check. Automatic instance recovery does not operate if only the instance status check fails. That narrowness is correct, but it collides with something that changed this week - a failed performance status check now also increments the aggregate StatusCheckFailed metric. A recover action wired to the aggregate rather than to StatusCheckFailed_System will migrate an instance for a degraded GPU whose documented remediation is a reboot. And neither mechanism can be retrofitted: both must be configured in advance, before a system status check fails."
+problem: "EC2 has two automatic recovery mechanisms, one of them on by default, and both are started by exactly one signal: a failed system status check. Automatic instance recovery does not operate if only the instance status check fails. That narrowness is correct, but it collides with something that changed this week - a failed performance status check now also increments the aggregate StatusCheckFailed metric. An alarm on the aggregate can enter ALARM when a performance status check fails even though the system status check is healthy, so recovery actions should use StatusCheckFailed_System as AWS documents rather than the aggregate. And neither mechanism can be retrofitted: both must be configured in advance, before a system status check fails."
 builds: "A precise reading of what EC2 instance recovery is and is not: the two mechanisms and how they differ on defaults, metal instances, instance store, speed and cost; why only the system check triggers a recovery; exactly what a recovered instance keeps and loses, including the public IPv4 address a stop/start would not keep; which metric to alarm on and which to avoid now that five status checks feed one aggregate; and how to audit whether recovery has ever fired."
 verified_claims:
   - claim: "If AWS detects that an instance is unavailable due to an underlying hardware or software issue, there are two mechanisms that can automatically restore instance availability"
@@ -123,8 +123,11 @@ verified_claims:
           The correct signal for a recover action is <code>StatusCheckFailed_System</code>. The aggregate
           <code>StatusCheckFailed</code> is a different thing, and it is a different thing than it was
           last week, because <em>&ldquo;A failed performance status check also increments the
-          StatusCheckFailed metric.&rdquo;</em> An alarm written years ago for a host failure can now
-          migrate an instance for a degraded GPU.
+          StatusCheckFailed metric.&rdquo;</em> An alarm configured against the aggregate
+          <code>StatusCheckFailed</code> metric can enter the <code>ALARM</code> state when a performance
+          status check fails, even if the system status check remains healthy. Recovery actions should use
+          <code>StatusCheckFailed_System</code>, as documented by AWS, rather than relying on the aggregate
+          metric to identify host failures.
         </p>
       </div>
     </div>
@@ -152,7 +155,7 @@ verified_claims:
   <div class="section" id="architecture">
     <h2>Architecture</h2>
 
-    <img src="/blog/assets/diagrams/arch-120-instance-recovery.svg" alt="Diagram: Amazon EC2 automatic instance recovery. If AWS detects that an instance is unavailable due to an underlying hardware or software issue, there are two mechanisms that can automatically restore instance availability: simplified automatic recovery, enabled by default during instance launch with fixed AWS-managed behaviour, excluding metal instance sizes, not supported for instances that attach instance store volumes at launch, notifying only through the Health Dashboard and carrying no additional cost; and Amazon CloudWatch action based recovery, which requires manual configuration of CloudWatch alarms and actions, allows customisable actions and conditions and SNS notification, includes metal sizes, is supported on selected instance types where instance store data is lost during recovery, makes faster recovery attempts, and might incur CloudWatch charges. Both must be configured in advance before a system status check fails. The trigger is narrow: if a system status check fails AWS initiates automatic instance recovery, which attempts to migrate the affected instance to different hardware, and automatic instance recovery does not operate if only the instance status check fails. A failed system status check indicates a problem with the host hardware or software and not a problem with the instance itself, from causes including loss of network connectivity, loss of system power, software issues on the physical host, and hardware issues on the physical host that impact network reachability. The metric to alarm on is StatusCheckFailed_System, reporting 0 when the check passed and 1 when it failed. The trap is that a failed performance status check also increments the aggregate StatusCheckFailed metric, so a recover action wired to the aggregate can migrate an instance for a degraded GPU whose documented remediation is a reboot. Recovery is a migration that presents as an unplanned reboot. A recovered instance is identical to the original except for what is lost: preserved are the instance ID, public, private and Elastic IP addresses, instance metadata, placement group, attached EBS volumes and Availability Zone; lost are data in volatile memory, instance store data for CloudWatch action based recovery only, and operating system uptime which resets to zero. The instance retains its public IPv4 address during recovery, whereas a manually restarted instance receives a new public IPv4 address unless it has an Elastic IP address. If recovery is unsuccessful the instance might continue running on the impaired host and manual intervention is required. Recovery attempts emit Health Dashboard events per mechanism. These mechanisms are designed for individual instances.">
+    <img src="/blog/assets/diagrams/arch-120-instance-recovery.svg" alt="Diagram: Amazon EC2 automatic instance recovery. If AWS detects that an instance is unavailable due to an underlying hardware or software issue, there are two mechanisms that can automatically restore instance availability: simplified automatic recovery, enabled by default during instance launch with fixed AWS-managed behaviour, excluding metal instance sizes, not supported for instances that attach instance store volumes at launch, notifying only through the Health Dashboard and carrying no additional cost; and Amazon CloudWatch action based recovery, which requires manual configuration of CloudWatch alarms and actions, allows customisable actions and conditions and SNS notification, includes metal sizes, is supported on selected instance types where instance store data is lost during recovery, makes faster recovery attempts, and might incur CloudWatch charges. Both must be configured in advance before a system status check fails. The trigger is narrow: if a system status check fails AWS initiates automatic instance recovery, which attempts to migrate the affected instance to different hardware, and automatic instance recovery does not operate if only the instance status check fails. A failed system status check indicates a problem with the host hardware or software and not a problem with the instance itself, from causes including loss of network connectivity, loss of system power, software issues on the physical host, and hardware issues on the physical host that impact network reachability. The metric to alarm on is StatusCheckFailed_System, reporting 0 when the check passed and 1 when it failed. The trap is that a failed performance status check also increments the aggregate StatusCheckFailed metric, so an alarm on the aggregate can enter the ALARM state when a performance status check fails even though the system status check is healthy, which is why AWS documents StatusCheckFailed_System as the metric for recovery actions. Recovery is a migration that presents as an unplanned reboot. A recovered instance is identical to the original except for what is lost: preserved are the instance ID, public, private and Elastic IP addresses, instance metadata, placement group, attached EBS volumes and Availability Zone; lost are data in volatile memory, instance store data for CloudWatch action based recovery only, and operating system uptime which resets to zero. The instance retains its public IPv4 address during recovery, whereas a manually restarted instance receives a new public IPv4 address unless it has an Elastic IP address. If recovery is unsuccessful the instance might continue running on the impaired host and manual intervention is required. Recovery attempts emit Health Dashboard events per mechanism. These mechanisms are designed for individual instances.">
 
     <h3>Two mechanisms, and only one of them is on by default</h3>
     <p>
@@ -228,11 +231,15 @@ verified_claims:
       <em>&ldquo;A failed performance status check also increments the StatusCheckFailed metric.&rdquo;</em>
     </p>
     <p>
-      So a recover action attached to the aggregate now fires for a condition that recovery is the wrong
-      answer to. A degraded GPU is not a host failure; its documented remedy is a reboot to reset the GPU
-      and trigger row remapping, which resolves the issue without replacing the instance. Migrating
-      instead is slower, discards the fix AWS actually recommends, and on accelerated capacity it trades a
-      short reboot for a relaunch into a pool that may not have room.
+      An alarm configured against the aggregate <code>StatusCheckFailed</code> metric can therefore
+      enter the <code>ALARM</code> state when a performance status check fails, even if the system status
+      check remains healthy. Recovery actions should use <code>StatusCheckFailed_System</code>, as
+      documented by AWS, rather than relying on the aggregate metric to identify host failures.
+    </p>
+    <p>
+      The two conditions also call for different remedies. A degraded GPU is not a host failure, and its
+      documented remedy is a reboot to reset the GPU and trigger row remapping, which resolves the issue
+      without replacing the instance &mdash; whereas recovery addresses a host-level fault.
     </p>
     <p>
       One alarm, one metric, one remedy. The aggregate is a reasonable thing to put on a dashboard for a
@@ -348,7 +355,7 @@ verified_claims:
           <tr>
             <td>Which metric for a recover action</td>
             <td><code>StatusCheckFailed_System</code>, never the aggregate</td>
-            <td>The aggregate now includes a performance condition whose documented remedy is a reboot, not a migration</td>
+            <td>The aggregate can enter ALARM on a performance condition while the system status check is healthy; AWS documents the per-check metric for recovery actions</td>
           </tr>
           <tr>
             <td>Instance store workloads</td>
@@ -404,8 +411,8 @@ verified_claims:
       Which is why the audit above is the whole of the work. There is no runbook step for recovery, no
       lever to pull during the incident, nothing to tune. There is only the question of whether the
       instances you care about are covered, and whether the alarm you wrote for a host failure is still
-      only watching host failures &mdash; because that one stopped being true this week, quietly, in a
-      metric nobody edited.
+      only watching host failures &mdash; because an alarm on the aggregate can now change state for a
+      performance condition, quietly, in a metric nobody edited.
     </p>
     <p>
       And the small counter-intuition worth keeping: the instinct to stop and start an unreachable
