@@ -86,5 +86,47 @@ jobs:
             exit 1
           fi
           git commit -m "Publish ${SLUG} (via publish-lab-draft workflow)"
-          git push
+
+          # Retry, re-basing and rebuilding between attempts.
+          #
+          # The rebuild above takes ~15 minutes, and this repo's automated
+          # jobs (cloud status, news ingest, AI refresh) push roughly hourly.
+          # A bare `git push` therefore loses the race often enough to
+          # matter: on 2026-11-23 this workflow did a clean build and then
+          # failed with "rejected (fetch first)", throwing the work away.
+          #
+          # blog/ is generated. A conflict there is resolved by REGENERATING,
+          # never by merging - a merged build output matches neither side's
+          # source. So each retry resets to the new tip, re-applies the one
+          # real change (dropping the draft flag), and rebuilds.
+          published=0
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "pushed on attempt ${attempt}"
+              published=1
+              break
+            fi
+            echo "push rejected; resetting to origin/main and rebuilding (attempt ${attempt})"
+            git fetch origin main
+            git reset --hard origin/main
+            python3 - <<'PYEOF'
+          import glob, os, re, sys
+          slug = os.environ["SLUG"]
+          for path in glob.glob("posts/*.html") + glob.glob("posts/*.md"):
+              text = open(path, encoding="utf-8").read()
+              m = re.search(r'^slug:\s*(\S+)\s*$', text, re.MULTILINE)
+              if m and m.group(1) == slug:
+                  if re.search(r'^draft:\s*true\s*$', text, re.MULTILINE):
+                      open(path, "w", encoding="utf-8").write(
+                          re.sub(r'^draft:\s*true\s*\n', '', text, flags=re.MULTILINE))
+                      print("draft flag removed again after reset")
+                  sys.exit(0)
+          sys.exit("slug vanished from posts/ during reset: " + slug)
+          PYEOF
+            python3 scripts/sync_blog.py
+            git add posts/ blog/
+            git diff --cached --quiet && { echo "nothing left to publish"; published=1; break; }
+            git commit -m "Publish ${SLUG} (via publish-lab-draft workflow)"
+          done
+          [ "$published" = "1" ] || { echo "could not push after 3 attempts"; exit 1; }
           echo "Pushed. on-publish.yml takes it from here: Pages deploy, RAG re-index, README."
