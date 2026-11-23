@@ -1256,6 +1256,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   <ul class="nav-links">
     <li><a href="/">Portfolio</a></li>
     <li><a href="/blog/">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/" class="active" aria-current="page">Live status</a></li>

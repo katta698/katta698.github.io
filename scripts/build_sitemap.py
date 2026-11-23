@@ -53,6 +53,8 @@ PRIORITY = [
     # date is re-verified, which is neither hourly nor rare.
     ("intelligence/events/index.html", "0.8", "weekly"),
     ("intelligence/index.html", "0.8", "weekly"),
+    # The cloud feeds behind it move daily; its own rebuild is weekly.
+    ("data/index.html", "0.8", "weekly"),
     ("blog/index.html", "0.8", "daily"),
 ]
 

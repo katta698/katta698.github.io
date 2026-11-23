@@ -1,0 +1,60 @@
+name: Refresh the data platform page
+
+# Two sources, two rates, one page.
+#   releases   the engines ship constantly, and every feed here is a rolling
+#              ten-item window -- so a weekly run is what keeps history.
+#   economics  quarterly numbers. Polled weekly so a result lands within days
+#              of the filing rather than whenever someone remembers.
+# Both commit, so this is registered in deploy-pages.yml's workflow_run list:
+# a push made with GITHUB_TOKEN never triggers another workflow by itself.
+on:
+  schedule:
+    - cron: "40 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Audit first and let it speak. A feed that has died answers 200 with an
+      # empty list, which looks exactly like a quiet week in the output.
+      - name: Audit the vendor feeds
+        run: python scripts/fetch_data_vendors.py --audit
+        continue-on-error: true
+
+      - name: Fetch engine releases
+        run: python scripts/fetch_data_vendors.py
+
+      - name: Fetch vendor economics
+        run: python scripts/fetch_data_economics.py
+
+      - name: Rebuild the page
+        run: python scripts/build_data_page.py
+
+      - name: Check the mapping still resolves
+        run: python scripts/check_data_page.py
+
+      - name: Commit if anything moved
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "nothing changed"
+            exit 0
+          fi
+          git commit -m "Data platform: refresh releases and vendor economics"
+          git push

@@ -216,6 +216,7 @@ MOBILE_MENU_RE = re.compile(r'\s*<div class="mobile-menu"[^>]*>.*?</div>\s*'
 CANONICAL_NAV_LINKS = (
     "\n    <li><a href=\"/\">Portfolio</a></li>"
     "\n    <li><a href=\"/blog/\" class=\"active\" aria-current=\"page\">Blog</a></li>"
+    "\n    <li><a href=\"/data/\">Data</a></li>"
     "\n    <li><a href=\"/intelligence/\">Intelligence</a></li>"
     "\n    <li><a href=\"/intelligence/whats-new/\">What&rsquo;s new</a></li>"
     "\n    <li><a href=\"/intelligence/status/\">Live status</a></li>\n  ")
@@ -1991,6 +1992,7 @@ def nav_html(show_search=True, show_audio=False):
   <ul class="nav-links">
     <li><a href="/">Portfolio</a></li>
     <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/">Live status</a></li>

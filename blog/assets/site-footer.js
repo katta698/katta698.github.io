@@ -1090,6 +1090,7 @@
   var PAGES = [
     { href: '/',                          label: 'Portfolio' },
     { href: '/blog/',                     label: 'Blog' },
+    { href: '/data/',                     label: 'Data' },
     { href: '/intelligence/',             label: 'Intelligence' },
     { href: '/intelligence/whats-new/',   label: '’s new', pre: 'What' },
     { href: '/intelligence/status/',      label: 'Live status' },

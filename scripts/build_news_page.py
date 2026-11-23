@@ -844,6 +844,7 @@ a:active,button:active{opacity:.72}
   <ul class="nav-links">
     <li><a href="/">Portfolio</a></li>
     <li><a href="/blog/">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/" class="active" aria-current="page">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/">Live status</a></li>
