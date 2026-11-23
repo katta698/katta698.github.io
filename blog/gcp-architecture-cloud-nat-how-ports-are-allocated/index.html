@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #101 — Cloud NAT: How Ports Are Allocated | Jayanth Katta Blog</title>
+<meta name="description" content="Three separate things about Cloud NAT port allocation are not what a reasonable engineer would assume. The budget is 64,512 per address rather than 65,536. The number of ports you ask for is rounded up to a power of two, raised to a floor of 1,024 in one common case, and doubled on Private NAT. And the count does not cap total connections — it caps simultaneous connections to each unique destination, which makes the obvious sizing question the wrong one."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Cloud NAT: How Ports Are Allocated"/>
+<meta property="og:description" content="Three separate things about Cloud NAT port allocation are not what a reasonable engineer would assume. The budget is 64,512 per address rather than 65,536. The number of ports you ask for is rounded up to a power of two, raised to a floor of 1,024 in one common case, and doubled on Private NAT. And the count does not cap total connections — it caps simultaneous connections to each unique destination, which makes the obvious sizing question the wrong one."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-cloud-nat-how-ports-are-allocated/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Cloud NAT: How Ports Are Allocated"/>
+<meta name="twitter:description" content="Three separate things about Cloud NAT port allocation are not what a reasonable engineer would assume. The budget is 64,512 per address rather than 65,536. The number of ports you ask for is rounded up to a power of two, raised to a floor of 1,024 in one common case, and doubled on Private NAT. And the count does not cap total connections — it caps simultaneous connections to each unique destination, which makes the obvious sizing question the wrong one."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-cloud-nat-how-ports-are-allocated/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #101 — Cloud NAT: How Ports Are Allocated…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #101 — Cloud NAT: How Ports Are Allocated</h1>
+      <p class="post-description">Three separate things about Cloud NAT port allocation are not what a reasonable engineer would assume. The budget is 64,512 per address rather than 65,536. The number of ports you ask for is rounded up to a power of two, raised to a floor of 1,024 in one common case, and doubled on Private NAT. And the count does not cap total connections — it caps simultaneous connections to each unique destination, which makes the obvious sizing question the wrong one.</p>
+      <div class="post-info">
+        <span>Nov 22, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>16 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 22 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-cloud-nat-how-ports-are-allocated" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Cloud NAT is the first service in this block whose central behaviour is arithmetic. <em>When a Cloud NAT gateway performs source network address translation (SNAT) on a packet sent by a VM, it changes the packet's NAT source IP address and source port</em> &mdash; and since ports are finite, how they are handed out decides what your fleet can and cannot do.
+    </p>
+    <p>
+      Three parts of that hand-out surprise people, and all three are documented. This post is the mechanism; the sizing arithmetic and the exhaustion failure are #102.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We sized for 65,536 ports per address and the numbers don't add up"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They are off by 1,024 per address, every time. <em>TCP and UDP each support 65,536 ports per IP address</em>, but <em>Cloud NAT doesn't use the well-known (privileged) ports (0 through 1,023)</em> &mdash; so <em>each NAT IP address on a Cloud NAT gateway (both Public NAT and Private NAT) offers 64,512 TCP source ports and 64,512 UDP source ports.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use 64,512 in every calculation, and note the second half of that sentence too: TCP and UDP have separate budgets of 64,512 each, not a shared pool. A workload that is heavily UDP does not eat into the TCP allocation.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We asked for a specific number of ports per VM and the gateway reserved more"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Because it did. <em>For Public NAT, Google Cloud allocates NAT source IP address and source port tuples using multiples of powers of two, so the number of NAT source IP address and source port tuples is greater than or equal to the minimum ports per VM instance that you specify.</em> Any value that is not already a power of two is rounded up to the next one, and the gateway consumes the rounded figure.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Choose powers of two deliberately, so your configured number and the allocated number are the same and your capacity planning describes reality. A value chosen for readability rather than for the allocator understates consumption, always in the direction that runs out of addresses sooner.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We have 1,024 ports per VM, so each VM supports 1,024 connections"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It supports considerably more than that, or considerably fewer, depending on where the connections go &mdash; and this is the single most consequential sentence on the page. <em>The Cloud NAT gateway can process 1,024 simultaneous connections to each unique destination 3-tuple.</em>
+        </p>
+        <p>
+          A destination is narrow: <em>a unique destination means a unique 3-tuple consisting of a destination IP address, a destination port, and an IP protocol (such as TCP or UDP).</em> A connection is the pairing: <em>a connection means a unique 5-tuple consisting of the NAT source IP address and source port tuple combined with a unique destination 3-tuple.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Size against your <em>most concentrated</em> destination, not your total connection count. A fleet whose connections are spread thinly across hundreds of endpoints is comfortable on a small allocation; a fleet concentrating the same number on one API endpoint is not, at any total volume. The question is never "how many connections", it is "how many to the busiest single destination".
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      One number, transformed four times on its way from your configuration to the gateway.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-101-cloud-nat-how-ports-are-allocated.svg" alt="Diagram: how Cloud NAT allocates ports; each NAT IP address offers 64,512 TCP and 64,512 UDP source ports rather than 65,536 because the well-known ports 0 to 1,023 are never used, and a VM's tuples can span several addresses; a gateway uses static allocation, which gives every VM the same fixed count and is the Public NAT default, or dynamic allocation, which starts at the minimum and doubles near exhaustion up to a maximum and is the Private NAT default, with endpoint-independent mapping requiring static and unavailable on Private NAT; the reservation procedure rounds the request up to a power of two, defaults to 64 ports static and 32 dynamic, raises the floor to 1,024 when static allocation covers alias ranges wider than a slash thirty-two, and doubles the minimum on Private NAT for reliability, with GKE tuples assigned to the node and shared by all its Pods; the allocation caps simultaneous connections per unique destination three-tuple rather than in total, so 1,024 ports gives 1,024 connections to one address and port plus another 1,024 to the same address on another port; closed connections stay unusable for the Cloud NAT TIME_WAIT of 30 or 120 seconds depending on when the gateway was created, separate from the guest operating system's own timeout; and increasing ports is non-disruptive while every reduction breaks established connections" />
+      <figcaption>Four transformations between the number you type and the number you get.</figcaption>
+    </figure>
+
+    <h3>Static and dynamic, with opposite defaults</h3>
+    <p>
+      <em>When you create a Cloud NAT gateway, you choose whether to use static port allocation or dynamic port allocation.</em> The two behave differently and &mdash; the detail worth writing down &mdash; the default depends on which kind of NAT you are creating.
+    </p>
+    <p>
+      <em>Static port allocation is enabled, by default, for Public NAT. Private NAT, on the other hand, uses dynamic port allocation by default.</em> The page says it again from the other side, which suggests Google knows people get it wrong: <em>dynamic port allocation is enabled, by default, for Private NAT. Public NAT uses static port allocation by default.</em>
+    </p>
+    <p>
+      Static is uniform and unyielding. <em>Because all VMs are allocated the same number of ports, static port allocation works best if all VMs have similar egress usage</em>, and <em>the number of ports allocated to each VM is fixed and doesn't change if some VMs use more ports than others or if a VM exhausts all its ports.</em> A single busy VM cannot borrow from idle neighbours, however much slack the gateway has.
+    </p>
+    <p>
+      Dynamic responds, by doubling. <em>Initially, a VM is allocated the minimum number of ports per VM instance. If a VM is close to exhausting all the ports that are allocated to it, the number of ports assigned to the VM is doubled</em>, and <em>the VM can repeatedly request more ports up to the maximum number of ports per VM instance.</em> It gives back, too: <em>when the port usage significantly decreases, the ports are deallocated and can be allocated to other VMs that use the same NAT gateway.</em>
+    </p>
+    <p>
+      The cost of that elasticity is stated plainly and is easy to miss when choosing: <em>while additional ports are being allocated to VMs, you might see connection timeouts or latency.</em> Dynamic allocation trades a hard ceiling for a soft edge &mdash; instead of failing when a VM exceeds its allocation, it stalls briefly while growing. For a batch job that is strictly better. For a latency-sensitive service it is a decision, not a free upgrade.
+    </p>
+
+    <div class="callout">
+      <strong>The constraint that removes the choice</strong>
+      <p>Endpoint-independent mapping and dynamic allocation are mutually exclusive, stated twice from both directions: <em>if you want to configure endpoint-independent mapping (EIM) on your Public NAT gateway, you must use static port allocation</em>, and <em>if endpoint-independent mapping is enabled on the Cloud NAT gateway, you cannot configure dynamic port allocation.</em></p>
+      <p>So if anything in your stack needs a stable outbound mapping &mdash; the usual case being a peer-to-peer or signalling protocol that assumes a consistent source &mdash; the allocation method is already decided for you, and the elasticity is not available. Worth discovering at design time rather than after a migration to dynamic is planned.</p>
+      <p>And on the other side of the service: <em>endpoint-independent mapping is not available for Private NAT gateways</em> at all.</p>
+    </div>
+
+    <h3>The reservation procedure: four places the number changes</h3>
+    <p>
+      Between the value you configure and the tuples the gateway reserves, the number passes through four transformations. Three of them increase it.
+    </p>
+    <p>
+      <strong>Nothing specified, so a default applies &mdash; and it differs by method.</strong> <em>If you do not specify the minimum ports per VM instance, then the default value is used: 64 for static port allocation and 32 for dynamic port allocation.</em> Dynamic starts lower precisely because it grows.
+    </p>
+    <p>
+      <strong>Rounded up to a power of two.</strong> As above. This is the one that quietly breaks spreadsheets.
+    </p>
+    <p>
+      <strong>A floor of 1,024, in a case most clusters hit.</strong> <em>If static port allocation is configured, and the gateway performs NAT for alias IP ranges that have more than one address (netmask smaller than /32), Cloud NAT adjusts the minimum ports per VM to be the maximum of these two values</em> &mdash; the value you set, and 1,024. Any GKE cluster whose nodes carry Pod alias ranges lands here without asking, which means a configured minimum of 64 becomes an effective 1,024, and the number of VMs one NAT IP address can serve drops by a factor of sixteen.
+    </p>
+    <p>
+      <strong>Private NAT doubles it.</strong> <em>For Private NAT, Google Cloud allocates twice the number of required minimum ports per VM for reliability.</em> Leave the <code>&times; 2</code> out of a Private NAT subnet calculation and the subnet comes out half the size it needs to be.
+    </p>
+    <p>
+      One transformation does not change the number but changes where it comes from: <em>if the Cloud NAT gateway uses two or more NAT IP addresses, then it's possible for the NAT source IP address and source port tuples to span more than one NAT IP address</em>, because <em>a single NAT IP address might not have enough available source ports to accommodate the number of NAT source IP address and source port tuples that a VM needs.</em> A VM is not pinned to one address &mdash; <em>a single VM that uses the gateway can get the required ports from any of the assigned NAT IP addresses.</em>
+    </p>
+
+    <div class="callout">
+      <strong>On GKE, the unit is the node</strong>
+      <p><em>The NAT source IP address and source port tuples are assigned to the node VM, shared by all Pods on the node.</em> So the per-VM allocation is really a per-node allocation divided by Pod density, and raising the Pods-per-node count reduces the ports available to each one without touching the NAT configuration at all.</p>
+      <p>Combined with the 1,024 floor above, a GKE cluster's effective port maths is quite different from a plain VM fleet's: a higher per-node floor, shared among everything scheduled there.</p>
+    </div>
+
+    <h3>What the allocation actually limits</h3>
+    <p>
+      The documentation's three-line example is the clearest statement of this behaviour and worth reproducing, because the repetition of "another 1,024" is the whole point. For a VM with 1,024 reserved tuples:
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Destination 3-tuple</th>
+            <th>Simultaneous connections</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>203.0.113.99</code> : 80 : TCP</td>
+            <td>1,024</td>
+          </tr>
+          <tr>
+            <td><code>203.0.113.99</code> : 443 : TCP &mdash; <em>same address, different port</em></td>
+            <td><strong>another 1,024</strong></td>
+          </tr>
+          <tr>
+            <td>a different address : 80 : TCP</td>
+            <td><strong>another 1,024</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      So the allocation is not a connection budget at all. It is a per-destination concurrency limit, and the same number means wildly different things for different traffic shapes. UDP is folded into the same model with a caveat: <em>because the UDP protocol is connectionless, the concept of connection is reduced to a 5-tuple associated with a unique UDP datagram.</em>
+    </p>
+
+    <h3>TIME_WAIT: ports you are not using and cannot use</h3>
+    <p>
+      One more subtraction, and it is the one that makes a gateway look fine in a metrics dashboard while connections fail. <em>However, Cloud NAT considers closed connections to be unusable for the duration of the TCP TIME_WAIT timeout, which can affect the number of connections in use at a time.</em>
+    </p>
+    <p>
+      There are two independent timers, and knowing which is which matters because only one of them is yours to change in the gateway. On the Cloud NAT side: <em>the default value for the Cloud NAT TIME_WAIT is either 30 seconds or 120 seconds, depending on when you created the gateway.</em> That is an unusually candid sentence &mdash; two gateways in the same project, configured identically, can behave differently because of when they were created.
+    </p>
+    <p>
+      On the guest side: <em>Linux systems use a default TIME_WAIT of 60 seconds, and Windows systems use a default TIME_WAIT of 240 seconds.</em> The relationship between them is stated, and it is permissive in the useful direction: <em>the client VM's TIME_WAIT can be greater than or equal to the Cloud NAT TIME_WAIT</em>, and <em>lowering the Cloud NAT TIME_WAIT timeout doesn't require a corresponding reduction in the client VM's TIME_WAIT.</em> You can shorten the gateway's window without touching every guest OS.
+    </p>
+
+    <div class="callout">
+      <strong>A security assumption worth correcting</strong>
+      <p>If you are relying on source port unpredictability, read this carefully: <em>increasing the minimum number of ports per VM instance assigns a range of ports randomly to each VM; however, the source port chosen from that range is sequential.</em></p>
+      <p>The range placement is random; the walk through it is not. So more ports per VM widens the space an observer must guess, but it does not make the next port unguessable to anyone who has seen the last one. The documentation's alternative is blunt &mdash; assign an external IP address to the VM instead of using Public NAT.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The change behaviour is asymmetric, consistently, and once you see why it is obvious.
+    </p>
+    <p>
+      Increasing is safe. <em>If you have configured a Cloud NAT gateway with static port allocation, when you increase the minimum ports per VM on the gateway, there is no interruption to traffic.</em> The same holds for raising either bound under dynamic allocation.
+    </p>
+    <p>
+      Every reduction is disruptive, and the documentation does not soften it. Static: <em>if you have configured a Cloud NAT gateway with static port allocation, and you reduce the minimum ports per VM on the gateway, there is no connection draining</em>, and <em>established NAT connections are broken immediately and clients must establish new TCP connections.</em> Dynamic: <em>reducing the maximum number of ports per VM breaks all existing NAT connections immediately, and the number of allocated ports for all VMs is temporarily reset to the value specified for the minimum number of ports per VM.</em> And abandoning elasticity: <em>disabling dynamic port allocation and switching to static port allocation is disruptive, and it breaks all active NAT connections.</em>
+    </p>
+    <p>
+      The reason is that a port allocation is not a quota, it is a <em>set of reserved tuples</em>, and live connections are using specific members of that set. Growing the set adds tuples nobody is using. Shrinking it must remove tuples, and the gateway has no way to know which are idle &mdash; so it takes them all back. The absence of draining is not an oversight; there is nothing to drain into.
+    </p>
+
+    <div class="callout">
+      <strong>The practical reading</strong>
+      <p><strong>Port allocation is a creation-time decision that behaves like a one-way ratchet.</strong> Up is free; down costs every established connection in the gateway.</p>
+      <p>Which argues for a specific habit: pick the method deliberately at creation, choose a power of two, and err generous on the minimum. Over-allocating costs NAT IP addresses, which are cheap and can be added without disruption. Under-allocating costs an outage to correct, because correcting it downward later is the one operation with no safe path.</p>
+      <p>And three facts have to be in the calculation from the start, because none of them is visible in the number you typed: the floor of 1,024 if static allocation meets alias ranges, the <code>&times; 2</code> on Private NAT, and the TIME_WAIT window holding closed ports out of service.</p>
+    </div>
+
+    <h3>One figure for the Private NAT side</h3>
+    <p>
+      Private NAT draws its addresses from a subnet rather than from reserved external addresses, and two constants govern how many it gets. <em>Four IP addresses are unusable in every subnet's primary IPv4 address range</em>, and <em>the minimum subnet size that you can create is eight IPv4 addresses, which is a subnet mask of /29.</em> A /29 therefore yields four usable NAT addresses, not eight &mdash; and with the doubling above, a small Private NAT subnet goes further than it looks in one direction and much less far in the other. The full capacity arithmetic is #102's subject.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Any capacity calculation</td>
+            <td>Use 64,512 ports per address, per protocol</td>
+            <td>Ports 0&ndash;1,023 are never used; TCP and UDP budgets are separate.</td>
+          </tr>
+          <tr>
+            <td>Choosing a minimum ports value</td>
+            <td>Pick a power of two</td>
+            <td>Anything else is rounded up, so your plan and reality diverge.</td>
+          </tr>
+          <tr>
+            <td><strong>Sizing for connection volume</strong></td>
+            <td><strong>Size against the busiest single destination 3-tuple</strong></td>
+            <td><strong>The limit is per destination, not total.</strong></td>
+          </tr>
+          <tr>
+            <td>VMs with similar, predictable egress</td>
+            <td>Static allocation</td>
+            <td>Uniform allocation matches uniform usage.</td>
+          </tr>
+          <tr>
+            <td>VMs with uneven or bursty egress</td>
+            <td>Dynamic allocation</td>
+            <td>It reallocates idle ports to busy VMs.</td>
+          </tr>
+          <tr>
+            <td>Latency-sensitive service on dynamic</td>
+            <td>Raise the minimum so growth is rare</td>
+            <td>Growing the allocation can cause timeouts or latency.</td>
+          </tr>
+          <tr>
+            <td>Anything requiring endpoint-independent mapping</td>
+            <td>Static only &mdash; the choice is made for you</td>
+            <td>EIM and dynamic allocation are mutually exclusive.</td>
+          </tr>
+          <tr>
+            <td>Wanting EIM on Private NAT</td>
+            <td>Not available</td>
+            <td>EIM is a Public NAT feature only.</td>
+          </tr>
+          <tr>
+            <td>GKE nodes with Pod alias ranges, static allocation</td>
+            <td>Plan for 1,024 minimum, not your configured value</td>
+            <td>The floor applies to alias ranges wider than /32.</td>
+          </tr>
+          <tr>
+            <td>Raising Pods per node</td>
+            <td>Re-check ports per Pod</td>
+            <td>Tuples go to the node and are shared by all its Pods.</td>
+          </tr>
+          <tr>
+            <td>Sizing a Private NAT subnet</td>
+            <td>Include the factor of two</td>
+            <td>Private NAT allocates double the required minimum.</td>
+          </tr>
+          <tr>
+            <td>Rapid connect/disconnect to one endpoint</td>
+            <td>Consider a shorter Cloud NAT TIME_WAIT</td>
+            <td>Closed ports are unusable for that window.</td>
+          </tr>
+          <tr>
+            <td>Two gateways behaving differently on identical config</td>
+            <td>Check the TIME_WAIT default</td>
+            <td>It is 30 or 120 seconds depending on creation date.</td>
+          </tr>
+          <tr>
+            <td>Relying on source port randomisation</td>
+            <td>Do not; use an external IP if it matters</td>
+            <td>The range is random but the port within it is sequential.</td>
+          </tr>
+          <tr>
+            <td><strong>Needing to reduce ports per VM</strong></td>
+            <td><strong>Schedule it as a disruptive change</strong></td>
+            <td><strong>Every reduction breaks established connections, with no draining.</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      For each Cloud NAT gateway, write down three numbers: the minimum ports per VM you configured, the effective value after the power-of-two rounding and any 1,024 floor, and the number of simultaneous connections your busiest workload opens to a single destination address and port. If the third exceeds the second, that workload is already dropping connections under load &mdash; and the metric you would look at first, total ports in use, will not show it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Twenty-one posts of networking produced a recurring theme: configuration that succeeds while meaning something other than you intended. Cloud NAT is the same theme in arithmetic rather than in routing. You type 100 and the system reserves 128; you type 64 on a GKE cluster and the system reserves 1,024; you type 1,024 on Private NAT and the system consumes 2,048. None of those is wrong, all of them are documented, and none of them is visible in the configuration you can read back.
+    </p>
+    <p>
+      The per-destination limit is the sharpest version. It means two fleets with identical port allocations and identical total connection counts can have completely different failure behaviour, decided entirely by how concentrated their destinations are. There is no number in the NAT configuration that captures that, which is why the useful question is about your traffic shape rather than about the gateway.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#102 turns this mechanism into capacity: how many VMs a gateway actually serves, how to size the addresses and the subnet, and what port exhaustion looks like when it happens &mdash; which is not an error message.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/nat/docs/ports-and-addresses" target="_blank" rel="noopener">IP addresses and ports</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/overview" target="_blank" rel="noopener">Cloud NAT overview</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/public-nat" target="_blank" rel="noopener">Public NAT</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/private-nat" target="_blank" rel="noopener">Private NAT</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/tune-nat-configuration" target="_blank" rel="noopener">Tune a Cloud NAT configuration</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/nat-rules-overview" target="_blank" rel="noopener">NAT rules overview</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/monitoring" target="_blank" rel="noopener">Cloud NAT logging and monitoring</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/troubleshooting" target="_blank" rel="noopener">Cloud NAT troubleshooting</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/nat-product-interactions" target="_blank" rel="noopener">Cloud NAT product interactions</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/gke-example" target="_blank" rel="noopener">Cloud NAT with GKE</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/about-hybrid-nat" target="_blank" rel="noopener">Hybrid NAT</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/quota" target="_blank" rel="noopener">Cloud NAT quotas and limits</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-architecture-asg-health-checks/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Architecture Series #121 — The console gives you 300 seconds of grace; the API gives you none</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-cloud-nat-how-ports-are-allocated/';
+      this.page.identifier = 'gcp-architecture-cloud-nat-how-ports-are-allocated';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
