@@ -1,0 +1,435 @@
+---
+title: "AWS Architecture Series #121 — The console gives you 300 seconds of grace; the API gives you none"
+date: '2026-11-22T09:00:00'
+slug: aws-architecture-asg-health-checks
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-22'
+problem: "An Auto Scaling group decides an instance is unhealthy from five possible sources, and only one of them is on without being asked for: the EC2 status checks, which are always enabled and cannot be removed. The load balancer and VPC Lattice checks are ignored by default, so a group behind an ALB does not replace an instance the ALB calls unhealthy until somebody turns that on. And the health check grace period - the setting that keeps a slow-booting instance from being killed before it is ready - defaults to 300 seconds in the console and 0 seconds through the CLI or an SDK, where 0 turns it off. Every group created by Terraform, CloudFormation or CDK that does not set it explicitly has no grace period at all."
+builds: "A precise reading of how an Auto Scaling group decides to replace an instance: the five health check sources and which are on by default, why a failing EC2 status check does not cause an immediate replacement and how that pause leaves room for automatic instance recovery, the one condition that bypasses both the pause and the grace period, the grace period's two different defaults and what it does not protect, how replacement is throttled, and what a replacement discards that a recovery would have kept."
+verified_claims:
+  - claim: "All instances in an Auto Scaling group start with a Healthy status. Instances are assumed to be healthy unless Amazon EC2 Auto Scaling receives notification that they are unhealthy"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-health-checks.html
+  - claim: "When Amazon EC2 Auto Scaling determines that an InService instance is unhealthy, it replaces it with a new instance to maintain the desired capacity of the group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-health-checks.html
+  - claim: "Amazon EC2 Auto Scaling uses the results of the Amazon EC2 instance status checks and system status checks to determine the health status of an instance. If the instance is in any Amazon EC2 state other than running, or if its status for the status checks becomes impaired, Amazon EC2 Auto Scaling considers the instance to be unhealthy and replaces it"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "The Amazon EC2 status checks do not require any special configuration and are always enabled"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Amazon EC2 Auto Scaling lets the status checks fail occasionally, without taking any action. When a status check fails, Amazon EC2 Auto Scaling waits a few minutes for AWS to fix the issue. It does not immediately mark an instance Unhealthy when its status for the status checks becomes impaired"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Additionally, EC2 Auto Scaling doesn't mark the instance as Unhealthy if a status check returns insufficient-data"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "However, if Amazon EC2 Auto Scaling detects that an instance is no longer in the running state, this situation is treated as an immediate failure. In this case, it immediately marks the instance as Unhealthy and replaces it"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Application status checks extend the Amazon EC2 status check signal to your application. They monitor whether an application on your instance responds to HTTP or HTTPS calls"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Application status checks are created and managed in Amazon EC2, not in Amazon EC2 Auto Scaling"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "If one of your instances is affected by a scheduled event, Amazon EC2 Auto Scaling considers the instance to be unhealthy and replaces it. In cases where Amazon EC2 Auto Scaling has high confidence that the instance is impaired (for example, degraded GPUs), replacement occurs immediately. In other cases, Amazon EC2 Auto Scaling waits for the scheduled event to begin"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "By default, Amazon EC2 Auto Scaling ignores the results of the Elastic Load Balancing health checks"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "By default, Amazon EC2 Auto Scaling ignores the results of the VPC Lattice health checks"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "If connection draining (deregistration delay) is enabled for your load balancer, Amazon EC2 Auto Scaling waits for either in-flight requests to complete or the maximum timeout to expire before it terminates unhealthy instances"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Amazon EC2 Auto Scaling does not provide a way of removing the Amazon EC2 status checks and scheduled events from its health checks. If you do not want instances to be replaced, we recommend that you suspend the ReplaceUnhealthy and HealthCheck process for individual Auto Scaling groups"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "When your instance is terminated, any associated Elastic IP addresses are disassociated and are not automatically associated with the new instance"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Amazon EC2 Auto Scaling does not perform health checks on instances that are in the Standby state until you put the instances back in service"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "Amazon EC2 Auto Scaling only replaces up to 10 percent of the group's desired capacity at a time"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "If a scaling activity is in progress and your Auto Scaling group is less than its desired capacity by 10 percent or more, Amazon EC2 Auto Scaling waits for the in-progress scaling activity before replacing the unhealthy instances"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "If the size of an Auto Scaling group is small enough that the resulting value of 10 percent is less than one, Amazon EC2 Auto Scaling instead replaces the unhealthy instances one at a time. This might result in some downtime for the group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html
+  - claim: "The health check grace period specifies the minimum amount of time (in seconds) to keep a new instance in service before terminating it if it's found to be unhealthy"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+  - claim: "In the console, by default, the health check grace period is 300 seconds when you create an Auto Scaling group. Its default value is 0 seconds when you create an Auto Scaling group using the AWS CLI or an SDK. A value of 0 turns off the health check grace period"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+  - claim: "The console default health check grace period of 300 seconds is 5 minutes"
+    derive: "300 / 60"
+    expect: "5"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+  - claim: "During the health check grace period, if Amazon EC2 Auto Scaling detects that an instance is no longer in the Amazon EC2 running state, it immediately marks the instance Unhealthy and replaces it"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+  - claim: "Setting this value too high reduces the effectiveness of the Amazon EC2 Auto Scaling health checks"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+  - claim: "The grace period applies to the following instances: Newly launched instances, Instances that are put back into service after being in standby, Instances that you manually attach to the group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html
+---
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #121 &middot; Reliability</div>
+  <h1 class="post-title">The console gives you 300 seconds of grace; the API gives you none</h1>
+  <p class="post-subtitle">An Auto Scaling group replaces instances on signals from five sources, only one of which is on by default. The setting that stops it killing a slow-booting instance has two different defaults, and infrastructure-as-code gets the one that means off.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Yesterday's post was about EC2 recovering an instance by moving it to another host. An Auto Scaling
+      group answers the same impairment differently: it throws the instance away and launches a new one.
+      Both mechanisms watch the same status checks, so the obvious worry is that they race each other.
+    </p>
+    <p>
+      They do not, and the reason is worth knowing. But three other things about this decision are
+      genuinely surprising, and each of them is a default rather than a design choice you made.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The grace period has two defaults, and your IaC got the one that means off</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>In the console, by default, the health check grace period is 300 seconds when
+          you create an Auto Scaling group. Its default value is 0 seconds when you create an Auto Scaling
+          group using the AWS CLI or an SDK. A value of 0 turns off the health check grace
+          period.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Terraform, CloudFormation, CDK and every SDK call go through the API. So a group created by code
+          that does not set <code>health_check_grace_period</code> explicitly has <strong>no grace
+          period</strong>, while the same group clicked together in the console gets five minutes. Two
+          groups described as identical behave differently, and nothing in either description says so.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The load balancer's opinion is ignored until you ask for it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;By default, Amazon EC2 Auto Scaling ignores the results of the Elastic Load Balancing
+          health checks.&rdquo;</em> The same sentence appears for VPC Lattice, and the EBS health check
+          must likewise be turned on.
+        </p>
+        <p>
+          Only one source is on without being asked for:
+          <em>&ldquo;The Amazon EC2 status checks do not require any special configuration and are always
+          enabled.&rdquo;</em> So the common belief &mdash; my group is behind an ALB, so a failing target
+          gets replaced &mdash; is false unless somebody enabled it. The ALB stops sending traffic; the
+          group keeps the instance.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>One condition skips every delay the group has</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>if Amazon EC2 Auto Scaling detects that an instance is no longer in the
+          running state, this situation is treated as an immediate failure.</strong>&rdquo;</em> And the
+          grace period does not cover it either:
+          <em>&ldquo;During the health check grace period, if Amazon EC2 Auto Scaling detects that an
+          instance is no longer in the Amazon EC2 running state, it immediately marks the instance
+          Unhealthy and replaces it.&rdquo;</em>
+        </p>
+        <p>
+          Which means stopping an instance to look at it is not a debugging step inside an Auto Scaling
+          group. It is a termination request.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-121-asg-health-checks.svg" alt="Diagram: health checks for instances in an Amazon EC2 Auto Scaling group. All instances start Healthy and are assumed healthy unless Auto Scaling is notified otherwise; when it determines an InService instance is unhealthy it replaces it to maintain desired capacity. Five sources can report unhealthy: EC2 status checks and scheduled events, the default type, always enabled with no special configuration and no way to remove them; Elastic Load Balancing health checks, ignored by default and requiring opt-in; VPC Lattice health checks, likewise ignored by default; Amazon EBS health checks, requiring opt-in; and custom health checks. Application status checks extend the EC2 status check signal to an application over HTTP or HTTPS and require no additional Auto Scaling group configuration. The response to a failing EC2 status check is deliberately patient: Auto Scaling lets status checks fail occasionally without acting, waits a few minutes for AWS to fix the issue, does not immediately mark an instance Unhealthy when impaired, and does not mark it Unhealthy on insufficient-data. That pause is the window in which EC2 automatic instance recovery migrates the instance, so recovery and replacement do not conflict. The exception is decisive: an instance no longer in the running state is treated as an immediate failure and replaced at once, including during the grace period, so stopping an instance gets it replaced. Scheduled events also cause replacement, immediately where confidence is high that the instance is impaired, for example degraded GPUs, otherwise waiting for the event to begin. The grace period specifies the minimum time to keep a new instance in service before terminating it if found unhealthy, defaulting to 300 seconds in the console but 0 seconds via the CLI or an SDK, where 0 turns it off; setting it too high reduces the effectiveness of the health checks. Replacement is throttled to at most 10 percent of desired capacity at a time, waits for in-progress scaling activity when the group is under capacity by 10 percent or more, and falls back to one instance at a time in small groups, which might result in some downtime. Finally, termination disassociates any Elastic IP addresses, which are not automatically associated with the new instance, and detaches attached EBS volumes. Standby instances are not health checked, and stopping replacement entirely means suspending the ReplaceUnhealthy and HealthCheck processes.">
+
+    <h3>Five sources, one default</h3>
+    <p>
+      An instance starts optimistic:
+      <em>&ldquo;All instances in an Auto Scaling group start with a Healthy status. Instances are assumed
+      to be healthy unless Amazon EC2 Auto Scaling receives notification that they are
+      unhealthy.&rdquo;</em> Health is the absence of bad news, and the question is who is allowed to
+      deliver it.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Source</th><th>On by default?</th><th>What it reports</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>EC2 status checks and scheduled events</td><td><strong>Yes</strong> &mdash; always enabled, cannot be removed</td><td>Instance not running, or status <code>impaired</code></td></tr>
+          <tr><td>Application status checks</td><td><strong>Yes</strong>, once created in EC2 &mdash; no group configuration</td><td>HTTP or HTTPS response from your application</td></tr>
+          <tr><td>Elastic Load Balancing</td><td>No &mdash; ignored by default</td><td>Target reported unhealthy by the load balancer</td></tr>
+          <tr><td>VPC Lattice</td><td>No &mdash; ignored by default</td><td>Target reported unhealthy by VPC Lattice</td></tr>
+          <tr><td>Amazon EBS</td><td>No &mdash; must be turned on</td><td>Volumes unreachable or failing I/O status checks</td></tr>
+          <tr><td>Custom</td><td>Only when you call it</td><td>Whatever you decide</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The second row is the asymmetry worth noticing. Application status checks
+      <em>&ldquo;extend the Amazon EC2 status check signal to your application&rdquo;</em> and
+      <em>&ldquo;are created and managed in Amazon EC2, not in Amazon EC2 Auto Scaling&rdquo;</em>, and the
+      documentation is explicit that no additional group configuration is required. So a team that adds an
+      application status check in EC2 has changed the replacement behaviour of every Auto Scaling group
+      containing those instances, without touching a group.
+    </p>
+    <p>
+      Compare that with the load balancer, which is the reverse: configured on the group, and ignored
+      until it is. Two application-level signals, opposite defaults.
+    </p>
+
+    <h3>Why replacement does not fight recovery</h3>
+    <p>
+      This is the question the last post left open, and the answer is a deliberate pause:
+    </p>
+    <p>
+      <em>&ldquo;<strong>Amazon EC2 Auto Scaling lets the status checks fail occasionally, without taking
+      any action. When a status check fails, Amazon EC2 Auto Scaling waits a few minutes for AWS to fix the
+      issue. It does not immediately mark an instance Unhealthy when its status for the status checks
+      becomes impaired.</strong>&rdquo;</em>
+    </p>
+    <p>
+      <em>Waits a few minutes for AWS to fix the issue</em> is EC2 automatic instance recovery, named
+      obliquely. The group knows that a system status check failure is the kind of thing the platform
+      repairs on its own, so it holds off. If recovery succeeds, the instance comes back as a reboot, the
+      status check passes, and no replacement happens. The two mechanisms are sequenced, not racing.
+    </p>
+    <p>
+      And the group is tolerant in a second way that matters for anyone who read the post on absent
+      signals:
+      <em>&ldquo;Additionally, EC2 Auto Scaling doesn't mark the instance as Unhealthy if a status check
+      returns insufficient-data.&rdquo;</em> Missing data is not treated as failure here. That is the
+      right call for a replacement decision &mdash; the opposite of the right call for an alarm that
+      exists to detect absence &mdash; and it is worth seeing the same question answered differently in
+      two places for good reasons.
+    </p>
+
+    <h3>The exception that ignores all of it</h3>
+    <p>
+      <em>&ldquo;However, if Amazon EC2 Auto Scaling detects that an instance is no longer in the running
+      state, this situation is treated as an immediate failure. In this case, it immediately marks the
+      instance as Unhealthy and replaces it.&rdquo;</em>
+    </p>
+    <p>
+      The documented states that qualify are <code>stopping</code>, <code>stopped</code>,
+      <code>shutting-down</code> and <code>terminated</code>. There is no patience here and no grace
+      period, because the condition is not ambiguous: a stopped instance is not coming back by itself.
+    </p>
+    <p>
+      The operational consequence is the one people learn the hard way. Inside an Auto Scaling group,
+      <em>stop the instance and have a look at it</em> is a replacement. The documented way to do that is
+      Standby:
+      <em>&ldquo;Amazon EC2 Auto Scaling does not perform health checks on instances that are in the
+      Standby state until you put the instances back in service.&rdquo;</em>
+    </p>
+
+    <h3>Scheduled events, and degraded GPUs by name</h3>
+    <p>
+      <em>&ldquo;If one of your instances is affected by a scheduled event, Amazon EC2 Auto Scaling
+      considers the instance to be unhealthy and replaces it. <strong>In cases where Amazon EC2 Auto
+      Scaling has high confidence that the instance is impaired (for example, degraded GPUs), replacement
+      occurs immediately.</strong> In other cases, Amazon EC2 Auto Scaling waits for the scheduled event to
+      begin.&rdquo;</em>
+    </p>
+    <p>
+      Degraded GPUs appear in the documentation as the example of high confidence, and it is the right
+      place to be careful. An Auto Scaling group will replace such an instance immediately, which is a
+      different answer from the reboot that EC2 documents as the remedy for a GPU memory error. On
+      accelerated capacity the two differ a great deal in cost: a replacement is a relaunch into a pool
+      that may be tight, and the group makes that choice on its own confidence rather than on a reboot
+      recommendation.
+    </p>
+    <p>
+      Which is a reason to know whether your accelerated instances are in an Auto Scaling group at all,
+      and if they are, whether you want the group deciding that.
+    </p>
+
+    <h3>The grace period, and what it does not do</h3>
+    <p>
+      <em>&ldquo;The health check grace period specifies the minimum amount of time (in seconds) to keep a
+      new instance in service before terminating it if it's found to be unhealthy.&rdquo;</em> It covers
+      <em>&ldquo;Newly launched instances&rdquo;</em>, instances returning from Standby, and instances you
+      manually attach.
+    </p>
+    <p>
+      Its purpose is narrow: it stops the group killing an instance that has entered
+      <code>InService</code> but has not finished starting your application, because the load balancer's
+      checks begin at registration rather than at readiness. Five minutes is the console default; zero is
+      the API default.
+    </p>
+    <p>
+      Both directions are warned about. Zero means no protection. And
+      <em>&ldquo;Setting this value too high reduces the effectiveness of the Amazon EC2 Auto Scaling
+      health checks&rdquo;</em> &mdash; a long grace period is a window in which a genuinely broken
+      instance serves traffic. The documentation's preferred answer avoids the trade entirely: use
+      lifecycle hooks so an instance only reaches <code>InService</code> when it is actually ready, and
+      then zero is correct rather than dangerous.
+    </p>
+
+    <h3>Replacement is rate-limited, and small groups lose</h3>
+    <p>
+      <em>&ldquo;Amazon EC2 Auto Scaling only replaces up to 10 percent of the group's desired capacity at
+      a time&rdquo;</em>, and it defers to scaling in progress:
+      <em>&ldquo;If a scaling activity is in progress and your Auto Scaling group is less than its desired
+      capacity by 10 percent or more, Amazon EC2 Auto Scaling waits for the in-progress scaling activity
+      before replacing the unhealthy instances.&rdquo;</em>
+    </p>
+    <p>
+      That throttle is protective at scale and awkward below it:
+      <em>&ldquo;If the size of an Auto Scaling group is small enough that the resulting value of 10
+      percent is less than one, Amazon EC2 Auto Scaling instead replaces the unhealthy instances one at a
+      time. <strong>This might result in some downtime for the group.</strong>&rdquo;</em> Ten percent of
+      a group of three is not a whole instance, so a group of three replaces serially and AWS says plainly
+      that you may see downtime.
+    </p>
+
+    <h3>What replacement throws away</h3>
+    <p>
+      <em>&ldquo;When your instance is terminated, any associated Elastic IP addresses are disassociated
+      and are not automatically associated with the new instance.&rdquo;</em> Attached EBS volumes are
+      detached, or deleted depending on <code>DeleteOnTermination</code>.
+    </p>
+    <p>
+      Set that beside recovery, which preserves the instance ID, the private address, the Elastic IP and
+      the attached volumes. The same impairment, handled by two mechanisms, leaves you in materially
+      different places &mdash; and the one that keeps your identity is the one that does less.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The pause is the right design, and it is undocumented as such</h3>
+    <p>
+      Waiting a few minutes on an impaired status check, rather than replacing immediately, is what makes
+      recovery and replacement composable instead of competing. It is a genuinely good piece of design.
+      The only criticism is that the documentation describes it as patience rather than naming the
+      mechanism it is waiting for, so the relationship has to be inferred.
+    </p>
+
+    <h3>Treating insufficient-data as not-unhealthy is correct here</h3>
+    <p>
+      Terminating an instance is expensive and irreversible; failing to terminate one is recoverable on
+      the next check. With that asymmetry, refusing to act on a missing datapoint is right &mdash; which is
+      the exact opposite of the correct setting for an alarm whose job is to notice silence. The lesson is
+      that missing-data policy follows the cost of the action, not a house style.
+    </p>
+
+    <h3>The opt-in load balancer check is defensible; the split default is not</h3>
+    <p>
+      Requiring opt-in for the load balancer check is reasonable: attaching a load balancer should not
+      silently hand it the power to terminate your instances. What is hard to defend is the grace period
+      having different defaults in the console and the API. The console value encodes the knowledge that
+      new instances need time; the API omits it, and the API is how almost all production groups are
+      created.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Grace period in IaC</td>
+            <td>Set it explicitly, always &mdash; never rely on the default</td>
+            <td>The API default is 0, which turns the protection off</td>
+          </tr>
+          <tr>
+            <td>Grace period versus lifecycle hooks</td>
+            <td>Prefer hooks and a short or zero grace period</td>
+            <td>A long grace period is a window where a broken instance serves traffic</td>
+          </tr>
+          <tr>
+            <td>Load balancer health checks</td>
+            <td>Turn them on deliberately, and know you have</td>
+            <td>Ignored by default, so an unhealthy target is not replaced</td>
+          </tr>
+          <tr>
+            <td>Debugging an instance in a group</td>
+            <td>Standby, never stop</td>
+            <td>Not running is an immediate failure that the grace period does not cover</td>
+          </tr>
+          <tr>
+            <td>Accelerated instances in a group</td>
+            <td>Decide whether immediate replacement is what you want</td>
+            <td>Degraded GPUs are documented as high confidence, so replacement is immediate</td>
+          </tr>
+          <tr>
+            <td>Small groups</td>
+            <td>Expect serial replacement and size for it</td>
+            <td>Below ten instances the 10 percent throttle becomes one at a time, with possible downtime</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every Auto Scaling group whose <code>HealthCheckGracePeriod</code> is <code>0</code> and that has
+        no launch lifecycle hook. Those groups can terminate an instance that was still booting.
+      </li>
+      <li>
+        Every group attached to a load balancer whose health check type does not include
+        <code>ELB</code>. Somebody believes those instances get replaced on an ALB failure.
+      </li>
+      <li>
+        Every group containing accelerated instances, checked against whether immediate replacement on a
+        degraded GPU is the behaviour you want.
+      </li>
+      <li>
+        Any runbook step that says stop the instance. Inside a group, that is a replacement.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The three posts before this one were about signals: a fifth status check, an aggregate metric that
+      quietly gained a new contributor, and a recovery mechanism that acts on exactly one of them. This
+      one is about what happens when a different system is watching the same signals with a different
+      remedy, and the pleasant surprise is that AWS thought about the interaction. The group waits a few
+      minutes precisely so the platform can fix the host first.
+    </p>
+    <p>
+      What is not thought through is the defaults. One setting with two values depending on which door you
+      came through is the kind of thing that produces an incident nobody can reproduce in the console,
+      because in the console it genuinely behaves differently. If you take one thing from this post, make
+      it the grep: find the groups where the grace period is zero and nothing else protects a booting
+      instance.
+    </p>
+    <p>
+      And keep the contrast from yesterday in view. Recovery preserves the instance and its addresses;
+      replacement discards both and gives you a clean one. Neither is better. But only one of them keeps
+      the Elastic IP that something else in your estate may be pointing at, and the group will not warn you
+      before it lets go.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling lifecycle hooks: what the Pending:Wait and Terminating:Wait states actually pause, the heartbeat timeout and what happens when it expires, why a hook is the documented alternative to a long health check grace period, and how a hook that never completes holds a scaling activity open.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html" target="_blank" rel="noopener">About the health checks for your Auto Scaling group &#8212; the health check types and which require turning on, that EC2 status checks need no special configuration and are always enabled, that any state other than <code>running</code> or an <code>impaired</code> status makes an instance unhealthy, that Auto Scaling lets status checks fail occasionally and waits a few minutes for AWS to fix the issue and does not act on <code>insufficient-data</code>, that a non-running instance is an immediate failure, how application status checks extend the EC2 signal with no group configuration, the scheduled-event behaviour including degraded GPUs as the high-confidence example, that Elastic Load Balancing and VPC Lattice results are ignored by default, connection draining before termination, the 10 percent replacement throttle and the one-at-a-time fallback with possible downtime, that EC2 status checks cannot be removed and <code>ReplaceUnhealthy</code> and <code>HealthCheck</code> must be suspended instead, that Elastic IP addresses are disassociated on termination, and that Standby instances are not health checked</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html" target="_blank" rel="noopener">Set the health check grace period for an Auto Scaling group &#8212; the definition of the grace period, the 300-second console default against the 0-second CLI and SDK default and that 0 turns it off, which instances the grace period applies to, that a non-running instance is replaced immediately even during the grace period, and that setting the value too high reduces the effectiveness of the health checks</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-health-checks.html" target="_blank" rel="noopener">Health checks for instances in an Auto Scaling group &#8212; that instances start <code>Healthy</code> and are assumed healthy until Auto Scaling is notified otherwise, the five notification sources, and that an unhealthy <code>InService</code> instance is replaced to maintain desired capacity</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html" target="_blank" rel="noopener">Amazon EC2 Auto Scaling lifecycle hooks &#8212; further reading on the documented alternative to a long grace period; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-enter-exit-standby.html" target="_blank" rel="noopener">Temporarily remove instances from your Auto Scaling group &#8212; further reading on Standby, the supported way to take an instance out of service to debug it; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-suspend-resume-processes.html" target="_blank" rel="noopener">Suspend and resume Amazon EC2 Auto Scaling processes &#8212; further reading on suspending <code>ReplaceUnhealthy</code> and <code>HealthCheck</code>; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
