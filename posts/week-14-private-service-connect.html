@@ -1,0 +1,420 @@
+---
+title: 'Week 14 — Private Service Connect: What "Private" Actually Means'
+date: '2026-11-22T16:00:00'
+draft: true
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-14-private-service-connect
+verified: '2026-11-22'
+verified_claims:
+  - claim: "Private Google Access lets VM instances that only have internal IP addresses reach the external IP addresses of Google APIs and services"
+    source: https://docs.cloud.google.com/vpc/docs/private-google-access
+  - claim: "Private Google Access connects to the standard external IP addresses or Private Google Access domains and VIPs for Google APIs and services through the VPC network's default internet gateway"
+    source: https://docs.cloud.google.com/vpc/docs/private-access-options
+  - claim: "Your VPC network must have appropriate routes whose next hops are the default internet gateway"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-google-access
+  - claim: "private.googleapis.com is 199.36.153.8/30 and restricted.googleapis.com is 199.36.153.4/30"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-google-access
+  - claim: "A Private Service Connect endpoint IP address can't be within the range of subnets configured in the VPC network"
+    source: https://docs.cloud.google.com/vpc/docs/about-accessing-google-apis-endpoints
+  - claim: "Private Service Connect endpoints that you use to access Google APIs can be accessed from supported connected on-premises hosts"
+    source: https://docs.cloud.google.com/vpc/docs/about-accessing-google-apis-endpoints
+  - claim: "Private Service Connect endpoints are not accessible from peered VPC networks"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+  - claim: "The API bundles for a Private Service Connect endpoint to Google APIs are all-apis and vpc-sc"
+    source: https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 14 of 58</div>
+  <div class="post-title">What "private" actually means</div>
+  <div class="post-subtitle">A VM with no external IP calls a Google API two different ways. Then one route is deleted, and only one of them survives.</div>
+  <div class="post-meta">
+    <span>22 November 2026</span>
+    <span>Private Service Connect &middot; Private Google Access &middot; Terraform</span>
+    <span>charges not yet posted</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#implementation">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security-cost">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="overview">
+<h2 id="overview">Lab Overview</h2>
+
+<p>An auditor asks a team a simple question: can this machine reach the
+internet? The team says no &mdash; it has no public address. The auditor asks
+how it reads from Cloud Storage, then. It turns out the answer is "over the
+internet gateway, to Google's public addresses", and the two statements are
+both true at once.</p>
+
+<p><strong>The problem.</strong> "Private" is doing two different jobs in that
+sentence. Private Google Access means the virtual machine has no external IP
+of its own. It does not mean the traffic avoids Google's public address space,
+and it does not work without a route to the internet gateway. A Private
+Service Connect endpoint is a different thing entirely: an address inside your
+own network.</p>
+
+<p><strong>The objective.</strong> Build both on one VM, then delete the VPC's
+default route to the internet gateway and see which path survives.</p>
+
+<p><strong>Expected outcome.</strong> One call keeps working and one stops,
+with nothing else changed &mdash; not the machine, not the subnet setting, not
+the firewall. If both survive, something is carrying the traffic that
+shouldn't be, and the lab has proved nothing.</p>
+
+<p><strong>Deployment method.</strong> Terraform on HCP Terraform agents with
+no stored credentials; the workspace mints an OIDC token per run and exchanges
+it for a short-lived Google token. Built in Week 02.</p>
+
+<h3>What this gives app teams</h3>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Capability</th><th>Who consumes it</th><th>What it replaces</th><th>What it costs them</th></tr></thead>
+<tbody>
+<tr><td>Reach Google APIs from a workload with no external IP and no internet route</td><td>Any team under a no-egress rule</td><td>A ticket to networking, a NAT exception, or an argument with an auditor</td><td>Nothing to configure &mdash; the subnet and endpoint are platform-owned</td></tr>
+<tr><td>A re-runnable answer to "prove it cannot reach the internet"</td><td>Risk, audit, compliance</td><td>An assertion in a design document</td><td>One command they can run themselves</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="section" id="services">
+<h2 id="services">Cloud Services and Concepts</h2>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>Private Service Connect</td><td>Gives the VPC its own address for Google APIs</td><td>A way to reach a service through an internal IP in your network instead of the service's public address. For Google APIs it is a global forwarding rule pointed at a bundle of APIs.</td></tr>
+<tr><td>Private Google Access</td><td>The thing being compared against</td><td>A per-subnet setting that lets a VM with no external IP reach Google's own public addresses, routed out through the VPC's default internet gateway.</td></tr>
+<tr><td>VPC and subnets</td><td>The network under test</td><td>A private network and a regional range inside it. Custom mode means nothing exists until declared.</td></tr>
+<tr><td>Cloud Routes</td><td>What the experiment deletes</td><td>A VPC's routing table. The default route sends anything not local to the internet gateway, and Google creates it with the network.</td></tr>
+<tr><td>Compute Engine</td><td>One probe VM</td><td>The client. An instrument rather than the subject &mdash; something has to make the call.</td></tr>
+<tr><td>Identity-Aware Proxy</td><td>Shell access without a public address</td><td>Tunnels SSH through Google's infrastructure, so the VM needs no external IP and no bastion.</td></tr>
+<tr><td>Terraform &amp; HCP Terraform</td><td>Declares it and applies it remotely</td><td>Infrastructure as code, run on hosted agents that authenticate per run through Workload Identity Federation, so no key is stored.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>The difference that this week turns on</h3>
+
+<p>Google's own comparison of private access options puts it plainly. Private
+Google Access connects <em>"to the standard external IP addresses or Private
+Google Access domains and VIPs for Google APIs and services through the VPC
+network's default internet gateway."</em> Those domains have addresses you can
+look up: <code>private.googleapis.com</code> is
+<code>199.36.153.8/30</code>, and <code>restricted.googleapis.com</code> is
+<code>199.36.153.4/30</code>. They belong to Google.</p>
+
+<p>The configuration guide states the dependency directly: <em>"Your VPC
+network must have appropriate routes whose next hops are the default internet
+gateway."</em> Private Google Access is a routing arrangement, not a private
+channel.</p>
+
+<p>A Private Service Connect endpoint is an internal IP address in your own
+VPC. Traffic to it never needs a route off the network, because it never
+leaves. And the address must sit <strong>outside</strong> every subnet range
+&mdash; Google rejects one inside, because it <em>"can't be within the range
+of subnets configured in the VPC network."</em></p>
+
+<p>There is a second difference that usually matters more in practice than
+anything here: a PSC endpoint <em>"can be accessed from supported connected
+on-premises hosts"</em> over Cloud VPN or Interconnect, and Private Google
+Access cannot. Neither works through VPC Network Peering. This lab does not
+build the hybrid case, so that is documentation, not evidence.</p>
+</div>
+
+<div class="section" id="architecture">
+<h2 id="architecture">Architecture and Workflow</h2>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/week-14-architecture.svg" alt="A probe VM with no external IP inside a subnet, reaching Google APIs two ways. One goes to a Private Service Connect endpoint on an address reserved inside the VPC but deliberately outside any subnet range. The other goes up through the VPC's default internet gateway to Google's own public addresses, which is what Private Google Access does. Deleting the default route breaks the second path and leaves the first working." style="width:100%;height:auto">
+  <figcaption>Two lanes out of one machine. The bottom one stays inside the VPC; the top one leaves through the gateway.</figcaption>
+</figure>
+
+<ol>
+<li>A VPC of its own is created, so deleting its default route cannot affect anything else.</li>
+<li>A subnet is created with <code>private_ip_google_access = true</code>. That flag is the whole of Private Google Access.</li>
+<li>A global internal address is reserved with purpose <code>PRIVATE_SERVICE_CONNECT</code>, deliberately outside the subnet range.</li>
+<li>A global forwarding rule targets <code>all-apis</code> at that address &mdash; the endpoint.</li>
+<li>One e2-micro is created with no external IP and no NAT anywhere on the network.</li>
+<li>The same API call runs twice from that VM: once on default DNS, once pinned to the endpoint.</li>
+<li>The default internet-gateway route is deleted, both calls repeat, and the route is restored.</li>
+</ol>
+
+<h3>Design decisions worth stating</h3>
+
+<p><strong>Its own VPC, not the shared hub.</strong> The hub's subnets already
+have Private Google Access enabled, so reusing them would mean demonstrating
+something the week did not build. More importantly, the experiment deletes a
+default route, and doing that on a shared network would degrade every other
+workload on it.</p>
+
+<p><strong><code>--resolve</code> rather than DNS.</strong> In production a
+private DNS zone maps <code>storage.googleapis.com</code> to the endpoint, so
+existing code uses it unmodified. Here both calls have to run side by side
+from one machine, and a curl flag is the honest way to hold everything else
+constant.</p>
+
+<p><strong>No Cloud NAT.</strong> This is asserted, not assumed. With a NAT on
+the network both paths would work regardless of mechanism, and the comparison
+would prove nothing.</p>
+</div>
+
+<div class="section" id="prerequisites">
+<h2 id="prerequisites">Prerequisites</h2>
+
+<ul>
+<li>A project with Compute Engine enabled (Week 01).</li>
+<li>Keyless CI through Workload Identity Federation (Week 02). No permissions were added this week; Week 13's grants were already enough.</li>
+<li>IAP TCP forwarding, because the probe has no public address and no bastion exists.</li>
+<li>Address space that does not overlap anything else &mdash; and a spare address outside every subnet for the endpoint itself.</li>
+</ul>
+</div>
+
+<div class="section" id="implementation">
+<h2 id="implementation">Implementation</h2>
+
+<h3>What was deployed</h3>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>What</th><th>How many</th><th>Its job</th></tr></thead>
+<tbody>
+<tr><td>VPC and subnet</td><td>1 + 1</td><td>Its own network; the subnet carries the Private Google Access flag</td></tr>
+<tr><td>Global internal address</td><td>1</td><td><code>PRIVATE_SERVICE_CONNECT</code>, outside every subnet range</td></tr>
+<tr><td>Global forwarding rule</td><td>1</td><td><code>target = "all-apis"</code> &mdash; the endpoint</td></tr>
+<tr><td>Firewall rule</td><td>1</td><td>IAP range only, for SSH to a VM with no public address</td></tr>
+<tr><td>Probe VM</td><td>1</td><td>e2-micro, no external IP</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Six resources.</p>
+
+<h3>Step 1 &mdash; A subnet that allows Private Google Access</h3>
+
+<pre><code class="language-hcl">resource "google_compute_subnetwork" "psc" {
+  name                     = "psc-lab-${var.region}"
+  network                  = google_compute_network.psc.id
+  ip_cidr_range            = var.subnet_cidr      # 10.40.0.0/24
+  private_ip_google_access = true
+}</code></pre>
+
+<p>One boolean. That is the entire feature.</p>
+
+<h3>Step 2 &mdash; An address of our own, outside the subnet</h3>
+
+<pre><code class="language-hcl">resource "google_compute_global_address" "psc" {
+  purpose      = "PRIVATE_SERVICE_CONNECT"
+  address_type = "INTERNAL"
+  address      = var.endpoint_ip                  # 10.99.0.2
+  network      = google_compute_network.psc.id
+}
+
+resource "google_compute_global_forwarding_rule" "psc" {
+  name                  = "pscapis"
+  target                = "all-apis"
+  network               = google_compute_network.psc.id
+  ip_address            = google_compute_global_address.psc.id
+  load_balancing_scheme = ""
+}</code></pre>
+
+<p><code>10.99.0.2</code> is deliberately far from <code>10.40.0.0/24</code>.
+That is required: the endpoint address cannot sit inside a subnet range.</p>
+
+<h3>Step 3 &mdash; Deploy it</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/screenshots/02-hcp-apply.png" alt="HCP Terraform workspace run list for gcp-week-14 showing four runs, two errored and two successful, with six resources under management and the current run applied" style="width:100%;height:auto">
+  <figcaption>Six resources, applied. Two runs errored first: one on the forwarding-rule name, and one before the workspace had credentials at all &mdash; both in Troubleshooting.</figcaption>
+</figure>
+
+<h3>Step 4 &mdash; What came up</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/screenshots/03-endpoint-address.png" alt="Terminal output showing the reserved address 10.99.0.2 with purpose PRIVATE_SERVICE_CONNECT and type INTERNAL, the subnet psc-lab-us-central1 on 10.40.0.0/24 with Private Google Access True, and the forwarding rule pscapis targeting all-apis at 10.99.0.2" style="width:100%;height:auto">
+  <figcaption>The address is ours and is not a Google VIP. Note it sits outside the subnet range, which Google requires.</figcaption>
+</figure>
+
+<h3>Step 5 &mdash; Both paths, from a machine with no external IP</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/screenshots/04-both-paths-work.png" alt="Terminal output showing the baseline measurement: Private Google Access returns 401 and the PSC endpoint returns 401, both from the same VM" style="width:100%;height:auto">
+  <figcaption>401 on both. The call reached Google and was refused for lack of credentials &mdash; which is what proves the network path completed.</figcaption>
+</figure>
+
+<p><strong>Validation:</strong> both report <code>401</code>, not
+<code>000</code>. A path that does not work never opens a connection at all.</p>
+</div>
+
+<div class="section" id="validation">
+<h2 id="validation">Validation and Evidence</h2>
+
+<h3>The experiment</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/screenshots/05-route-deleted.png" alt="Terminal output after deleting the default internet gateway route: Private Google Access returns 000 and the PSC endpoint still returns 401" style="width:100%;height:auto">
+  <figcaption>One route deleted. Private Google Access has no path; the endpoint does not notice.</figcaption>
+</figure>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-14-private-service-connect/docs/blog/screenshots/06-route-restored.png" alt="Terminal output after restoring the route: Private Google Access returns 401 again and the PSC endpoint returns 401" style="width:100%;height:auto">
+  <figcaption>Restored. This is what shows the failure was caused by the route and nothing else.</figcaption>
+</figure>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Test</th><th>Expected result</th><th>Actual result</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Endpoint address is ours</td><td>purpose <code>PRIVATE_SERVICE_CONNECT</code></td><td><code>10.99.0.2</code>, <code>PRIVATE_SERVICE_CONNECT</code>, <code>INTERNAL</code></td><td>Pass</td></tr>
+<tr><td>Endpoint sits outside every subnet</td><td>Not inside <code>10.40.0.0/24</code></td><td>Outside, asserted programmatically</td><td>Pass</td></tr>
+<tr><td>Probe has no external IP</td><td>empty</td><td>empty</td><td>Pass</td></tr>
+<tr><td>No NAT on the network</td><td>0 routers</td><td>0</td><td>Pass</td></tr>
+<tr><td>Both paths work at baseline</td><td>401 and 401</td><td>401 and 401</td><td>Pass</td></tr>
+<tr><td>Route deleted</td><td>PGA fails, PSC survives</td><td><strong>PGA 000, PSC 401</strong></td><td>Pass</td></tr>
+<tr><td>Route restored</td><td>Both work again</td><td>401 and 401</td><td>Pass</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>What the status codes prove.</strong> <code>401</code> means the
+request reached Google and was rejected for want of credentials: the network
+path completed. <code>000</code> is curl's code for a connection that never
+opened. The jump from 401 to 000 on one path, while the other is unchanged,
+is the finding. Twelve further assertions about the deployment itself ran
+from <code>validate.sh</code> and all passed &mdash; <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-14-private-service-connect/docs/evidence/validate.txt">its output is committed</a>, as is <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-14-private-service-connect/docs/pga-vs-psc.json">the raw measurement</a>.</p>
+
+<p><strong>One honest limit.</strong> Every call returned 401, so this tested
+the network path and not authorisation. A workload with a service account
+would get a 200, and that would be a test of IAM rather than of routing.</p>
+</div>
+
+<div class="section" id="security-cost">
+<h2 id="security-cost">Security and Cost</h2>
+
+<h3>Security</h3>
+
+<ul>
+<li><strong>The probe has no external address</strong> and there is no NAT. Shell access is through Identity-Aware Proxy, so no bastion exists and no port is open to the internet.</li>
+<li><strong>The firewall names the IAP range explicitly</strong> rather than allowing SSH from anywhere.</li>
+<li><strong>The VM carries <code>enable-oslogin</code> and <code>block-project-ssh-keys</code></strong>, because the organization's policies refuse to create it otherwise.</li>
+<li><strong>No service account keys</strong>, as in every week of this lab.</li>
+<li><strong>This week removes a route, not a possibility.</strong> A workload with some other path out could still reach the internet. The control that makes exfiltration structurally impossible is a VPC Service Controls perimeter, which is a later week.</li>
+</ul>
+
+<h3>Cost</h3>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Item</th><th>Rate</th><th>This run</th></tr></thead>
+<tbody>
+<tr><td>Private Service Connect endpoint</td><td>$0.01 / hour</td><td>~1.2 hours</td></tr>
+<tr><td>Data transfer to Google APIs over the endpoint</td><td>no charge</td><td>$0</td></tr>
+<tr><td>Probe VM</td><td>e2-micro, us-central1, no external IP</td><td>free tier</td></tr>
+<tr><td>VPC, subnet, routes, firewall</td><td>no charge</td><td>$0</td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="note"><strong>Measured cost: not yet available.</strong> The charges
+had not posted when this was written, and the figure above is the rate, not
+the bill. This section will be updated with the observed number and the time
+it was read &mdash; a billing export is not final on the day it is queried, and
+the previous week's returned two different totals forty minutes apart.</p>
+</div>
+
+<div class="section" id="troubleshooting">
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+
+<h3>The forwarding rule name has its own rules</h3>
+
+<p><strong>Problem:</strong> the apply failed with
+<code>Invalid value for field 'resource.name': 'psc-apis'</code>.<br>
+<strong>Root cause:</strong> a Private Service Connect rule for Google APIs
+accepts a 1&ndash;20 character name of lowercase letters and digits, starting
+with a letter. Hyphens are not allowed, and every other name in this lab uses
+them.<br>
+<strong>Resolution:</strong> <code>pscapis</code>.<br>
+<strong>Lesson:</strong> a naming convention that holds everywhere else is
+exactly the kind of thing that stops being checked. The error names the field,
+which is more than many do.</p>
+
+<h3>A filter the API rejects, inside a script that hides the rejection</h3>
+
+<p><strong>Problem:</strong> the validation script stopped silently after
+printing a section header.<br>
+<strong>Root cause:</strong> <code>gcloud compute routes list</code> rejects a
+three-term server-side filter with <code>Invalid list filter expression</code>.
+Inside a command substitution under <code>set -e</code>, that killed the
+script with no visible error.<br>
+<strong>Resolution:</strong> filter on the network only and select the route
+locally.<br>
+<strong>Lesson:</strong> a failure inside <code>$(...)</code> has nowhere to
+print. The symptom is output that simply stops.</p>
+
+<h3>Restoring a route you do not own blocks the teardown</h3>
+
+<p><strong>Problem:</strong> <code>terraform destroy</code> failed on the
+network: <em>already being used by routes/default-route-&lt;hash&gt;</em>.<br>
+<strong>Root cause:</strong> Google creates that default route when the
+network is created, so Terraform never owned it. The experiment deletes it and
+recreates it &mdash; and the recreated route is now an object Terraform cannot
+remove.<br>
+<strong>Resolution:</strong> delete the route by hand, then destroy again.
+Nothing bills in the meantime; a route and a network are free.<br>
+<strong>Lesson:</strong> restoring a resource is not the same as returning the
+system to its prior state. The route came back with the same name and the same
+behaviour, and still broke something, because its <em>ownership</em> changed.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><code>terraform destroy</code> removes all six resources, after the manual
+route delete above. Verified afterwards by querying Cloud Asset Inventory
+across the organization for fifteen billable resource types and finding none
+&mdash; a sweep that fails loudly if it cannot see anything, rather than
+reporting good news when it is blind.</p>
+
+<h3>Key takeaways</h3>
+
+<ul>
+<li><strong>"Private" in Private Google Access describes the VM, not the traffic.</strong> The machine has no external IP; the packets still go to Google's public addresses through the internet gateway.</li>
+<li><strong>A Private Service Connect endpoint is an address you own</strong>, inside your VPC, and it must sit outside every subnet range.</li>
+<li><strong>The difference is invisible until you remove the route</strong> &mdash; which is why it is worth removing one.</li>
+<li><strong>The real decision is usually reachability, not price.</strong> A PSC endpoint answers from on-premises over Cloud VPN; Private Google Access does not. Neither works through VPC peering.</li>
+<li><strong>Removing a route is not the same as removing a possibility.</strong> That takes a service perimeter, and it is a later week.</li>
+</ul>
+
+<h3>References</h3>
+
+<ul>
+<li><a href="https://docs.cloud.google.com/vpc/docs/private-access-options">Private access options for services</a> &mdash; what each mechanism actually connects to</li>
+<li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-google-access">Configure Private Google Access</a> &mdash; the default-route requirement and the VIP ranges</li>
+<li><a href="https://docs.cloud.google.com/vpc/docs/about-accessing-google-apis-endpoints">About accessing global Google APIs through endpoints</a> &mdash; the address rule, on-premises access, and peering</li>
+<li><a href="https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-apis">Access global Google APIs through endpoints</a> &mdash; purpose, bundles and the forwarding rule</li>
+<li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-14-private-service-connect">week-14-private-service-connect</a> &mdash; Terraform, both scripts, the raw measurement and the lab guide</li>
+</ul>
+</div>
+
+</div>
