@@ -4,11 +4,17 @@ date: '2026-11-23T09:00:00'
 slug: aws-architecture-asg-lifecycle-hooks
 labels: [AWS, "AWS Architecture Series"]
 verified: '2026-11-23'
-problem: "A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon."
+problem: "A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. What happens if the hook times out is set by its DefaultResult, which the PutLifecycleHook API defaults to ABANDON - so a timed-out launch hook terminates and replaces the instance rather than admitting it. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon."
 builds: "A precise reading of what a lifecycle hook does and does not guarantee: the wait states on each side of the lifecycle and where they sit relative to InService and load balancer registration, why that ordering makes a launch hook the answer to a zero-second grace period, the two timeout clocks and the global ceiling, why abandon does not mean stop on the termination path, what an instance lifecycle policy adds and what a retained instance costs, and the cases where a hook does not fire at all."
 verified_claims:
   - claim: "A lifecycle hook provides a specified amount of time (one hour by default) to wait for the action to complete before the instance transitions to the next state"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html
+  - claim: "The action the Auto Scaling group takes when the lifecycle hook timeout elapses or if an unexpected failure occurs. The default value is ABANDON"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutLifecycleHook.html
+  - claim: "The maximum time, in seconds, that can elapse before the lifecycle hook times out. The range is from 30 to 7200 seconds. The default value is 3600 seconds (1 hour)"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutLifecycleHook.html
+  - claim: "If you exceed your maximum limit of lifecycle hooks, which by default is 50 per Auto Scaling group, the call fails"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutLifecycleHook.html
   - claim: "By default, termination lifecycle hooks operate on a best-effort basis. If a termination lifecycle hook times out, or is abandoned, Amazon EC2 Auto Scaling proceeds with terminating the instance immediately"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html
   - claim: "Instances can remain in a wait state for a finite period of time. The default timeout for a lifecycle hook is one hour (heartbeat timeout). There is also a global timeout that specifies the maximum amount of time that you can keep an instance in a wait state. The global timeout is 48 hours or 100 times the heartbeat timeout, whichever is smaller"
@@ -138,7 +144,7 @@ verified_claims:
   <div class="section" id="architecture">
     <h2>Architecture</h2>
 
-    <img src="/blog/assets/diagrams/arch-122-asg-lifecycle-hooks.svg" alt="Diagram: Amazon EC2 Auto Scaling lifecycle hooks. A hook provides a specified amount of time, one hour by default, to wait for a custom action before the instance transitions to the next state. On scale out the hook puts the instance into Pending:Wait and performs a custom action; the instance stays there for one hour by default and then the group continues the launch to Pending:Proceed, and the timeout can be restarted by recording a heartbeat. The instance then enters InService and the health check grace period starts, which is why a launch hook is the documented alternative to a long grace period: the hook waits before InService, so the grace period does not have to cover bootstrap. Before reaching InService, if the group is associated with a load balancer, the instance is registered and the load balancer starts checking its health. On scale in the hook puts the instance into Terminating:Wait, and after the action completes or the timeout expires the instance moves to Terminating:Proceed and is terminated. The result can be abandon or continue, and the meaning differs by direction: launching, continue means the actions succeeded and the instance can go into service while abandon means they failed and the instance can be terminated and replaced; terminating, both abandon and continue allow the instance to terminate, with abandon stopping any remaining actions such as other hooks and continue allowing them to complete. By default termination hooks operate on a best-effort basis, and if one times out or is abandoned Auto Scaling proceeds with terminating the instance immediately. Retention needs a separate instance lifecycle policy: without one the instance proceeds to termination immediately even on an ABANDON result, while with a policy configured to retain on TerminateHookAbandon the instance moves to a retained state. Retained instances keep incurring standard EC2 charges, do not count toward desired capacity so replacements launch, and are ignored by instance refresh and max instance lifetime. Two clocks bound the wait: the default heartbeat timeout is one hour, and a global timeout is 48 hours or 100 times the heartbeat timeout whichever is smaller, so the default ceiling is 48 hours. A hook does not prevent a Spot Instance terminating when capacity is no longer available, on a two-minute notice; Auto Scaling throttles the launch rate when hooks fail consistently; hooks do not fire on attach, detach, standby moves or force delete; multiple hooks created with the group must share a notification target and IAM role; and simple scaling policy activities are paused until lifecycle actions complete and the cooldown expires.">
+    <img src="/blog/assets/diagrams/arch-122-asg-lifecycle-hooks.svg" alt="Diagram: Amazon EC2 Auto Scaling lifecycle hooks. A hook provides a specified amount of time, one hour by default, to wait for a custom action before the instance transitions to the next state. On scale out the hook puts the instance into Pending:Wait and performs a custom action; the timeout can be restarted by recording a heartbeat, and what happens when the timeout elapses is set by the hook's DefaultResult, which the PutLifecycleHook API documents as defaulting to ABANDON, so for a launch hook ABANDON causes the instance to be terminated and replaced while CONTINUE allows the launch to proceed; the heartbeat timeout ranges from 30 to 7200 seconds with a default of 3600. The instance then enters InService and the health check grace period starts, which is why a launch hook is the documented alternative to a long grace period: the hook waits before InService, so the grace period does not have to cover bootstrap. Before reaching InService, if the group is associated with a load balancer, the instance is registered and the load balancer starts checking its health. On scale in the hook puts the instance into Terminating:Wait, and after the action completes or the timeout expires the instance moves to Terminating:Proceed and is terminated. The result can be abandon or continue, and the meaning differs by direction: launching, continue means the actions succeeded and the instance can go into service while abandon means they failed and the instance can be terminated and replaced; terminating, both abandon and continue allow the instance to terminate, with abandon stopping any remaining actions such as other hooks and continue allowing them to complete. By default termination hooks operate on a best-effort basis, and if one times out or is abandoned Auto Scaling proceeds with terminating the instance immediately. Retention needs a separate instance lifecycle policy: without one the instance proceeds to termination immediately even on an ABANDON result, while with a policy configured to retain on TerminateHookAbandon the instance moves to a retained state. Retained instances keep incurring standard EC2 charges, do not count toward desired capacity so replacements launch, and are ignored by instance refresh and max instance lifetime. Two clocks bound the wait: the default heartbeat timeout is one hour, and a global timeout is 48 hours or 100 times the heartbeat timeout whichever is smaller, so the default ceiling is 48 hours. A hook does not prevent a Spot Instance terminating when capacity is no longer available, on a two-minute notice; Auto Scaling throttles the launch rate when hooks fail consistently; hooks do not fire on attach, detach, standby moves or force delete; multiple hooks created with the group must share a notification target and IAM role; and simple scaling policy activities are paused until lifecycle actions complete and the cooldown expires.">
 
     <h3>Where the wait states sit</h3>
     <div class="table-scroll">
@@ -194,11 +200,24 @@ verified_claims:
       hook timeout of 48 hours&rdquo;</em>.
     </p>
     <p>
-      Worth noting what expiry does on each side. On launch, expiry is benign:
-      <em>&ldquo;By default, the instance remains in a wait state for one hour, and then the Auto Scaling
-      group continues the launch process (Pending:Proceed)&rdquo;</em> &mdash; the instance goes into
-      service even though your bootstrap action never reported success. On termination, expiry is also
-      permissive, and that is the problem.
+      What expiry does is not fixed, and this is the part to configure deliberately. When a lifecycle hook
+      times out, Auto Scaling applies the hook's configured <code>DefaultResult</code>, described as
+      <em>&ldquo;The action the Auto Scaling group takes when the lifecycle hook timeout elapses or if an
+      unexpected failure occurs&rdquo;</em>, with valid values <code>CONTINUE</code> and
+      <code>ABANDON</code>. The API reference is explicit about which you get if you say nothing:
+      <em>&ldquo;<strong>The default value is ABANDON.</strong>&rdquo;</em>
+    </p>
+    <p>
+      For a launch hook, <code>ABANDON</code> causes the instance to be terminated and replaced, whereas
+      <code>CONTINUE</code> allows the launch process to proceed. So launching an instance after an
+      unsuccessful bootstrap is not the universal default &mdash; it is what you get only with
+      <code>CONTINUE</code> set. The user guide's walkthrough describes that path, which is worth knowing
+      when the narrative and the API reference are read side by side.
+    </p>
+    <p>
+      On the termination side the distinction collapses, because both results permit termination. The
+      configured <code>DefaultResult</code> therefore changes a great deal on launch and almost nothing on
+      the way out &mdash; except which later hooks still run.
     </p>
 
     <h3>What retention actually is</h3>
@@ -339,7 +358,7 @@ verified_claims:
           <tr>
             <td>Heartbeat timeout</td>
             <td>Set it to the real action duration, not the default hour</td>
-            <td>Expiry proceeds silently, so a too-long timeout hides a broken action</td>
+            <td>The range is 30 to 7200 seconds; a too-long timeout delays the configured <code>DefaultResult</code> rather than preventing it</td>
           </tr>
           <tr>
             <td>Shutdown needing more than two minutes</td>
@@ -384,10 +403,12 @@ verified_claims:
     </p>
     <p>
       The useful habit is to ask what happens when the mechanism fails, and whether the failure is
-      permissive or blocking. Here it is permissive on both sides: a launch hook that never completes puts
-      the instance into service anyway, and a termination hook that never completes terminates it anyway.
-      Both defaults keep the group moving, which is almost certainly right, and both mean the hook is where
-      you express intent rather than where you enforce it.
+      permissive or blocking. On termination it is permissive whatever you configure: a hook that never
+      completes terminates the instance anyway. On launch it depends on the hook's
+      <code>DefaultResult</code>, and the API default of <code>ABANDON</code> means a timed-out launch hook
+      terminates and replaces the instance rather than admitting it. Either way the group keeps moving,
+      which is almost certainly right, and either way the hook is where you express intent rather than
+      where you enforce it.
     </p>
     <p>
       If the shutdown genuinely cannot be skipped, the hook is not the feature. The policy is. And the
