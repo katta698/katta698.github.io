@@ -69,6 +69,27 @@ def get(url, tries=3):
     raise last
 
 
+def resolve_link(link, cycle, latest):
+    """endoflife.date returns link TEMPLATES, not finished URLs.
+
+    Elasticsearch's is
+    .../release-notes/elasticsearch#elasticsearch-__LATEST__-release-notes
+    and the consumer is expected to substitute. Passing it through put a raw
+    __LATEST__ into an href on the page, which check_reader_facing refused --
+    correctly: a reader clicking it lands nowhere.
+
+    Substitute what we have; if a token survives, return None rather than a
+    broken link. A missing link is honest, a dead one is not.
+    """
+    if not link:
+        return None
+    out = link
+    for token, value in (("__LATEST__", latest), ("__RELEASE_CYCLE__", cycle)):
+        if value:
+            out = out.replace(token, str(value))
+    return None if "__" in out else out
+
+
 def as_date_or_flag(v):
     """A date stays a date; true/false stay booleans and mean 'not a date'."""
     if isinstance(v, bool) or v is None:
@@ -105,7 +126,8 @@ def fetch_product(slug, name, why, today):
             "eol": eol,
             "days_to_eol": days_until(eol, today),
             "lts": bool(c.get("lts")),
-            "link": c.get("link"),
+            "link": resolve_link(c.get("link"), c.get("cycle"),
+                                 c.get("latest")),
         })
     dated = [r for r in rows if isinstance(r["eol"], str)]
     return {

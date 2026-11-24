@@ -55,6 +55,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 NEWS = os.path.join(ROOT, "intelligence", "news.json")
 RELEASES = os.path.join(ROOT, "data", "releases.json")
 ECONOMICS = os.path.join(ROOT, "data", "economics.json")
+LIFECYCLE = os.path.join(ROOT, "data", "lifecycle.json")
 POSTS = os.path.join(ROOT, "posts")
 OUT = os.path.join(ROOT, "data", "index.html")
 
@@ -73,7 +74,7 @@ STAGES = [
               "Amazon MSK Express Brokers", "Amazon MSK Replicator", "Kafka",
               "DataSync", "Kinesis Video Streams", "DynamoDB Streams",
               "OpenSearch Ingestion", "AWS DMS Schema Conversion",
-              "Storage Gateway"],
+              "Storage Gateway", "MSK"],
       "azure": ["Azure Event Hubs", "Azure Database Migration",
                 "Azure Storage Mover", "Azure Data Share",
                 "Azure Stream Analytics", "Stream Analytics"],
@@ -136,19 +137,24 @@ STAGES = [
      "or a decision that gets made the same way it always was.",
      "Data analysts and data scientists, and the people they report to.",
      {"aws": ["QuickSight", "SageMaker"],
-      "azure": ["Azure Power Bi Embedded", "Power Bi Embedded"],
+      "azure": ["Power BI", "Microsoft Power BI", "Power BI Embedded",
+                "Azure Power Bi Embedded", "Power Bi Embedded",
+                "Microsoft Fabric"],
       "gcp": ["Looker", "Data Studio", "Looker Studio"]}),
     ("govern", "Govern", "Knowing what you have, where it came from, who may "
      "see it, and whether it is still correct. The stage everyone agrees "
      "matters and nobody budgets for.",
      "Data stewards and governance leads, where those roles exist at all.",
-     {"aws": ["Lake Formation", "DataZone", "Clean Rooms"],
-      # Microsoft Purview is Azure's answer here and is NOT in the Azure
-      # service catalogue, so it cannot be tagged and this cell cannot see
-      # it. That is a gap in my tooling, not in Azure, and the page says so.
-      "azure": [],
+     {"aws": ["Lake Formation", "DataZone", "Clean Rooms",
+              "AWS Glue Data Catalog", "Glue Data Catalog",
+              "AWS Entity Resolution"],
+      # Microsoft Purview was missing from the Azure catalogue entirely, so
+      # no announcement about it could be tagged and this cell could never
+      # fill. It is curated in now; whether the number stays at zero is then
+      # a measurement rather than a gap in the tooling.
+      "azure": ["Microsoft Purview", "Microsoft OneLake", "OneLake"],
       "gcp": ["Knowledge Catalog", "Sensitive Data Protection", "Dataplex",
-              "Data Catalog"]}),
+              "Data Catalog", "BigQuery Analytics Hub"]}),
 ]
 
 # Checks that can actually fail a pipeline, as opposed to data-quality advice.
@@ -317,8 +323,18 @@ def format_counts(items, today):
     Iceberg, Delta and Hudi are solving the same problem and the vendors'
     own release notes say which one they are building against.
     """
-    FORMATS = [("Iceberg", r"\biceberg\b"), ("Delta Lake", r"\bdelta lake\b"),
-               ("Hudi", r"\bhudi\b"), ("Parquet", r"\bparquet\b")]
+    # TABLE formats and FILE formats are not alternatives and must not be
+    # ranked against each other. An Iceberg table is usually MADE OF Parquet
+    # files: the table format supplies transactions, schema evolution and
+    # time travel; the file format supplies the columnar bytes underneath.
+    # They were in one list, so a reader comparing the bars was being invited
+    # to pick between a thing and the material it is built from.
+    TABLE_FORMATS = [("Iceberg", r"\biceberg\b"),
+                     ("Delta Lake", r"\bdelta lake\b"),
+                     ("Hudi", r"\bhudi\b")]
+    FILE_FORMATS = [("Parquet", r"\bparquet\b"), ("ORC", r"\borc\b"),
+                    ("Avro", r"\bavro\b"), ("Arrow", r"\bapache arrow\b")]
+    FORMATS = TABLE_FORMATS + FILE_FORMATS
     cut = (today - datetime.timedelta(days=WINDOW_DAYS)).isoformat()
     out = {}
     for name, pat in FORMATS:
@@ -331,7 +347,9 @@ def format_counts(items, today):
             if rx.search((i.get("t") or "") + " " + (i.get("st") or "")):
                 seen.add((d[:7], norm(i.get("t"))))
         per = collections.Counter(m for m, _ in seen)
-        out[name] = {"total": len(seen), "months": per}
+        out[name] = {"total": len(seen), "months": per,
+                     "kind": ("table" if any(name == n for n, _ in
+                                             TABLE_FORMATS) else "file")}
     return out
 
 
@@ -558,6 +576,7 @@ def build():
     fmts = format_counts(items, today)
     rel = load(RELEASES, {"releases": [], "sources": [], "no_feed": []})
     eco = load(ECONOMICS, {"firms": [], "private": []})
+    life = load(LIFECYCLE, {"products": []})
     posts = dba_posts()
 
     head = bnp.PAGE[:bnp.PAGE.index("</head>")]
@@ -636,7 +655,11 @@ def build():
     # page needs one thing to carry away; the rest is for the reader who
     # decided to stay. Generated from the counts rather than written down,
     # so it cannot quietly stop being true.
-    top = sorted(fmts.items(), key=lambda x: -x[1]["total"])
+    # Table formats only. Ranking Parquet in here once put a file format
+    # second, which would have had the hero comparing a table format against
+    # the bytes it is stored in.
+    top = sorted(((k, v) for k, v in fmts.items() if v.get("kind") == "table"),
+                 key=lambda x: -x[1]["total"])
     if top and top[0][1]["total"] > 0:
         lead, rest = top[0], top[1]
         b.append('<div class="dt-hero">')
@@ -705,20 +728,24 @@ def build():
                         (" and %d more" % more) if more > 0 else ""))
         b.append("</div>")
     b.append("</div>")
-    b.append('<div class="dt-gap"><b>Two cells are blank, and they mean '
-             "different things.</b> Azure is blank under govern because "
-             "Microsoft Purview is not in the Azure service catalogue this "
-             "site tags against, so no announcement about it can be counted "
-             "&mdash; a gap in my tooling, not in Azure. Azure is blank "
-             "under decide because Power BI Embedded, which <em>is</em> in "
-             "the catalogue, had no announcement in the window. A measured "
-             "zero and an inability to measure are different claims, and "
-             "printing both as &ldquo;0&rdquo; would make them look like "
-             "one.</div>")
+    b.append('<div class="dt-gap"><b>Two of these cells used to read blank '
+             "for the wrong reason.</b> Azure showed nothing under govern or "
+             "decide, and I said so on this page &mdash; but the cause was "
+             "not Azure. Microsoft Purview and Power BI were missing from "
+             "the service catalogue this site tags against, so no "
+             "announcement about either could ever be counted. Both are in "
+             "it now, and both cells carry numbers. The lesson is the one "
+             "worth keeping: an empty cell on a page like this is a claim, "
+             "and the first thing to suspect is the instrument rather than "
+             "the subject. <code>check_data_page.py</code> now refuses a "
+             "mapped service name that could never match anything.</div>")
     b.append("</details>")
 
-    ranked = sorted(fmts.items(), key=lambda x: -x[1]["total"])
-    peak = max(v["total"] for _, v in ranked) or 1
+    ranked = sorted(((k, v) for k, v in fmts.items()
+                     if v.get("kind") == "table"), key=lambda x: -x[1]["total"])
+    files = sorted(((k, v) for k, v in fmts.items()
+                    if v.get("kind") == "file"), key=lambda x: -x[1]["total"])
+    peak = max([v["total"] for _, v in ranked] or [0]) or 1
     b.append(fold("The format question, being answered in public", True))
     b.append('<p class="dt-note">Iceberg, Delta Lake and Hudi solve the same '
              "problem: transactional tables over object storage, so several "
@@ -737,13 +764,29 @@ def build():
     b.append('<p class="dt-foot">Vendor attention, not installed base. It '
              "says what the clouds are building against; it does not say "
              "what is running in your warehouse.</p>")
+    if files:
+        b.append('<div class="dt-gap"><b>The file formats are not in that '
+                 "race, and are counted separately.</b> An Iceberg table is "
+                 "usually made of Parquet files &mdash; the table format "
+                 "supplies transactions, schema evolution and time travel, "
+                 "the file format supplies the columnar bytes underneath. "
+                 "Ranking them together invites a reader to choose between a "
+                 "thing and the material it is built from. Over the same "
+                 "window: " + ", ".join(
+                     "<b>%s</b> %d" % (esc(n), v["total"]) for n, v in files)
+                 + ".</div>")
     b.append("</details>")
 
     by_vendor = collections.Counter()
+    rel_counts, blog_counts = collections.Counter(), collections.Counter()
     latest, kinds = {}, {}
     for r in rel.get("releases", []):
         by_vendor[r["vendor"]] += 1
         kinds[r["vendor"]] = r["kind"]
+        if r["kind"] == "release":
+            rel_counts[r["vendor"]] += 1
+        else:
+            blog_counts[r["vendor"]] += 1
         if r["date"] > latest.get(r["vendor"], {"date": ""})["date"]:
             latest[r["vendor"]] = r
     b.append(fold("What the engines shipped"))
@@ -755,8 +798,8 @@ def build():
              "counting those makes a project&rsquo;s cadence a measure of "
              "how publicly it tests.</p>")
     b.append('<div class="dt-scroll"><table class="dt-tbl"><thead><tr>'
-             "<th>Project</th><th>Stage</th><th>Held</th>"
-             "<th>Most recent</th></tr></thead><tbody>")
+             "<th>Project</th><th>Stage</th><th>Releases</th>"
+             "<th>Blog posts</th><th>Most recent</th></tr></thead><tbody>")
     stage_title = dict((k, t) for k, t, _m, _w, _s in STAGES)
     # Releases first, then blogs. Sorting on count alone puts MongoDB's
     # 150 blog posts above Iceberg's 3 tagged releases, which argues the
@@ -767,15 +810,24 @@ def build():
 
     for vendor, n in sorted(by_vendor.items(), key=rank):
         r = latest[vendor]
-        tag = "" if kinds.get(vendor) == "release" else " <em>(blog)</em>"
         link = ('<a href="%s" rel="noopener">%s</a>'
                 % (esc(r["url"]), esc(r["title"][:62]))) if r.get("url") \
             else esc(r["title"][:62])
-        b.append('<tr><th>%s%s</th><td>%s</td><td class="dt-num">%d</td>'
+        # Releases and blog posts in their own columns. They were counted in
+        # one, which put MongoDB's 150 blog posts above Apache Iceberg's 3
+        # tagged releases under a heading that read "Held" -- comparing a
+        # publishing habit with a shipping cadence. An em dash where a
+        # project publishes no feed of that kind, never a zero: nothing was
+        # measured there.
+        rel_n = rel_counts.get(vendor, 0)
+        blog_n = blog_counts.get(vendor, 0)
+        b.append('<tr><th>%s</th><td>%s</td>'
+                 '<td class="dt-num">%s</td><td class="dt-num">%s</td>'
                  '<td>%s <span class="dt-tick">&middot; %s</span></td></tr>'
-                 % (esc(vendor), tag, esc(stage_title.get(r["layer"],
-                                                          r["layer"])),
-                    n, link, esc(r["date"])))
+                 % (esc(vendor), esc(stage_title.get(r["layer"], r["layer"])),
+                    rel_n if rel_n else "&mdash;",
+                    blog_n if blog_n else "&mdash;",
+                    link, esc(r["date"])))
     b.append("</tbody></table></div>")
     gaps = rel.get("no_feed") or []
     if gaps:
@@ -855,6 +907,67 @@ def build():
              "syntax is the one thing your engine will argue with.</p>")
     b.append("</details>")
 
+    # ---- the support cliff -------------------------------------------
+    #
+    # The one fact a database administrator is actually judged on, and it is
+    # scattered across ten vendor sites in ten formats. Sorted by how little
+    # time is left, because that is the only order anybody reads it in.
+    prods = life.get("products") or []
+    if prods:
+        soon = [p for p in prods if p.get("next_eol")]
+        soon.sort(key=lambda p: p["next_eol"]["days_to_eol"])
+        b.append(fold("The support cliff"))
+        b.append('<p class="dt-note">When each engine&rsquo;s versions stop '
+                 "being supported. The clouds will keep announcing features "
+                 "for a version long after the vendor stops patching it, so "
+                 "this is the column that decides what you are allowed to "
+                 "still be running &mdash; not the six stages above.</p>")
+        b.append('<div class="dt-scroll"><table class="dt-tbl"><thead><tr>'
+                 "<th>Engine</th><th>Latest</th><th>Next version out of "
+                 "support</th><th>Days</th><th>Already out of support</th>"
+                 "</tr></thead><tbody>")
+        for p in soon:
+            nx = p["next_eol"]
+            days = nx["days_to_eol"]
+            cls = "dt-down" if days is not None and days <= 120 else ""
+            latest = (p.get("newest") or {}).get("latest")
+            link = p.get("vendor_link")
+            name = ('<a href="%s" rel="noopener">%s</a>'
+                    % (esc(link), esc(p["name"]))) if link else esc(p["name"])
+            b.append('<tr><th>%s</th><td class="dt-num">%s</td>'
+                     '<td class="dt-num">%s %s</td>'
+                     '<td class="dt-num"><span class="%s">%s</span></td>'
+                     '<td class="dt-num">%s of %s</td></tr>'
+                     % (name,
+                        esc(str(latest)[:14]) if latest else "&mdash;",
+                        esc(str(nx.get("cycle"))), esc(str(nx["eol"])),
+                        cls, days if days is not None else "&mdash;",
+                        p.get("already_eol", 0), p.get("cycles", 0)))
+        rest = [p for p in prods if not p.get("next_eol")]
+        for p in rest:
+            b.append('<tr><th>%s</th><td class="dt-num">%s</td>'
+                     '<td colspan="2">no end-of-support date published</td>'
+                     '<td class="dt-num">%s of %s</td></tr>'
+                     % (esc(p["name"]),
+                        esc(str((p.get("newest") or {}).get("latest"))[:14]),
+                        p.get("already_eol", 0), p.get("cycles", 0)))
+        b.append("</tbody></table></div>")
+        b.append('<div class="dt-gap"><b>The source is an index, not the '
+                 "authority.</b> %s is community-maintained and is used here "
+                 "because it is machine-readable, which the vendors&rsquo; "
+                 "own lifecycle pages mostly are not. Every engine name links "
+                 "to the vendor&rsquo;s page, and a date that is about to "
+                 "cost you something should be checked there before you act "
+                 "on it. Two engines publish no end-of-support dates at all; "
+                 "they are listed rather than dropped.</div>"
+                 % esc(life.get("source_name", "endoflife.date")))
+        b.append('<p class="dt-foot">%d release cycles across %d engines, '
+                 "refreshed weekly. &ldquo;Already out of support&rdquo; "
+                 "counts versions whose published end-of-support date has "
+                 "passed &mdash; not versions nobody runs.</p>"
+                 % (sum(p.get("cycles", 0) for p in prods), len(prods)))
+        b.append("</details>")
+
     if posts:
         b.append(fold("Before any of this was a platform"))
         b.append('<p class="dt-note">The database writing on this site, from '
@@ -868,6 +981,76 @@ def build():
             b.append('<li><b><a href="/blog/%s/">%s</a></b>%s</li>'
                      % (esc(p["slug"]), esc(p["title"]), when))
         b.append("</ul></details>")
+
+    # ---- can you trust this page -------------------------------------
+    #
+    # The fetcher has recorded per-feed status, item counts and newest-seen
+    # dates since it was written, and this page threw all of it away. A feed
+    # that has died answers 200 with an empty list, which on a page of counts
+    # is indistinguishable from a quiet quarter -- so the page could not tell
+    # a reader which it was looking at.
+    #
+    # QUIET and FAILED are different and must stay that way. A feed that
+    # answers and carries nothing new is working; the project simply has not
+    # shipped. A feed that cannot be fetched is a hole in the measurement.
+    # Printing both as a blank row would merge them.
+    srcs = rel.get("sources", [])
+    if srcs:
+        QUIET_DAYS = 120
+        healthy = quiet = broken = 0
+        rows = []
+        for src in sorted(srcs, key=lambda x: (x.get("status") != "ok",
+                                               x.get("newest") or "")):
+            status, newest = src.get("status"), src.get("newest") or ""
+            if status != "ok":
+                state, note, cls = "Failed", esc(str(status)[:60]), "dt-down"
+                broken += 1
+            else:
+                age = None
+                if newest:
+                    try:
+                        age = (today - datetime.date.fromisoformat(newest)).days
+                    except ValueError:
+                        age = None
+                if age is not None and age > QUIET_DAYS:
+                    state, cls = "Quiet", ""
+                    note = ("answering; nothing published for %d days" % age)
+                    quiet += 1
+                else:
+                    state, cls = "Healthy", "dt-up"
+                    note = ("newest %s" % newest) if newest else "answering"
+                    healthy += 1
+            rows.append('<tr><th>%s</th><td><span class="%s">%s</span></td>'
+                        '<td class="dt-num">%s</td><td>%s</td></tr>'
+                        % (esc(src.get("vendor", "")), cls, state,
+                           src.get("items", 0), note))
+        for g in rel.get("no_feed") or []:
+            rows.append('<tr><th>%s</th><td><span class="dt-down">No feed'
+                        '</span></td><td class="dt-num">&mdash;</td>'
+                        "<td>%s</td></tr>"
+                        % (esc(g["vendor"]), esc(g["why"])))
+        b.append(fold("Can you trust this page"))
+        b.append('<p class="dt-note">%d feeds behind the engine table: '
+                 "<b>%d answering with recent releases</b>, %d answering but "
+                 "quiet for more than %d days, %d failing, and %d vendors "
+                 "with no machine-readable feed at all. A quiet feed and a "
+                 "broken one look identical in a count, so they are named "
+                 "separately here rather than both arriving as a smaller "
+                 "number somewhere above.</p>"
+                 % (len(srcs), healthy, quiet, broken, QUIET_DAYS,
+                    len(rel.get("no_feed") or [])))
+        b.append('<div class="dt-scroll"><table class="dt-tbl"><thead><tr>'
+                 "<th>Source</th><th>State</th><th>Held</th><th>What that "
+                 "means</th></tr></thead><tbody>")
+        b.extend(rows)
+        b.append("</tbody></table></div>")
+        b.append('<p class="dt-foot">Checked each time the fetcher runs &mdash; '
+                 "weekly, Mondays 06:40 UTC. The cloud announcement feeds "
+                 "behind the six stages are not in this table; they are "
+                 "checked separately by <code>check_news.py</code>, which "
+                 "asserts the ingest RAN rather than that its output looks "
+                 "plausible.</p>")
+        b.append("</details>")
 
     ok = [s for s in rel.get("sources", []) if s.get("status") == "ok"]
     b.append(fold("Where every number here came from"))
@@ -886,6 +1069,9 @@ def build():
         ("What the independents earn",
          "SEC EDGAR company facts (XBRL) &mdash; each firm&rsquo;s own "
          "10-Q or 10-K", "weekly"),
+        ("The support cliff",
+         "endoflife.date, a community-maintained index; each engine links "
+         "to the vendor&rsquo;s own lifecycle page", "weekly"),
         ("The stage mapping, the roles, the quality checks",
          "Mine. Editorial, and checked by <code>check_data_page.py</code> "
          "on every push", "when I change it"),

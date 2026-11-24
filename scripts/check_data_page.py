@@ -125,6 +125,22 @@ def main():
             print("    %-10s %-6s %s" % (title, cloud, name))
         problems += len(dead)
 
+    # A support date that has already passed is not a fault -- old versions
+    # go out of support, that is the point of the table. A table where EVERY
+    # date has passed is a fetcher that stopped updating, which looks the same
+    # on the page and is not.
+    life = bdp.load(bdp.LIFECYCLE, {"products": []})
+    prods = life.get("products") or []
+    if prods:
+        future = [p for p in prods if p.get("next_eol")]
+        print("lifecycle: %d engine(s), %d with a future end-of-support date"
+              % (len(prods), len(future)))
+        if not future:
+            print("\nFAIL: not one engine has an end-of-support date "
+                  "still ahead of it. Either every tracked version is "
+                  "dead, which it is not, or the fetch has stopped.")
+            problems += 1
+
     if not os.path.exists(DIAGRAM):
         print("\nFAIL: %s is missing and the page links it"
               % os.path.relpath(DIAGRAM, ROOT))
@@ -137,7 +153,8 @@ def main():
             problems += 1
 
     for path, what in ((bdp.RELEASES, "engine releases"),
-                       (bdp.ECONOMICS, "vendor economics")):
+                       (bdp.ECONOMICS, "vendor economics"),
+                       (bdp.LIFECYCLE, "database lifecycle")):
         if not os.path.exists(path):
             print("\nFAIL: %s is missing (%s)"
                   % (os.path.relpath(path, ROOT), what))
