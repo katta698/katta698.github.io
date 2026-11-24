@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #122 — Abandon and continue both terminate the instance | Jayanth Katta Blog</title>
+<meta name="description" content="A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Abandon and continue both terminate the instance"/>
+<meta property="og:description" content="A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-asg-lifecycle-hooks/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Abandon and continue both terminate the instance"/>
+<meta name="twitter:description" content="A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-asg-lifecycle-hooks/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=560bb578" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=560bb578">
+<script src="/blog/assets/site-footer.js?v=560bb578" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #122 — Abandon and continue both terminate the instance…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #122 — Abandon and continue both terminate the instance</h1>
+      <p class="post-description">A lifecycle hook pauses an instance for one hour by default so a custom action can run, and on launch that pause is genuinely powerful: it happens before the instance reaches InService, which is why a launch hook is the documented alternative to a long health check grace period. On termination the same mechanism is weaker than it looks. Termination lifecycle hooks operate on a best-effort basis, and if the hook times out or is abandoned, Auto Scaling proceeds with terminating the instance immediately. Both results allow the instance to terminate - abandon merely stops later hooks running. A hook written to flush state does not guarantee the state is flushed, and keeping the instance requires a separate instance lifecycle policy configured to retain on TerminateHookAbandon.</p>
+      <div class="post-info">
+        <span>Nov 23, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>13 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 23 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-asg-lifecycle-hooks" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last post ended on a recommendation it did not explain: AWS says to use lifecycle hooks rather
+      than a long health check grace period. That turns out to be a statement about ordering, and once you
+      see the ordering the advice is obviously right.
+    </p>
+    <p>
+      The same mechanism on the termination side invites an assumption that is wrong, and wrong in the
+      direction that loses data.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A launch hook waits before InService, which is why it replaces the grace period</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;The lifecycle hook puts the instance into a wait state (<code>Pending:Wait</code>) and
+          then performs a custom action.&rdquo;</em> Then, after it completes:
+          <em>&ldquo;<strong>The instance enters the InService state and the health check grace period
+          starts.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So the bootstrap wait happens <em>outside</em> the window the grace period covers. The grace
+          period exists to tolerate an instance that is <code>InService</code> but not ready; a launch hook
+          stops it being <code>InService</code> until it is ready. That is why the documented answer to a
+          zero-second grace period is a hook, and why the two are alternatives rather than complements.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>A termination hook is best-effort, and the default is to terminate anyway</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>By default, termination lifecycle hooks operate on a best-effort basis. If a
+          termination lifecycle hook times out, or is abandoned, Amazon EC2 Auto Scaling proceeds with
+          terminating the instance immediately.</strong>&rdquo;</em>
+        </p>
+        <p>
+          A hook written to flush a buffer, upload logs or drain a queue does not guarantee any of that
+          happened. It guarantees you were <em>asked</em>. If your code fails, times out, or reports
+          failure, the instance goes anyway.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Abandon means the opposite of what the word suggests</strong></div>
+      <div class="challenge-body">
+        <p>
+          On launch, the two results mean what you would expect: continue puts the instance into service,
+          abandon means <em>&ldquo;we can terminate and replace the instance&rdquo;</em>. On termination
+          they collapse:
+        </p>
+        <p>
+          <em>&ldquo;<strong>If an instance is terminating, both abandon and continue allow the instance to
+          terminate.</strong> However, abandon stops any remaining actions, such as other lifecycle hooks,
+          and continue allows any other lifecycle hooks to complete.&rdquo;</em>
+        </p>
+        <p>
+          Abandon is not a veto. It is a request to skip the remaining hooks on the way out.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-122-asg-lifecycle-hooks.svg" alt="Diagram: Amazon EC2 Auto Scaling lifecycle hooks. A hook provides a specified amount of time, one hour by default, to wait for a custom action before the instance transitions to the next state. On scale out the hook puts the instance into Pending:Wait and performs a custom action; the instance stays there for one hour by default and then the group continues the launch to Pending:Proceed, and the timeout can be restarted by recording a heartbeat. The instance then enters InService and the health check grace period starts, which is why a launch hook is the documented alternative to a long grace period: the hook waits before InService, so the grace period does not have to cover bootstrap. Before reaching InService, if the group is associated with a load balancer, the instance is registered and the load balancer starts checking its health. On scale in the hook puts the instance into Terminating:Wait, and after the action completes or the timeout expires the instance moves to Terminating:Proceed and is terminated. The result can be abandon or continue, and the meaning differs by direction: launching, continue means the actions succeeded and the instance can go into service while abandon means they failed and the instance can be terminated and replaced; terminating, both abandon and continue allow the instance to terminate, with abandon stopping any remaining actions such as other hooks and continue allowing them to complete. By default termination hooks operate on a best-effort basis, and if one times out or is abandoned Auto Scaling proceeds with terminating the instance immediately. Retention needs a separate instance lifecycle policy: without one the instance proceeds to termination immediately even on an ABANDON result, while with a policy configured to retain on TerminateHookAbandon the instance moves to a retained state. Retained instances keep incurring standard EC2 charges, do not count toward desired capacity so replacements launch, and are ignored by instance refresh and max instance lifetime. Two clocks bound the wait: the default heartbeat timeout is one hour, and a global timeout is 48 hours or 100 times the heartbeat timeout whichever is smaller, so the default ceiling is 48 hours. A hook does not prevent a Spot Instance terminating when capacity is no longer available, on a two-minute notice; Auto Scaling throttles the launch rate when hooks fail consistently; hooks do not fire on attach, detach, standby moves or force delete; multiple hooks created with the group must share a notification target and IAM role; and simple scaling policy activities are paused until lifecycle actions complete and the cooldown expires.">
+
+    <h3>Where the wait states sit</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Phase</th><th>Sequence</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Scale out</td>
+            <td><code>Pending</code> &rarr; <code>Pending:Wait</code> &rarr; <code>Pending:Proceed</code> &rarr; registered with the load balancer &rarr; <code>InService</code>, <em>then</em> the grace period starts</td>
+          </tr>
+          <tr>
+            <td>Scale in</td>
+            <td>deregistered from the load balancer &rarr; <code>Terminating:Wait</code> &rarr; <code>Terminating:Proceed</code> &rarr; terminated</td>
+          </tr>
+          <tr>
+            <td>Root volume replacement</td>
+            <td><code>ReplacingRootVolume:Wait</code> &rarr; <code>RootVolumeReplaced</code> &rarr; <code>Pending</code> &rarr; <code>Pending:Wait</code> &rarr; <code>InService</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      One ordering detail is easy to miss and matters for the load-balancer use case:
+      <em>&ldquo;However, before the instance reaches the InService state, if the Auto Scaling group is
+      associated with an Elastic Load Balancing load balancer, the instance is registered with the load
+      balancer, and the load balancer starts checking its health.&rdquo;</em>
+    </p>
+    <p>
+      Registration happens at the end of the hook, not at the start of the launch. That is what makes a
+      launch hook effective at keeping traffic away from a half-built instance &mdash; the instance is not
+      a target until the hook says so. It also means the load balancer's own health checks begin before
+      <code>InService</code>, which is the reason the grace period exists at all for groups that do not use
+      hooks.
+    </p>
+
+    <h3>Two clocks, and the one you cannot extend past</h3>
+    <p>
+      <em>&ldquo;Instances can remain in a wait state for a finite period of time. The default timeout for
+      a lifecycle hook is one hour (heartbeat timeout). There is also a global timeout that specifies the
+      maximum amount of time that you can keep an instance in a wait state.
+      <strong>The global timeout is 48 hours or 100 times the heartbeat timeout, whichever is
+      smaller.</strong>&rdquo;</em>
+    </p>
+    <p>
+      With the default one-hour heartbeat, 100 heartbeats would be 100 hours, so the ceiling is the 48-hour
+      figure &mdash; two days, and no amount of heartbeating gets past it. The heartbeat is the
+      renewable clock: <em>&ldquo;If you need more time, you can restart the timeout period by recording a
+      heartbeat.&rdquo;</em> The global timeout is not renewable, and the instance lifecycle policy
+      documentation names that ceiling as a reason to reach for retention instead &mdash;
+      <em>&ldquo;Applications requiring extended draining periods that may exceed the maximum lifecycle
+      hook timeout of 48 hours&rdquo;</em>.
+    </p>
+    <p>
+      Worth noting what expiry does on each side. On launch, expiry is benign:
+      <em>&ldquo;By default, the instance remains in a wait state for one hour, and then the Auto Scaling
+      group continues the launch process (Pending:Proceed)&rdquo;</em> &mdash; the instance goes into
+      service even though your bootstrap action never reported success. On termination, expiry is also
+      permissive, and that is the problem.
+    </p>
+
+    <h3>What retention actually is</h3>
+    <p>
+      If a termination hook must not be ignored, the hook is not the feature you need.
+      <em>&ldquo;Instance lifecycle policies provide protection against Amazon EC2 Auto Scaling
+      terminations when a termination lifecycle action is abandoned.&rdquo;</em>
+    </p>
+    <p>
+      The behaviour is stated as a direct comparison:
+      <em>&ldquo;<strong>Without an instance lifecycle policy configured, the instance proceeds to
+      termination immediately even if the termination lifecycle action was completed with ABANDON
+      result.</strong> With an instance lifecycle policy configured to retain instances on
+      <code>TerminateHookAbandon</code>, the instance moves to a retained state if the termination
+      lifecycle action was completed with ABANDON result.&rdquo;</em>
+    </p>
+    <p>
+      So <code>ABANDON</code> changes meaning depending on whether a policy exists. Without one it is a
+      hint that stops later hooks. With one it is the signal that preserves the instance. The same API call
+      with the same argument, two different outcomes, decided by group configuration.
+    </p>
+    <p>
+      Retention is not free, and the documentation is unusually direct about the bill:
+      <em>&ldquo;Instances in retained states continue to incur standard Amazon EC2 charges. These
+      instances don't count toward your Auto Scaling group's desired capacity, so Auto Scaling launches
+      replacement instances to maintain the desired size. Auto Scaling features such as instance refresh
+      and max instance lifetime will also ignore retained instances.&rdquo;</em>
+    </p>
+    <p>
+      Read that carefully: a retained instance is paid for, outside the group's capacity accounting, and
+      invisible to the two mechanisms that would otherwise eventually clean it up. A policy that retains on
+      every abandoned shutdown, in a group with a flaky shutdown script, accumulates paid instances that
+      nothing will ever remove. Retention is a tool for workloads where a failed shutdown genuinely
+      requires a human, and the human is the part you have to supply.
+    </p>
+    <p>
+      Getting rid of one is deliberate too:
+      <em>&ldquo;After you complete the necessary actions on the retained instance, you call the
+      TerminateInstanceInAutoScalingGroup API. This starts a new termination attempt that invokes your
+      termination lifecycle hooks again, so the instance terminates only after you complete the new
+      lifecycle action with the CONTINUE result.&rdquo;</em> The hooks run again, so the cleanup path has
+      to be idempotent.
+    </p>
+
+    <h3>Where hooks do not fire at all</h3>
+    <p>
+      The gaps matter more than the coverage, because each one is a path by which an instance leaves
+      without your action running.
+    </p>
+    <ul>
+      <li>
+        <strong>Attach, detach, standby and force delete.</strong> The footnote on the availability table
+        is explicit: <em>&ldquo;Does not apply when you attach or detach instances, move instances in and
+        out of standby mode, or delete the group with the force delete option.&rdquo;</em> Three of those are things an
+        operator does during an incident, and the fourth is how groups get torn down in a hurry.
+      </li>
+      <li>
+        <strong>Spot interruption.</strong> A hook
+        <em>&ldquo;does not prevent an instance from terminating in the event that capacity is no longer
+        available, which can happen at any time with a two-minute interruption notice&rdquo;</em>. If your
+        shutdown needs more than two minutes, Spot is not the place for it regardless of hooks.
+      </li>
+      <li>
+        <strong>Warm pools.</strong> <em>&ldquo;The stop or hibernate action does not wait for user data to
+        finish running&rdquo;</em>, so an instance entering a warm pool can be stopped mid-bootstrap unless
+        a launching hook holds it.
+      </li>
+    </ul>
+
+    <h3>Two operational side effects</h3>
+    <p>
+      A broken hook does not fail loudly; it slows the group down.
+      <em>&ldquo;Amazon EC2 Auto Scaling limits the rate at which it allows instances to launch if the
+      lifecycle hooks are failing consistently, so make sure to test and fix any permanent errors in your
+      lifecycle actions.&rdquo;</em> So the symptom of a permanently broken launch hook is a group that
+      scales out sluggishly &mdash; which looks like a capacity problem, not a code problem.
+    </p>
+    <p>
+      And hooks interact with the older scaling policies:
+      <em>&ldquo;In most cases when lifecycle hooks are invoked, scaling activities due to simple scaling
+      policies are paused until the lifecycle actions have completed and the cooldown period has
+      expired.&rdquo;</em> An hour-long hook plus a cooldown is an hour in which a simple scaling policy
+      does nothing.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Best-effort on termination is the right default, even though it surprises people</h3>
+    <p>
+      A termination hook that could block indefinitely would turn every scale-in into a potential hang, and
+      a group that cannot shed capacity is a worse failure than a lost buffer flush. Defaulting to
+      <em>proceed anyway</em> keeps the control loop live. The criticism is not the default; it is that the
+      word <em>abandon</em> suggests a veto it does not have.
+    </p>
+
+    <h3>Separating retention into its own policy is better than a flag on the hook</h3>
+    <p>
+      Retention has consequences the hook author cannot see: a paid instance outside capacity accounting,
+      invisible to instance refresh, awaiting a human. Making it a group-level policy rather than a hook
+      option puts the decision where the cost lands, and forces it to be made once deliberately rather
+      than implied by a return value.
+    </p>
+
+    <h3>The hook-before-InService ordering is the quiet good design</h3>
+    <p>
+      Putting the wait before <code>InService</code>, and registration at the end of the hook, is what makes
+      the readiness problem solvable at all. It means readiness is expressed as a state transition rather
+      than as a timer, which is the difference between a correct answer and a guess. The previous post's
+      grace period is the guess; this is the answer.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Readiness on launch</td>
+            <td>Launch hook, grace period near zero</td>
+            <td>The hook waits before <code>InService</code>; the grace period only tolerates being wrong</td>
+          </tr>
+          <tr>
+            <td>Cleanup on termination</td>
+            <td>Hook for the attempt, instance lifecycle policy if it is mandatory</td>
+            <td>The hook alone is best-effort and both results permit termination</td>
+          </tr>
+          <tr>
+            <td>Retention policy scope</td>
+            <td>Only where a failed shutdown genuinely needs a human</td>
+            <td>Retained instances are billed, outside capacity, and ignored by refresh and max lifetime</td>
+          </tr>
+          <tr>
+            <td>Heartbeat timeout</td>
+            <td>Set it to the real action duration, not the default hour</td>
+            <td>Expiry proceeds silently, so a too-long timeout hides a broken action</td>
+          </tr>
+          <tr>
+            <td>Shutdown needing more than two minutes</td>
+            <td>Not on Spot</td>
+            <td>A hook does not prevent an interruption termination</td>
+          </tr>
+          <tr>
+            <td>Cleanup script design</td>
+            <td>Idempotent</td>
+            <td>Terminating a retained instance invokes the termination hooks again</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every termination hook whose purpose is data safety, checked against whether the group has an
+        instance lifecycle policy. Without one, the hook is advisory.
+      </li>
+      <li>
+        Every launch hook paired with a long grace period. The two are alternatives; carrying both means
+        the grace period is hiding how long the hook really takes.
+      </li>
+      <li>
+        Any group scaling out slowly, checked for consistently failing hooks before capacity is blamed.
+      </li>
+      <li>
+        Runbooks that detach instances or force-delete groups, which bypass hooks entirely.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This series has spent several posts on the same shape: a mechanism that looks like a guarantee and
+      is documented as an attempt. Automatic recovery attempts a migration. An aggregate alarm attempts to
+      mean one thing. A termination hook attempts a graceful shutdown. In each case AWS is precise in the
+      documentation and the precision is easy to read past, because the feature name sounds like a promise.
+    </p>
+    <p>
+      The useful habit is to ask what happens when the mechanism fails, and whether the failure is
+      permissive or blocking. Here it is permissive on both sides: a launch hook that never completes puts
+      the instance into service anyway, and a termination hook that never completes terminates it anyway.
+      Both defaults keep the group moving, which is almost certainly right, and both mean the hook is where
+      you express intent rather than where you enforce it.
+    </p>
+    <p>
+      If the shutdown genuinely cannot be skipped, the hook is not the feature. The policy is. And the
+      price of that policy is a billed instance waiting for a person &mdash; which is the honest cost of
+      requiring that something never be skipped.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling warm pools: what the Stopped, Running and Hibernated pool states cost, why the stop action does not wait for user data, how reuse-on-scale-in changes the lifecycle, and when a warm pool is cheaper than a faster bootstrap.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html" target="_blank" rel="noopener">Amazon EC2 Auto Scaling lifecycle hooks &#8212; that a hook provides one hour by default before the instance transitions, that termination hooks are best-effort and a timeout or abandon proceeds with terminating immediately, the heartbeat and global timeouts including the 48 hours or 100 heartbeats rule, the abandon and continue semantics on each side of the lifecycle, that a hook does not prevent a Spot interruption termination on a two-minute notice, that consistently failing hooks cause Auto Scaling to limit the launch rate, that the health check grace period starts when the instance reaches <code>InService</code>, the shared notification target and IAM role constraint for hooks created with the group, that hooks do not apply to attach, detach, standby moves or force delete, the warm pool stop or hibernate not waiting for user data, and the pausing of simple scaling policy activities</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks-overview.html" target="_blank" rel="noopener">How lifecycle hooks work in Auto Scaling groups &#8212; the <code>Pending:Wait</code> and <code>Pending:Proceed</code> transitions and the one-hour default with heartbeat restart, that the instance enters <code>InService</code> and the health check grace period then starts, that load balancer registration and its health checks begin before <code>InService</code>, and the <code>Terminating:Wait</code> to <code>Terminating:Proceed</code> transition on scale in</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-lifecycle-policy.html" target="_blank" rel="noopener">Control instance retention with instance lifecycle policies &#8212; that the policy protects against terminations when a termination lifecycle action is abandoned, the explicit comparison of behaviour with and without a policy configured to retain on <code>TerminateHookAbandon</code>, that retained instances keep incurring EC2 charges and are excluded from desired capacity, instance refresh and max instance lifetime, the 48-hour maximum hook timeout as a reason to use retention, and that terminating a retained instance re-invokes the termination hooks and requires a <code>CONTINUE</code> result</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-check-grace-period.html" target="_blank" rel="noopener">Set the health check grace period for an Auto Scaling group &#8212; further reading on the setting a launch hook replaces, covered in #121; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/completing-lifecycle-hooks.html" target="_blank" rel="noopener">Complete a lifecycle action in an Auto Scaling group &#8212; further reading on <code>complete-lifecycle-action</code> and recording a heartbeat; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-lifecycle.html" target="_blank" rel="noopener">Amazon EC2 Auto Scaling instance lifecycle &#8212; further reading on the full set of lifecycle states; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/week-14-postgres-no-passwords/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 14 — A Database With No Password, and a Failover Measured From the Client</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-asg-lifecycle-hooks/';
+      this.page.identifier = 'aws-architecture-asg-lifecycle-hooks';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=560bb578"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
