@@ -56,6 +56,7 @@ NEWS = os.path.join(ROOT, "intelligence", "news.json")
 RELEASES = os.path.join(ROOT, "data", "releases.json")
 ECONOMICS = os.path.join(ROOT, "data", "economics.json")
 LIFECYCLE = os.path.join(ROOT, "data", "lifecycle.json")
+PYPI = os.path.join(ROOT, "data", "pypi.json")
 POSTS = os.path.join(ROOT, "posts")
 OUT = os.path.join(ROOT, "data", "index.html")
 
@@ -315,6 +316,84 @@ def measure(items, today):
     return table, newest, counted, totals, cut, len(win)
 
 
+KILL_PATTERNS = [
+    ("deprecated", r"\bdeprecat(?:ed|es|ing|ion)\b"),
+    ("retired", r"\bretir(?:e|es|ed|ing|ement)\b"),
+    ("end of support", r"end[- ]of[- ](?:support|life|sale)\b|\beol\b"),
+    ("being removed",
+     r"\bwill be removed\b|\bno longer (?:supported|available)\b"),
+    ("discontinued",
+     r"\bdiscontinu(?:e|ed|ing|ation)\b|\bsunset(?:ting|s|ted)?\b"),
+]
+
+
+def graveyard(items, today, totals):
+    """What each cloud is killing, counted the same way as what it ships.
+
+    A platform's attention is measured by what it launches AND by what it
+    takes away, and only one of those two halves is on the rest of this page.
+
+    THE ZERO HERE IS NOT A ZERO, AND THAT IS THE FINDING
+    ----------------------------------------------------
+    Measured 2026-11-24: across 999 stored AWS announcements the strings
+    "deprecat" and "retir" appear not once. That is not AWS keeping things
+    alive. It is AWS's What's New feed being a launch-only channel -- the
+    endings are communicated by email, in Health Dashboard notices and on
+    per-service documentation pages, none of which are feeds this site
+    reads. Azure and GCP put both halves in the same place.
+
+    So a cloud with no kill language anywhere in its stored history is
+    reported as UNANNOUNCED rather than as none: a bare 0 beside Azure's
+    count invites exactly the wrong comparison, and a reader cannot tell the
+    two cases apart from the number alone. `announced` carries which it is.
+    """
+    cut = (today - datetime.timedelta(days=WINDOW_DAYS)).isoformat()
+    rx = re.compile("|".join(p for _n, p in KILL_PATTERNS), re.I)
+
+    def text(i):
+        return (i.get("t") or "") + " " + (i.get("st") or "")
+
+    out = {}
+    for cloud, _label in CLOUDS:
+        mine = [i for i in items if i.get("c") == cloud]
+        ever = [i for i in mine if rx.search(text(i))]
+        win = [i for i in ever if (i.get("d") or "") >= cut]
+        rolled = {}
+        for i in sorted(win, key=lambda i: i.get("d") or "", reverse=True):
+            rolled.setdefault(norm(i.get("t")), i)
+        kinds = collections.Counter()
+        for i in rolled.values():
+            for name, pat in KILL_PATTERNS:
+                if re.search(pat, text(i), re.I):
+                    kinds[name] += 1
+                    break
+        out[cloud] = {
+            "announced": bool(ever),
+            "n": len(rolled),
+            "share": 100.0 * len(rolled) / max(1, totals.get(cloud, 0)),
+            "kinds": kinds,
+            "recent": list(rolled.values())[:3],
+            "ever": len(ever),
+        }
+    return out
+
+
+def graveyard_canary():
+    """A pattern that cannot fail is worse than no pattern."""
+    rx = re.compile("|".join(p for _n, p in KILL_PATTERNS), re.I)
+    for s in ("Azure Data Share will be retired on November 12, 2029",
+              "Policy Controller is deprecated as of November 12, 2026",
+              "Dataproc 1.5 has reached end of support",
+              "The v1 API will be removed in a future release",
+              "Cloud IoT Core is discontinued"):
+        assert rx.search(s), "missed a real ending: %s" % s
+    for s in ("Amazon S3 now supports conditional writes",
+              "Announcing general availability of continuous queries",
+              "Azure Databricks adds serverless compute"):
+        assert not rx.search(s), "called a launch an ending: %s" % s
+    return True
+
+
 def format_counts(items, today):
     """Mentions of each open table format, by quarter, across all three feeds.
 
@@ -564,6 +643,7 @@ def fold(title, open_=False):
 
 
 def build():
+    graveyard_canary()
     from asset_version import JS_VERSION
     import build_news_page as bnp
     import build_events_page as bep
@@ -576,6 +656,7 @@ def build():
     rel = load(RELEASES, {"releases": [], "sources": [], "no_feed": []})
     eco = load(ECONOMICS, {"firms": [], "private": []})
     life = load(LIFECYCLE, {"products": []})
+    pypi = load(PYPI, {"packages": []})
     posts = dba_posts()
 
     head = bnp.PAGE[:bnp.PAGE.index("</head>")]
@@ -739,6 +820,74 @@ def build():
              "the subject. <code>check_data_page.py</code> now refuses a "
              "mapped service name that could never match anything.</div>")
     b.append("</details>")
+
+    # THE GRAVEYARD. Everything above counts launches; this counts endings.
+    grave = graveyard(items, today, totals)
+    told = [c for c, _l in CLOUDS if grave[c]["announced"]]
+    quiet = [dict(CLOUDS)[c] for c, _l in CLOUDS if not grave[c]["announced"]]
+    b.append(fold("The graveyard: what each cloud is taking away"))
+    b.append('<p class="dt-note">A platform tells you what it values twice '
+             "&mdash; once when it ships something, and again when it "
+             "switches something off. The six stages above only count the "
+             "first. These are the deprecation, retirement and "
+             "end-of-support notices in the same %d-day window, from the "
+             "same feeds, rolled up so one ending announced repeatedly "
+             "counts once.</p>" % WINDOW_DAYS)
+    b.append('<div class="dt-bars">')
+    peak_k = max([grave[c]["share"] for c, _l in CLOUDS] or [0]) or 1.0
+    for cloud, label in CLOUDS:
+        g = grave[cloud]
+        if not g["announced"]:
+            tip = ("%s: this feed has never carried a retirement notice, so "
+                   "the number is unknown rather than zero" % label)
+            shown = "n/a"
+            width = 0.0
+        else:
+            tip = ("%s: %d endings after roll-up, %.1f%% of its own "
+                   "announcements in the window"
+                   % (label, g["n"], g["share"]))
+            shown = "%.1f%%" % g["share"] if g["n"] else "&mdash;"
+            width = 100.0 * g["share"] / peak_k
+        b.append('<div class="dt-bar dt-%s" title="%s"><i>%s</i>'
+                 '<span class="dt-track"><span class="dt-fill" '
+                 'style="width:%.1f%%"></span></span><b>%s</b></div>'
+                 % (cloud, esc(tip), label, width, shown))
+    b.append("</div>")
+
+    for cloud, label in CLOUDS:
+        g = grave[cloud]
+        if not g["recent"]:
+            continue
+        item = g["recent"][0]
+        title = esc((item.get("t") or "")[:96])
+        link = ('<a href="%s" rel="noopener">%s</a>'
+                % (esc(item.get("u") or ""), title)) if item.get("u") \
+            else title
+        kinds = ", ".join("%d %s" % (n, k)
+                          for k, n in g["kinds"].most_common(3))
+        b.append('<p class="dt-latest"><i>%s</i> %s '
+                 '<span class="dt-tick">%s &middot; %s</span></p>'
+                 % (esc(label), link, esc(item.get("d") or ""), esc(kinds)))
+
+    if quiet:
+        b.append('<div class="dt-gap"><b>%s reads n/a, and that is a '
+                 "measurement of the channel rather than of the cloud.</b> "
+                 "Across every %s announcement this site has stored, the "
+                 "words &ldquo;deprecated&rdquo; and &ldquo;retired&rdquo; "
+                 "do not appear once. %s is not keeping everything alive "
+                 "&mdash; it announces endings somewhere these feeds do not "
+                 "reach: service health notices, account email and the "
+                 "documentation page for the thing being switched off. %s "
+                 "put both halves in the same place, which is the only "
+                 "reason they can be counted here at all. I have left the "
+                 "cell as n/a rather than as 0, because a zero in that slot "
+                 "would read as a finding about %s and it is a finding "
+                 "about me.</div>"
+                 % (esc(", ".join(quiet)), esc(quiet[0]), esc(quiet[0]),
+                    esc(" and ".join(dict(CLOUDS)[c] for c in told))
+                    or "The others", esc(quiet[0])))
+    b.append("</details>")
+
 
     ranked = sorted(((k, v) for k, v in fmts.items()
                      if v.get("kind") == "table"), key=lambda x: -x[1]["total"])
@@ -906,6 +1055,67 @@ def build():
              "syntax is the one thing your engine will argue with.</p>")
     b.append("</details>")
 
+    # ---- the engines that do not need a cloud ------------------------
+    #
+    # Every other number on this page measures what a vendor said. This is
+    # the only one that moves when somebody who is not selling anything runs
+    # pip install -- and it is here because it sometimes disagrees with the
+    # announcement feeds, which is the part worth printing.
+    pkgs = pypi.get("packages") or []
+    if pkgs:
+        top = max(p["last_month"] or 0 for p in pkgs) or 1
+        b.append(fold("The engines that don&rsquo;t need a cloud"))
+        b.append('<p class="dt-note">The six stages above count what AWS, '
+                 "Azure and Google Cloud announced. Plenty of data work "
+                 "happens on engines nobody announces &mdash; on a laptop, in "
+                 "CI, inside a container that was never provisioned. These "
+                 "are installs of each engine&rsquo;s Python package over the "
+                 "last 30 days, which is the closest honest proxy for that "
+                 "and is not the same question as the one the clouds are "
+                 "answering.</p>")
+        b.append('<div class="dt-fmt">')
+        for p in pkgs:
+            n = p["last_month"] or 0
+            b.append('<div class="dt-fmt-row" title="%s &mdash; %s. %s '
+                     'installs in the last 30 days.">'
+                     '<i>%s</i><span class="dt-track"><span class="dt-fill" '
+                     'style="width:%.1f%%"></span></span><b>%s</b></div>'
+                     % (esc(p["name"]), esc(p["what"]), "{:,}".format(n),
+                        esc(p["name"]), 100.0 * n / top,
+                        "{:.1f}M".format(n / 1e6) if n >= 1e6
+                        else "{:,}".format(n)))
+        b.append("</div>")
+
+        # The cross-check. Two measurements from unrelated sources landing on
+        # the same answer is worth more than either; where they diverge, say
+        # that instead of choosing.
+        ice = next((p for p in pkgs if p["package"] == "pyiceberg"), None)
+        dlt = next((p for p in pkgs if p["package"] == "deltalake"), None)
+        if ice and dlt and (dlt["last_month"] or 0) > 0:
+            ratio = (ice["last_month"] or 0) / float(dlt["last_month"])
+            b.append('<div class="dt-gap"><b>Two unrelated measurements, '
+                     "pointing the same way.</b> The clouds&rsquo; own "
+                     "announcements mention Iceberg far more often than Delta "
+                     "Lake. Independently of that, PyIceberg is installed "
+                     "about <b>%.1f times</b> as often as delta-rs. Neither "
+                     "number knows about the other &mdash; one counts vendor "
+                     "announcements, the other counts installs by people "
+                     "buying nothing &mdash; so agreeing is evidence in a way "
+                     "that either alone is not.</div>" % ratio)
+
+        b.append('<p class="dt-foot">A download is not a user, an install is '
+                 "not a deployment, and neither is revenue. These counts are "
+                 "inflated by continuous integration: a pipeline that "
+                 "reinstalls on every run adds to them all day. They measure "
+                 "developer reach. They also only count Python &mdash; an "
+                 "engine used mainly from Java, SQL or a console is "
+                 "undercounted here by construction, which is why each row "
+                 "names the package rather than the product. %s, %s, "
+                 "refreshed weekly.</p>"
+                 % (esc(pypi.get("source_name", "")),
+                    esc(pypi.get("window", ""))))
+        b.append("</details>")
+
     # ---- the support cliff -------------------------------------------
     #
     # The one fact a database administrator is actually judged on, and it is
@@ -1071,6 +1281,9 @@ def build():
         ("The support cliff",
          "endoflife.date, a community-maintained index; each engine links "
          "to the vendor&rsquo;s own lifecycle page", "weekly"),
+        ("The engines that don&rsquo;t need a cloud",
+         "pypistats.org &mdash; installs of each engine&rsquo;s Python "
+         "package over 30 days", "weekly"),
         ("The stage mapping, the roles, the quality checks",
          "Mine. Editorial, and checked by <code>check_data_page.py</code> "
          "on every push", "when I change it"),

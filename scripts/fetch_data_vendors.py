@@ -152,6 +152,24 @@ def _link(el):
     return ""
 
 
+def is_component_tag(title, vendor):
+    """True when the tag belongs to a SUB-PROJECT, not the project itself.
+
+    Airflow tags its CLI as `airflow-ctl/0.1.6` and its provider packages as
+    `providers-amazon/...`. Counted as Airflow releases, a monorepo's cadence
+    becomes a function of how many components it ships separately, and the
+    engines table compares that against projects that tag once.
+
+    Containment is not enough: "airflow-ctl" contains "airflow". The prefix
+    has to BE the project token, not merely include it.
+    """
+    if "/" not in title:
+        return False
+    prefix = title.split("/", 1)[0].strip().lower()
+    token = vendor.lower().replace("apache ", "").replace(" ", "")
+    return prefix.replace("-", "").replace("_", "") != token
+
+
 def parse(name, layer, kind, body):
     root = ET.fromstring(body)
     entries = root.findall(".//a:entry", ATOM) or root.findall(".//item")
@@ -164,6 +182,8 @@ def parse(name, layer, kind, body):
                            "{http://purl.org/dc/elements/1.1/}date"))
         if kind == "release":
             if PRERELEASE_RE.search(title) or not RELEASE_RE.search(title):
+                continue
+            if is_component_tag(title, name):
                 continue
         out.append({"vendor": name, "layer": layer, "kind": kind,
                     "title": re.sub(r"\s+", " ", title)[:160],
@@ -217,6 +237,11 @@ def canary():
            "<link>https://example.invalid/d</link></item></channel></rss>")
     got = parse("Y", "store", "blog", rss.encode())
     assert len(got) == 1 and got[0]["date"] == "2026-11-20", got
+
+    assert is_component_tag("airflow-ctl/0.1.6", "Apache Airflow"),         "a sub-project tag must not count as a project release"
+    assert is_component_tag("providers-amazon/9.1.0", "Apache Airflow")
+    assert not is_component_tag("airflow/3.1.2", "Apache Airflow")
+    assert not is_component_tag("v1.12.0", "Apache Iceberg")
     return True
 
 
@@ -270,6 +295,23 @@ def main():
                     held[(r["vendor"], r["title"], r["date"])] = r
         except (ValueError, KeyError):
             pass            # a corrupt file is replaced, not merged into
+    # Re-apply today's rules to what is already held. Merging only ever
+    # adds, which is right for history and wrong for a record that should
+    # never have been stored: when the component-tag filter arrived, the
+    # airflow-ctl tag it was written to reject was already in the file and
+    # would have outlived the fix. The filter is the contract; held rows obey
+    # it too.
+    dropped = [k for k, r in held.items()
+               if r.get("kind") == "release"
+               and (PRERELEASE_RE.search(r["title"])
+                    or not RELEASE_RE.search(r["title"])
+                    or is_component_tag(r["title"], r["vendor"]))]
+    for k in dropped:
+        del held[k]
+    if dropped:
+        print("dropped %d held row(s) the current rules reject: %s"
+              % (len(dropped), ", ".join(k[1][:28] for k in dropped[:4])))
+
     before = len(held)
     for r in rows:
         held.setdefault((r["vendor"], r["title"], r["date"]), r)

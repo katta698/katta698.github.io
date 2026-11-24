@@ -92,6 +92,51 @@ def canary(stages, items, window_days):
     assert dead[0][2] == "Amazon Definitely Not A Service", dead
 
 
+def check_graveyard(bdp, items):
+    """The graveyard's n/a is an editorial claim, so it has to stay true.
+
+    The page says in prose that one cloud's feeds have never carried a
+    retirement notice. The moment that cloud announces one, the paragraph is
+    a false statement sitting under a correct number -- which is exactly how
+    the Azure govern/decide blanks came to be explained wrongly on this same
+    page. So: assert the page's n/a cells and the data agree, in both
+    directions.
+    """
+    bdp.graveyard_canary()
+    today = datetime.date.today()
+    cut = (today - datetime.timedelta(days=bdp.WINDOW_DAYS)).isoformat()
+    totals = {}
+    for i in items:
+        if (i.get("d") or "") >= cut:
+            totals[i.get("c")] = totals.get(i.get("c"), 0) + 1
+    g = bdp.graveyard(items, today, totals)
+
+    html = ""
+    if os.path.exists(PAGE):
+        with io.open(PAGE, encoding="utf-8") as f:
+            html = f.read()
+
+    problems = 0
+    print("graveyard: " + ", ".join(
+        "%s %s" % (c, ("n/a" if not g[c]["announced"] else g[c]["n"]))
+        for c, _l in bdp.CLOUDS))
+    for cloud, label in bdp.CLOUDS:
+        row = g[cloud]
+        claim = ("%s reads n/a" % label) in html
+        if claim and row["announced"]:
+            print("\nFAIL: the page states %s has never announced an ending, "
+                  "and %d stored %s announcements now say otherwise. The "
+                  "paragraph is false, not the number."
+                  % (label, row["ever"], label))
+            problems += 1
+        if not row["announced"] and not claim and html:
+            print("\nFAIL: %s has no ending ever announced in its feeds, and "
+                  "the page does not explain the n/a. An unexplained n/a "
+                  "beside two real numbers reads as zero." % label)
+            problems += 1
+    return problems
+
+
 def main():
     import build_data_page as bdp
 
@@ -140,6 +185,8 @@ def main():
                   "still ahead of it. Either every tracked version is "
                   "dead, which it is not, or the fetch has stopped.")
             problems += 1
+
+    problems += check_graveyard(bdp, items)
 
     if not os.path.exists(DIAGRAM):
         print("\nFAIL: %s is missing and the page links it"
