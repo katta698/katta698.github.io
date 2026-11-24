@@ -60,7 +60,15 @@ SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 # name -> reason. A check listed here is exempt from the comparison.
 # Keep this empty if you can; an entry is a claim that the code and the set
 # disagree for a good reason, and it should say what that reason is.
-EXCEPTIONS = {}
+EXCEPTIONS = {
+    # Not a push check. It is a before/after instrument for a change
+    # to the shared nav: it needs two captures taken either side of
+    # the edit, against a running server, and it has nothing to say
+    # about a tree on its own -- run with no arguments it prints how
+    # to use it and passes. Declaring it in BROWSER would make every
+    # push pay for a browser it never opens.
+    "check_nav_shift": "manual before/after tool; no-ops with no args",
+}
 
 
 def _module_imports(path, _seen=None):

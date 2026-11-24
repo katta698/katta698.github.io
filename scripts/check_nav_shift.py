@@ -248,6 +248,15 @@ def main():
     ap.add_argument("--expect-new", default="Data")
     a = ap.parse_args()
 
+    # Collected by the checks registry, which runs every scripts/check_*.py
+    # with no arguments. This one is a manual before/after instrument: it
+    # needs two captures and a running server, and it has nothing to say on
+    # a push. Say so and pass, rather than crash the hook.
+    if not a.diff and not a.base:
+        print("manual tool -- needs --base <url> --out <file>, then --diff "
+              "<before> <after>. Nothing to check on its own.")
+        return 0
+
     if a.diff:
         with io.open(a.diff[0], encoding="utf-8") as f:
             before = json.load(f)
