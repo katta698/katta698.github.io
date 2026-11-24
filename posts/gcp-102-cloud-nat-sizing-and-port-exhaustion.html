@@ -1,0 +1,480 @@
+---
+title: "GCP Architecture Series #102 — Cloud NAT Sizing, and the Port Exhaustion Failure"
+date: '2026-11-23T09:00:00'
+slug: gcp-architecture-cloud-nat-sizing-and-port-exhaustion
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-11-23'
+verified_claims:
+  - claim: "the gateway can provide NAT services for up to 1,008 VMs"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "With two NAT IP addresses, keeping the minimum number of ports per VM at 64, you can support 2,016 VMs"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "If you set the minimum number of ports per VM to 4,096, each NAT IP address can support 15 VMs"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "Each NAT IP address on a Cloud NAT gateway (both Public NAT and Private NAT) offers 64,512 TCP source ports and 64,512 UDP source ports"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "Round down the result of any division operation to the closest integer"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "When using manual NAT IP address assignment, you must calculate the number of regional external IP addresses that you need for the Public NAT gateway"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "If your gateway runs out of NAT IP addresses, Public NAT drops packets"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "Dropped packets are logged when you use Cloud NAT logging to turn on error logging"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "The minimum subnet size that you can create is eight IPv4 addresses, which is a subnet mask of /29"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "Google Cloud allocates double the number of required ports per VM for reliability"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "if you set the minimum number of ports per VM instance to 1024, the gateway can provide NAT services for up to 126 VMs"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "If you configure a Private NAT gateway with a NAT subnet mask of /28 , and you set the minimum number of ports per VM instance to 64, the gateway can provide NAT services for up to 6,048 VMs"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "Going from a /29 to a /28 at 64 ports per VM takes a Private NAT gateway from 2,016 to 6,048 VMs, a factor of 3"
+    derive: "6048 / 2016"
+    expect: "3"
+    source: https://docs.cloud.google.com/nat/docs/ports-and-addresses
+  - claim: "NAT gateways 50 per Cloud Router"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "Each network supports up to 5 Cloud Router instances per region, so you can have up to 250 Cloud NAT gateways per region per Virtual Private Cloud (VPC) network"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "NAT IP addresses per gateway 300 manual addresses 2,500 auto-allocated addresses"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "Subnet ranges 50 per gateway"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "NAT IP addresses can't be shared between NAT gateways"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "A manually addressed Public NAT gateway is capped at 300 addresses, an absolute ceiling of 19,353,600 ports"
+    derive: "300 * 64512"
+    expect: "19353600"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "this might be because there are not enough available NAT source IP address and source port tuples for the VM to use at the time of the packet loss (port exhaustion)"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "A five-tuple (NAT source IP address, source port, and destination 3-tuple) cannot be reused within the TCP TIME_WAIT timeout"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "If there aren't enough available NAT tuples, the dropped_sent_packets_count reason is OUT_OF_RESOURCES"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "reason : The reason for the packet drop. Possible values are OUT_OF_RESOURCES, ENDPOINT_INDEPENDENCE_CONFLICT"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "Indicates if there is a failure in allocating NAT IPs to any VM in the NAT gateway"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "Dynamic port allocation detects when a VM is close to being out of ports, and doubles the number of ports that are allocated to the VM"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "This helps ensure that ports aren't wasted, but can result in dropped packets while the number of allocated ports is increasing"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "If you can ramp up connections more slowly, Cloud NAT has more time to allocate more ports"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "you can configure the VMs with a larger value for tcp_syn_retries , which gives the system more time to establish the connection and increases the chances for the connection to succeed"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "Increasing the value for tcp_syn_retries can lead to latency because the system keeps dropping packets until the connection succeeds after multiple retries"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "Cloud NAT does not log every single event"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "During periods of heavy egress traffic, NAT logging is throttled, proportional to the machine type of the VM"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "Translation or error logs might be dropped, and it is not possible to determine what is omitted during throttling"
+    source: https://docs.cloud.google.com/nat/docs/troubleshooting
+  - claim: "You can get this information by using the compute.googleapis.com/nat/port_usage metric"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "nat/port_usage GA (project) Port usage GAUGE , INT64 , {port} gce_instance Maximum number of connections from a VM to a single internet endpoint (IP:port)"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "nat/allocated_ports GA (project) Allocated ports GAUGE , INT64 , {port} gce_instance Number of ports allocated to a VM by the NAT gateway"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "Sampled every 60 seconds. After sampling, data is not visible for up to 180 seconds"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "Sampled every 60 seconds. After sampling, data is not visible for up to 225 seconds"
+    source: https://docs.cloud.google.com/nat/docs/monitoring
+  - claim: "Review your maximum port usage for the past 30 days, or for another period that you think is representative for your Cloud NAT gateway"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "If you are using static port allocation, configure the number of ports per VM so that the minimum is equal to your current peak port usage"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "If you are using dynamic port allocation, configure the number of ports per VM so that the minimum is lower than the peak port usage and the maximum is higher than the peak port usage"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "Before you increase the number of ports per VM, consider other strategies for reducing port usage"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "MIN_PORTS must be a power of 2 , and can be between 32 and 32768"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "MAX_PORTS must be a power of 2 , and can be between 64 and 65536 . MAX_PORTS must be greater than MIN_PORTS . The default is 65536"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "You can modify the default timeout values to decrease or increase the rate at which ports are reused"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "Timeout processing has a variance of up to five seconds, meaning the actual expiration time might occur up to five seconds earlier or later than the configured timeout value"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "To avoid dropped packets, set this timeout to at least 15 seconds"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "Regardless of the value that you set for this timeout, Cloud NAT might require up to an additional 30 seconds before a Cloud NAT source IP address and source port tuple can be used to process a new connection"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "For gateways that are created after September 30, 2026 , the default value is 30 seconds"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "run the gcloud compute routers nats describe command and locate the effectiveTcpTimeWaitTimeoutSec field in the output"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "1200 seconds (20 minutes)"
+    source: https://docs.cloud.google.com/nat/docs/tune-nat-configuration
+  - claim: "Some servers, such as legacy DNS servers, require UDP port randomization across 64,000 ports for enhanced security. For these servers, assign an external IP address instead of using Cloud NAT"
+    source: https://docs.cloud.google.com/nat/quota
+  - claim: "Cloud NAT doesn't provide application-level gateway (ALG) capabilities"
+    source: https://docs.cloud.google.com/nat/quota
+problem: "Port exhaustion does not raise an error, reject an API call, or mark a resource unhealthy. It drops packets. The signal is a reason label on a counter that is sampled every 60 seconds and invisible for up to another 180, and the logs that would explain it are throttled in proportion to egress volume — which is to say, throttled hardest at the moment the problem occurs."
+builds: "The capacity formula and Google's own worked figures, including the Private NAT doubling that halves a subnet's apparent size; the three ceilings that are not the port count, and why a second gateway is a second pool rather than a bigger one; how exhaustion actually presents, and the two drop reasons with identical symptoms; why the metric named “Port usage” does not measure port usage; and the tuning levers with the floors that make small timeout values pointless."
+catch: "“During periods of heavy egress traffic, NAT logging is throttled, proportional to the machine type of the VM … Translation or error logs might be dropped, and it is not possible to determine what is omitted during throttling.” Heavy egress is exactly when ports run out, so the evidence thins as the incident peaks — and the documentation is explicit that you cannot tell how much is missing."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #102 &middot; Networking</div>
+  <h1 class="post-title">Cloud NAT Sizing, and the Port Exhaustion Failure</h1>
+  <p class="post-subtitle">It does not raise an error. It drops packets, reports them late, and throttles the log while it happens.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>Google Cloud &middot; Networking &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Yesterday's post was the allocation mechanism. This one is the consequence: how many VMs a gateway actually serves, and what happens at the edge of that number. The arithmetic is simple. The failure is not, because it does not announce itself as a failure.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Intermittent connection failures to one API, and every component looks healthy"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          This is port exhaustion, and the reason it survives a full round of health checks is that nothing is unhealthy. <em>If your gateway runs out of NAT IP addresses, Public NAT drops packets.</em> The troubleshooting page is more precise about the mechanism &mdash; the loss happens because <em>there are not enough available NAT source IP address and source port tuples for the VM to use at the time of the packet loss (port exhaustion)</em>, and <em>a five-tuple (NAT source IP address, source port, and destination 3-tuple) cannot be reused within the TCP TIME_WAIT timeout.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Go straight to the reason label rather than to the gateway's status: <em>if there aren't enough available NAT tuples, the dropped_sent_packets_count reason is OUT_OF_RESOURCES.</em> That counter is the diagnosis. The gateway will not report a problem, because from its point of view there isn't one &mdash; it was asked for a tuple it did not have, and it declined.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Our Private NAT subnet is sized for twice the VMs it actually serves"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Two separate factors bite, and both halve what you expected. <em>Google Cloud allocates double the number of required ports per VM for reliability</em>, and four addresses in the range are never usable. Google's own worked example is the fastest way to see the combined effect: on a minimum-size subnet, <em>if you set the minimum number of ports per VM instance to 1024, the gateway can provide NAT services for up to 126 VMs.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Put both the <code>&times; 2</code> and the four unusable addresses in the formula before you choose a prefix, and remember that <em>the minimum subnet size that you can create is eight IPv4 addresses, which is a subnet mask of /29.</em> A /29 therefore yields four usable NAT addresses, not eight, and each of those is divided by twice your configured minimum.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We raised the minimum ports per VM and ran out of addresses"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Expected, and it is the trade the formula makes explicit. With a single manually assigned address and a minimum of 64 ports, <em>the gateway can provide NAT services for up to 1,008 VMs.</em> Raise the minimum and that collapses: <em>if you set the minimum number of ports per VM to 4,096, each NAT IP address can support 15 VMs.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Follow the documented order of operations, which puts demand reduction ahead of supply increase: <em>before you increase the number of ports per VM, consider other strategies for reducing port usage.</em> If you must raise it, add addresses in the same change &mdash; <em>when using manual NAT IP address assignment, you must calculate the number of regional external IP addresses that you need for the Public NAT gateway.</em>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A floor division, three ceilings that are not the port count, and a failure mode with no error.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-102-cloud-nat-sizing-and-port-exhaustion.svg" alt="Diagram: Cloud NAT sizing and the port exhaustion failure; capacity is a floor division of NAT addresses times 64,512 ports by the ports per VM, giving Google's figures of 1,008 VMs on one address at 64 ports, 2,016 on two, and 15 when the minimum is 4,096, with Private NAT dividing by twice the minimum and losing four unusable addresses per subnet; the ceilings are 300 manual or 2,500 auto-allocated addresses per gateway, 50 gateways per Cloud Router and 250 per region per network, and addresses cannot be shared between gateways so a manual gateway tops out at 19,353,600 ports; exhaustion presents as a dropped sent packet with reason OUT_OF_RESOURCES alongside a boolean NAT allocation failed gauge, with dynamic allocation dropping packets while it grows; the evidence is weakest when it matters because NAT logging is throttled in proportion to machine type during heavy egress with no way to tell what was omitted, metrics are sampled every 60 seconds and invisible for up to 180 or 225 seconds, and the metric named Port usage reports maximum connections to a single endpoint rather than ports consumed; and the levers are minimum and maximum ports as powers of two plus the timeouts, which carry a five second variance, a 15 second floor and an extra 30 seconds before a tuple is reusable" />
+      <figcaption>The arithmetic is the easy half.</figcaption>
+    </figure>
+
+    <h3>The capacity formula</h3>
+    <p>
+      Capacity is one division, and the instruction that goes with it matters: <em>round down the result of any division operation to the closest integer.</em> Addresses multiplied by 64,512 usable ports, divided by the ports allocated per VM, floored.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Configuration</th>
+            <th>VMs served</th>
+            <th>What moved</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1 address, 64 ports per VM</td>
+            <td>1,008</td>
+            <td>baseline</td>
+          </tr>
+          <tr>
+            <td>2 addresses, 64 ports per VM</td>
+            <td>2,016</td>
+            <td>addresses doubled, capacity doubled</td>
+          </tr>
+          <tr>
+            <td><strong>1 address, 4,096 ports per VM</strong></td>
+            <td><strong>15</strong></td>
+            <td><strong>the divisor dominates</strong></td>
+          </tr>
+          <tr>
+            <td>Private NAT /29, 64 ports per VM</td>
+            <td>2,016</td>
+            <td>4 usable addresses, divided by 64 &times; 2</td>
+          </tr>
+          <tr>
+            <td>Private NAT /29, 1,024 ports per VM</td>
+            <td>126</td>
+            <td>the doubling, made visible</td>
+          </tr>
+          <tr>
+            <td>Private NAT /28, 64 ports per VM</td>
+            <td>6,048</td>
+            <td>one prefix bit, a factor of 3</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      That last row is worth a second look, because it is not the factor of two a prefix bit normally buys. Going from a /29 to a /28 takes the gateway from 2,016 to 6,048 VMs &mdash; a factor of 3, because the usable count is <code>2^(32-prefix) - 4</code> rather than <code>2^(32-prefix)</code>, so subtracting the four unusable addresses hurts small subnets disproportionately. At the smallest sizes, one extra bit is worth more than doubling.
+    </p>
+
+    <h3>Three ceilings, and none of them is the port count</h3>
+    <p>
+      The formula suggests you can buy your way out with addresses. There are limits on that, and they are not where people look.
+    </p>
+    <p>
+      <strong>Addresses per gateway.</strong> <em>NAT IP addresses per gateway 300 manual addresses 2,500 auto-allocated addresses.</em> The assignment method you chose for predictability &mdash; manual, so you can hand a fixed set of addresses to a partner's allowlist &mdash; costs you most of the headroom. At 300 manual addresses the absolute port ceiling of one gateway is 19,353,600, and no configuration change raises it.
+    </p>
+    <p>
+      <strong>Gateways.</strong> <em>NAT gateways 50 per Cloud Router</em>, and <em>each network supports up to 5 Cloud Router instances per region, so you can have up to 250 Cloud NAT gateways per region per Virtual Private Cloud (VPC) network.</em>
+    </p>
+    <p>
+      <strong>Subnet ranges.</strong> <em>Subnet ranges 50 per gateway</em>, when you enumerate ranges rather than selecting all of them.
+    </p>
+    <p>
+      And the sentence that stops the obvious workaround from being a workaround: <em>NAT IP addresses can't be shared between NAT gateways.</em> Splitting a busy subnet across two gateways gives you two independent pools, not one larger one, and a VM is served by exactly one of them. That is a partitioning decision about which workloads share a budget &mdash; not extra capacity for the same workload.
+    </p>
+
+    <h3>How exhaustion presents</h3>
+    <p>
+      There are two signals and they answer different questions. The per-VM counter tells you what happened: <em>dropped_sent_packets_count</em>, with a reason label where <em>possible values are OUT_OF_RESOURCES, ENDPOINT_INDEPENDENCE_CONFLICT.</em> Two different faults, identical symptoms, one metric &mdash; so reading the counter without the label tells you a packet was dropped and nothing more.
+    </p>
+    <p>
+      The gateway-level signal is coarser than it looks. <em>nat/nat_allocation_failed</em> <em>indicates if there is a failure in allocating NAT IPs to any VM in the NAT gateway.</em> A boolean, for the whole gateway, about any VM. Useful as an alert; useless as a diagnosis.
+    </p>
+    <p>
+      Dynamic allocation adds a failure mode of its own that is not exhaustion at all, and it is easy to mistake for one. <em>Dynamic port allocation detects when a VM is close to being out of ports, and doubles the number of ports that are allocated to the VM.</em> But: <em>this helps ensure that ports aren't wasted, but can result in dropped packets while the number of allocated ports is increasing.</em> So a fleet with plenty of spare capacity still drops packets during a ramp, and the remedies are about pacing rather than capacity &mdash; <em>if you can ramp up connections more slowly, Cloud NAT has more time to allocate more ports</em>, or <em>you can configure the VMs with a larger value for tcp_syn_retries, which gives the system more time to establish the connection and increases the chances for the connection to succeed.</em> That second one is not free: <em>increasing the value for tcp_syn_retries can lead to latency because the system keeps dropping packets until the connection succeeds after multiple retries.</em>
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Evidence Is Weakest Exactly When You Need It</h2>
+    <p>
+      Three independent facts about Cloud NAT's observability compound into something worth planning around, and none of them is hidden &mdash; they are just in three different pages.
+    </p>
+    <p>
+      <strong>The logs thin out under load.</strong> <em>Cloud NAT does not log every single event.</em> Specifically: <em>during periods of heavy egress traffic, NAT logging is throttled, proportional to the machine type of the VM.</em> And then the part that removes your ability to compensate: <em>translation or error logs might be dropped, and it is not possible to determine what is omitted during throttling.</em>
+    </p>
+    <p>
+      Heavy egress traffic is not an unrelated condition. It is the condition under which ports run out. So the sampling rate of your evidence falls as the incident intensifies, and you cannot correct for it, because the quantity omitted is unknowable. A drop count read from logs during an incident is a lower bound of unknown tightness.
+    </p>
+    <p>
+      <strong>The metrics are minutes old.</strong> Every per-VM NAT metric is <em>sampled every 60 seconds. After sampling, data is not visible for up to 180 seconds</em> &mdash; and for the gateway-level drop count, <em>sampled every 60 seconds. After sampling, data is not visible for up to 225 seconds.</em> Four minutes of latency on a problem that can appear and resolve inside one.
+    </p>
+    <p>
+      <strong>And the metric named for the thing you want does not measure it.</strong> This is the one I would not have believed without reading both pages. The tuning guide tells you to size from port usage: <em>you can get this information by using the compute.googleapis.com/nat/port_usage metric.</em> The metrics reference defines that metric as <em>nat/port_usage GA (project) Port usage GAUGE, INT64, {port} gce_instance Maximum number of connections from a VM to a single internet endpoint (IP:port).</em>
+    </p>
+    <p>
+      So "Port usage" is not ports consumed. It is peak concurrency against the single busiest endpoint &mdash; which is exactly the quantity #101 said the allocation actually caps, and therefore the right number to size against. The name is misleading and the metric is correct. The one that reports consumption is a different metric: <em>nat/allocated_ports GA (project) Allocated ports GAUGE, INT64, {port} gce_instance Number of ports allocated to a VM by the NAT gateway.</em>
+    </p>
+
+    <div class="callout">
+      <strong>The practical reading</strong>
+      <p><strong>Compare two metrics, not one.</strong> <code>allocated_ports</code> is what the VM has. <code>port_usage</code> is the peak it needs against its busiest single endpoint. Sizing is making the first exceed the second, with headroom.</p>
+      <p>Which is precisely what the tuning guide prescribes, once you know what the numbers mean: <em>review your maximum port usage for the past 30 days, or for another period that you think is representative for your Cloud NAT gateway</em>, then &mdash; <em>if you are using static port allocation, configure the number of ports per VM so that the minimum is equal to your current peak port usage</em>, and <em>if you are using dynamic port allocation, configure the number of ports per VM so that the minimum is lower than the peak port usage and the maximum is higher than the peak port usage.</em></p>
+      <p>Note that static sizing is prescribed as <em>equal to</em> peak, with no margin. Given yesterday's finding that reductions break every established connection while increases are free, erring above that is the cheap direction to be wrong in.</p>
+    </div>
+
+    <h3>The levers, and the floors underneath them</h3>
+    <p>
+      Two families of knob. Ports: <em>MIN_PORTS must be a power of 2, and can be between 32 and 32768</em>, while <em>MAX_PORTS must be a power of 2, and can be between 64 and 65536. MAX_PORTS must be greater than MIN_PORTS. The default is 65536.</em>
+    </p>
+    <p>
+      Timeouts are the other half, and they work by changing how fast ports come back: <em>you can modify the default timeout values to decrease or increase the rate at which ports are reused.</em> The idle timeouts are generous by default &mdash; TCP established connections hold a mapping for <em>1200 seconds (20 minutes)</em> &mdash; so a fleet with many long-lived idle connections is holding ports it is not using.
+    </p>
+    <p>
+      But there are floors, and they mean aggressive tuning does less than the configured number suggests. <em>Timeout processing has a variance of up to five seconds, meaning the actual expiration time might occur up to five seconds earlier or later than the configured timeout value.</em> For TIME_WAIT specifically, <em>to avoid dropped packets, set this timeout to at least 15 seconds.</em> And regardless of what you set: <em>Cloud NAT might require up to an additional 30 seconds before a Cloud NAT source IP address and source port tuple can be used to process a new connection.</em>
+    </p>
+    <p>
+      Add those together and a configured TIME_WAIT below roughly three quarters of a minute buys very little real reuse, because the service reserves the right to hold the tuple for up to 30 seconds more anyway.
+    </p>
+
+    <div class="callout">
+      <strong>The gateway's creation date changes its behaviour</strong>
+      <p>#101 noted that the TIME_WAIT default is either 30 or 120 seconds depending on when the gateway was created. The tuning page gives the cutoff: <em>for gateways that are created after September 30, 2026, the default value is 30 seconds.</em></p>
+      <p>So two gateways with identical configuration can reuse ports at four times the rate of each other, decided by nothing in the configuration. Do not infer it &mdash; read it: <em>run the gcloud compute routers nats describe command and locate the effectiveTcpTimeWaitTimeoutSec field in the output.</em> An older gateway holding closed tuples for 120 seconds has materially less effective capacity than the formula suggests, and the formula has no term for it.</p>
+    </div>
+
+    <h3>When Cloud NAT is the wrong answer</h3>
+    <p>
+      Two cases where the service is documented as unsuitable rather than merely tight. For anything depending on wide source port entropy: <em>some servers, such as legacy DNS servers, require UDP port randomization across 64,000 ports for enhanced security. For these servers, assign an external IP address instead of using Cloud NAT.</em> And for protocols that embed addresses in their payload: <em>Cloud NAT doesn't provide application-level gateway (ALG) capabilities</em> &mdash; so FTP in active mode and SIP will not be rewritten, and no amount of port headroom changes that.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Intermittent failures, everything healthy</strong></td>
+            <td><strong>Read the drop reason label first</strong></td>
+            <td><strong>Exhaustion is a dropped packet, not an error.</strong></td>
+          </tr>
+          <tr>
+            <td>Drops observed with no reason label</td>
+            <td>Get the label before acting</td>
+            <td>OUT_OF_RESOURCES and an EIM conflict look identical.</td>
+          </tr>
+          <tr>
+            <td>Sizing from the console</td>
+            <td>Compare allocated_ports against port_usage</td>
+            <td>One is what you have, the other is what you need.</td>
+          </tr>
+          <tr>
+            <td>Reading "Port usage" as ports consumed</td>
+            <td>It is peak connections to one endpoint</td>
+            <td>The metric's name does not describe its definition.</td>
+          </tr>
+          <tr>
+            <td>Static allocation sizing</td>
+            <td>Minimum equal to peak, then round up</td>
+            <td>Increases are free; reductions break every connection.</td>
+          </tr>
+          <tr>
+            <td>Dynamic allocation sizing</td>
+            <td>Minimum below peak, maximum above</td>
+            <td>That is the documented configuration.</td>
+          </tr>
+          <tr>
+            <td>Short of ports</td>
+            <td>Reduce demand, then raise the minimum, then add addresses</td>
+            <td>Raising the minimum shrinks VMs per address.</td>
+          </tr>
+          <tr>
+            <td>Needing a fixed allowlist of egress addresses</td>
+            <td>Manual assignment, and accept 300 as the ceiling</td>
+            <td>Auto-allocation reaches 2,500 but is unpredictable.</td>
+          </tr>
+          <tr>
+            <td>Splitting a workload across two gateways for capacity</td>
+            <td>It partitions, it does not aggregate</td>
+            <td>NAT IP addresses can't be shared between gateways.</td>
+          </tr>
+          <tr>
+            <td>Sizing a Private NAT subnet</td>
+            <td>Use 2^(32&minus;prefix) &minus; 4, and divide by twice the minimum</td>
+            <td>Four addresses are unusable and allocation is doubled.</td>
+          </tr>
+          <tr>
+            <td>A Private NAT subnet at the minimum size</td>
+            <td>Consider one bit wider</td>
+            <td>/29 to /28 is a factor of 3, not 2, at this size.</td>
+          </tr>
+          <tr>
+            <td>Packet drops during a traffic ramp on dynamic</td>
+            <td>Pace the ramp or raise the minimum</td>
+            <td>Drops happen while the allocation is growing.</td>
+          </tr>
+          <tr>
+            <td>Considering a larger tcp_syn_retries</td>
+            <td>Accept the latency it adds</td>
+            <td>The system keeps dropping until a retry succeeds.</td>
+          </tr>
+          <tr>
+            <td>Tuning TIME_WAIT very low</td>
+            <td>Do not go below about 45 seconds in effect</td>
+            <td>15s floor, &plusmn;5s variance, plus up to 30s regardless.</td>
+          </tr>
+          <tr>
+            <td>Comparing two gateways' behaviour</td>
+            <td>Check effectiveTcpTimeWaitTimeoutSec on both</td>
+            <td>The default depends on the creation date.</td>
+          </tr>
+          <tr>
+            <td>Counting drops from logs during an incident</td>
+            <td>Treat the number as a lower bound</td>
+            <td>Logging is throttled and the omission is unknowable.</td>
+          </tr>
+          <tr>
+            <td>Workload needing wide UDP source entropy or ALG</td>
+            <td>Use an external IP address instead</td>
+            <td>Both are documented as outside Cloud NAT's scope.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Put <code>nat/allocated_ports</code> and <code>nat/port_usage</code> on one chart per gateway, grouped by instance, maximum aligner, over 30 days. Where the second approaches the first, you are near exhaustion for that VM's busiest destination regardless of how much total headroom the gateway shows. Then run <code>gcloud compute routers nats describe</code> and check <code>effectiveTcpTimeWaitTimeoutSec</code> &mdash; if it reads 120 on a gateway you have been sizing with the formula, your real capacity has been lower than the arithmetic all along.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thing that makes this failure expensive is not the arithmetic, which is a floor division anyone can do. It is that every instrument you would reach for is compromised in a different way at the moment you reach for it. The logs are being thinned by the same traffic that caused the problem, and by an unknown amount. The metrics describe a state three or four minutes old. The gateway-level alert is a boolean about any VM. And the one metric whose name promises the answer is measuring something else &mdash; correctly, usefully, but not what it says.
+    </p>
+    <p>
+      None of that is a defect. Each piece is documented, and the port_usage definition is arguably better than its name, because it measures the quantity that actually binds. But it does mean the sizing work has to be done in advance, from the formula and from thirty days of history, rather than discovered during an incident. By the time you are looking, the instruments have degraded in step with the problem.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#103 opens the load balancing block with the decision tree &mdash; which of Google Cloud's load balancers you are actually allowed to use, decided by traffic type, scope and where the clients are, before any feature comparison begins.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/nat/docs/ports-and-addresses" target="_blank" rel="noopener">IP addresses and ports</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/quota" target="_blank" rel="noopener">Cloud NAT quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/troubleshooting" target="_blank" rel="noopener">Cloud NAT troubleshooting</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/monitoring" target="_blank" rel="noopener">Cloud NAT logging and monitoring</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/tune-nat-configuration" target="_blank" rel="noopener">Tune NAT configuration</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/overview" target="_blank" rel="noopener">Cloud NAT overview</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/public-nat" target="_blank" rel="noopener">Public NAT</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/private-nat" target="_blank" rel="noopener">Private NAT</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/nat-rules-overview" target="_blank" rel="noopener">NAT rules overview</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/nat-product-interactions" target="_blank" rel="noopener">Cloud NAT product interactions</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/gke-example" target="_blank" rel="noopener">Cloud NAT with GKE</a></li>
+      <li><a href="https://docs.cloud.google.com/nat/docs/about-hybrid-nat" target="_blank" rel="noopener">Hybrid NAT</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
