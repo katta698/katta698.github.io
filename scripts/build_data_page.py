@@ -360,7 +360,9 @@ def esc(s):
 
 CSS = """
 <style>
-.dt-wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px 80px; }
+.dt-wrap { max-width: 1040px; margin: 0 auto; padding: 26px 20px 80px; }
+.dt-wrap > .dt-sub { font-size: 14px; line-height: 1.7;
+  color: var(--text-muted); max-width: 72ch; margin: 0; }
 .dt-head { padding: 34px 0 10px; }
 .dt-head h1 { font-family: var(--serif); font-weight: 600; font-size: 34px;
   line-height: 1.18; margin: 0 0 12px; letter-spacing: -.01em; }
@@ -577,22 +579,43 @@ def build():
                       '<li><a href="/data/" class="active" '
                       'aria-current="page">Data</a></li>')
 
-    b = [CSS, '<main class="dt-wrap">']
+    # The hero every top-level section carries.
+    #
+    # Services and Three clouds have none, and that was right while /data/
+    # was going to live under /intelligence/ with them. It is a top-level
+    # section instead, sitting beside Portfolio and Blog in the nav, and
+    # those all carry one.
+    #
+    # Markup only: header.hero, .hero-video and .hero-overlay are already in
+    # the shared head this page borrows, and hero-media.js is already loaded
+    # at the foot for the audio control -- it looks for #hero-video and until
+    # now found none here. The <video> carries no source on purpose; that
+    # script picks the clip.
+    #
+    # min-height on header.hero is load-bearing and belongs to the shared
+    # CSS: it is what stops a page with less hero text sitting a few pixels
+    # higher than its neighbour, which is the "screen goes up and down when
+    # I switch pages" report that rule was written for.
+    b = [CSS, '<header class="hero">',
+         '<video id="hero-video" class="hero-video" autoplay muted loop '
+         "playsinline></video>",
+         '<div class="hero-overlay"></div>',
+         '<div class="inner">',
+         '<p class="eyebrow"><span class="label">Data</span></p>',
+         "<h1>The data platform, measured</h1>",
+         '<p class="lede">I started as a database administrator &mdash; '
+         "Oracle, SQL Server, MariaDB and MongoDB across more than a hundred "
+         "production instances &mdash; then moved to Azure, and then to AWS. "
+         "The clouds changed. The thing underneath them did not: somebody "
+         "still has to get the data in, keep it, make it mean something, and "
+         "answer for it when the number is wrong.</p>",
+         "</div>", "</header>",
+         '<main class="dt-wrap">']
 
-    b.append('<div class="dt-head">')
-    b.append("<h1>The data platform, measured</h1>")
-    b.append('<p class="dt-lede">I started as a database administrator '
-             "&mdash; Oracle, SQL Server, MariaDB and MongoDB across more "
-             "than a hundred production instances &mdash; then moved to "
-             "Azure, and then to AWS. The clouds changed. The thing "
-             "underneath them did not: somebody still has to get the data "
-             "in, keep it, make it mean something, and answer for it when "
-             "the number is wrong.</p>")
     b.append('<p class="dt-sub">Six stages of that work, measured against '
              "what the three clouds actually shipped over the last %d days. "
              "Everything with a number refreshes itself; everything that is "
              "my judgement says so.</p>" % WINDOW_DAYS)
-    b.append("</div>")
 
     # One finding, before anything else.
     #
