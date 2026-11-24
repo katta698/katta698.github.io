@@ -161,13 +161,18 @@ STAGES = [
 # syntax is the one thing that varies by engine.
 QUALITY = [
     ("Freshness",
-     "The newest row is younger than the interval that is supposed to "
-     "produce it.",
-     "A feed that stops looks exactly like a quiet week. This is the check "
-     "that notices.",
-     """SELECT MAX(loaded_at) AS newest
-FROM   orders
-HAVING MAX(loaded_at) &lt; CURRENT_TIMESTAMP - INTERVAL '2' HOUR;"""),
+     "A load arrived for the partition that was due, and it arrived on time.",
+     "The naive version of this check &mdash; an aggregate with a HAVING and "
+     "nothing else &mdash; returns no rows over an empty table, so it reports "
+     "success exactly when the load never ran at all. Drive it from the "
+     "partitions you <em>expected</em> and outer-join what arrived.",
+     """SELECT e.load_date, MAX(o.loaded_at) AS newest
+FROM   expected_partitions e
+LEFT   JOIN orders o ON o.load_date = e.load_date
+WHERE  e.load_date = CURRENT_DATE
+GROUP  BY e.load_date
+HAVING MAX(o.loaded_at) IS NULL
+    OR MAX(o.loaded_at) &lt; CURRENT_TIMESTAMP - INTERVAL '2' HOUR;"""),
 
     ("Row-count delta",
      "Today&rsquo;s load is within a band of the trailing average.",
@@ -207,13 +212,20 @@ WHERE  o.load_date = CURRENT_DATE
 
     ("Schema drift",
      "Columns and types are the ones the model expects.",
-     "A widened type or a reordered column breaks a consumer downstream, "
-     "later, with no trace back to here.",
-     """SELECT column_name, data_type
-FROM   information_schema.columns
-WHERE  table_name = 'orders'
-EXCEPT
-SELECT column_name, data_type FROM orders_contract;"""),
+     "Both directions. A one-way EXCEPT sees a column that appeared and is "
+     "blind to one that vanished, which is the half that breaks "
+     "consumers downstream, later, with no trace back to here.",
+     """WITH live AS (
+  SELECT column_name, data_type FROM information_schema.columns
+  WHERE  table_name = 'orders'
+), agreed AS (
+  SELECT column_name, data_type FROM orders_contract
+)
+SELECT 'unexpected' AS drift, column_name, data_type
+FROM  (SELECT * FROM live EXCEPT SELECT * FROM agreed) x
+UNION ALL
+SELECT 'missing', column_name, data_type
+FROM  (SELECT * FROM agreed EXCEPT SELECT * FROM live) y;"""),
 
     ("Distribution",
      "The shape of the data has not moved more than it should.",

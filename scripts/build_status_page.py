@@ -1258,7 +1258,6 @@ document.documentElement.setAttribute("data-palette",p);})();
     <li><a href="/blog/">Blog</a></li>
     <li><a href="/data/">Data</a></li>
     <li><a href="/intelligence/">Intelligence</a></li>
-    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/" class="active" aria-current="page">Live status</a></li>
     <!-- In the markup, not built by script.
          It was created by site-footer.js on every load, so it appeared after
