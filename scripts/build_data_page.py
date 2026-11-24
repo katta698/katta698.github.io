@@ -154,24 +154,80 @@ STAGES = [
 # Checks that can actually fail a pipeline, as opposed to data-quality advice.
 # Phrased as assertions because that is what they are, and because it is the
 # same discipline this repository's own publishing checks run on.
+# Six checks, each written as a query that RETURNS ROWS ONLY WHEN IT FAILS.
+# That shape is the point: a check that returns a number needs someone to
+# decide whether the number is bad, and nobody ever does. ANSI SQL, so they
+# read the same on Snowflake, BigQuery, Redshift or Postgres; the interval
+# syntax is the one thing that varies by engine.
 QUALITY = [
-    ("Freshness", "The newest row is younger than the interval that is "
-     "supposed to produce it.", "A feed that stops looks exactly like a quiet "
-     "week. This is the check that notices."),
-    ("Row-count delta", "Today&rsquo;s load is within an expected band of "
-     "yesterday&rsquo;s.", "Catches the half-written load and the duplicated "
-     "one, which are the two common shapes of a broken job."),
-    ("Null rate", "A column that is never null stays never null.",
+    ("Freshness",
+     "The newest row is younger than the interval that is supposed to "
+     "produce it.",
+     "A feed that stops looks exactly like a quiet week. This is the check "
+     "that notices.",
+     """SELECT MAX(loaded_at) AS newest
+FROM   orders
+HAVING MAX(loaded_at) &lt; CURRENT_TIMESTAMP - INTERVAL '2' HOUR;"""),
+
+    ("Row-count delta",
+     "Today&rsquo;s load is within a band of the trailing average.",
+     "Catches the half-written load and the duplicated one, which are the "
+     "two common shapes of a broken job.",
+     """WITH daily AS (
+  SELECT load_date, COUNT(*) AS n
+  FROM   orders GROUP BY load_date
+), recent AS (
+  SELECT AVG(n) AS avg_n FROM daily
+  WHERE  load_date &gt;= CURRENT_DATE - 7
+    AND  load_date &lt;  CURRENT_DATE
+)
+SELECT d.n, r.avg_n
+FROM   daily d, recent r
+WHERE  d.load_date = CURRENT_DATE
+  AND  d.n NOT BETWEEN 0.8 * r.avg_n
+                   AND 1.2 * r.avg_n;"""),
+
+    ("Null rate",
+     "A column that is never null stays never null.",
      "An upstream rename usually arrives as a column going entirely null "
-     "rather than as an error."),
-    ("Referential", "Every foreign key resolves.", "The join that silently "
-     "drops rows is a wrong number, not a failed job."),
-    ("Schema drift", "Columns and types are the ones the model expects.",
-     "A widened type or a reordered column breaks a consumer somewhere "
-     "downstream, later, with no trace back to here."),
-    ("Distribution", "The shape of the data has not moved more than it "
-     "should.", "The only one that catches a correct pipeline carrying wrong "
-     "data, which is the failure nobody notices for a quarter."),
+     "rather than as an error.",
+     """SELECT COUNT(*) AS missing_customer_id
+FROM   orders
+WHERE  load_date = CURRENT_DATE AND customer_id IS NULL
+HAVING COUNT(*) &gt; 0;"""),
+
+    ("Referential",
+     "Every foreign key resolves.",
+     "The join that silently drops rows is a wrong number, not a failed job.",
+     """SELECT o.order_id
+FROM   orders o
+LEFT   JOIN customers c ON c.customer_id = o.customer_id
+WHERE  o.load_date = CURRENT_DATE
+  AND  c.customer_id IS NULL;"""),
+
+    ("Schema drift",
+     "Columns and types are the ones the model expects.",
+     "A widened type or a reordered column breaks a consumer downstream, "
+     "later, with no trace back to here.",
+     """SELECT column_name, data_type
+FROM   information_schema.columns
+WHERE  table_name = 'orders'
+EXCEPT
+SELECT column_name, data_type FROM orders_contract;"""),
+
+    ("Distribution",
+     "The shape of the data has not moved more than it should.",
+     "The only one that catches a correct pipeline carrying wrong data, "
+     "which is the failure nobody notices for a quarter.",
+     """WITH today AS (
+  SELECT AVG(amount) AS a FROM orders WHERE load_date = CURRENT_DATE
+), baseline AS (
+  SELECT AVG(amount) AS a, STDDEV(amount) AS s FROM orders
+  WHERE load_date BETWEEN CURRENT_DATE - 30 AND CURRENT_DATE - 1
+)
+SELECT today.a AS today_avg, baseline.a AS baseline_avg
+FROM today, baseline
+WHERE ABS(today.a - baseline.a) &gt; 3 * baseline.s;"""),
 ]
 
 ROLES = [
@@ -216,7 +272,7 @@ def measure(items, today):
     for i in win:
         totals[i.get("c")] += 1
 
-    table, newest = {}, {}
+    table, newest, counted = {}, {}, {}
     for key, _t, _m, _r, svc in STAGES:
         for cloud, _label in CLOUDS:
             names = set(svc.get(cloud) or [])
@@ -228,10 +284,18 @@ def measure(items, today):
                 "share": 100.0 * len(rolled) / max(1, totals[cloud]),
                 "raw": len(hits),
             }
+            # Which of the mapped names actually carried anything. The
+            # mapping is the editorial judgement this page rests on, and
+            # until now it was only visible by reading the source.
+            seen = collections.Counter()
+            for h in hits:
+                for n in (names & set(h.get("s") or [])):
+                    seen[n] += 1
+            counted[(key, cloud)] = seen
             if hits:
                 top = max(hits, key=lambda h: h.get("d") or "")
                 newest[(key, cloud)] = top
-    return table, newest, totals, cut, len(win)
+    return table, newest, counted, totals, cut, len(win)
 
 
 def format_counts(items, today):
@@ -304,9 +368,39 @@ CSS = """
   max-width: 68ch; margin: 0 0 10px; }
 .dt-head .dt-sub { font-size: 14px; line-height: 1.65; color: var(--text-muted);
   max-width: 68ch; margin: 0; }
+.dt-hero { margin: 26px 0 8px; padding: 22px 24px 20px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 12px; background: var(--card); }
+.dt-hero-kick { margin: 0 0 10px; font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); }
+.dt-hero-num { margin: 0 0 12px; display: flex; align-items: baseline;
+  gap: 14px; font-family: var(--serif); }
+.dt-hero-num b { font-size: 60px; line-height: 1; font-weight: 600;
+  color: var(--text); letter-spacing: -.02em; }
+.dt-hero-num i { font-style: normal; font-family: var(--sans); font-size: 13px;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
+.dt-hero-say { margin: 0 0 8px; font-size: 15.5px; line-height: 1.65;
+  color: var(--text); max-width: 64ch; }
+.dt-hero-say b { font-weight: 600; }
+.dt-hero-fine { margin: 0; font-size: 12.5px; line-height: 1.6;
+  color: var(--text-muted); max-width: 64ch; }
+@media (max-width: 620px) { .dt-hero-num b { font-size: 44px; } }
 .dt-sec { margin: 44px 0 0; }
 .dt-sec > h2 { font-family: var(--serif); font-weight: 600; font-size: 22px;
   margin: 0 0 6px; }
+.dt-fold { border-top: 1px solid var(--border); margin: 0; padding: 18px 0 0; }
+.dt-fold + .dt-fold { margin-top: 18px; }
+.dt-fold > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: center; justify-content: space-between; gap: 14px; }
+.dt-fold > summary::-webkit-details-marker { display: none; }
+.dt-fold > summary > h2 { margin: 0; }
+.dt-chev { flex: none; width: 10px; height: 10px; border-right: 1.6px solid
+  var(--text-muted); border-bottom: 1.6px solid var(--text-muted);
+  transform: rotate(45deg); transform-origin: center; margin-right: 4px;
+  transition: transform .15s ease; }
+.dt-fold[open] > summary .dt-chev { transform: rotate(-135deg); }
+.dt-fold > summary:hover .dt-chev { border-color: var(--text); }
+.dt-fold > *:not(summary):first-of-type { margin-top: 14px; }
 .dt-sec > p.dt-note { font-size: 14px; line-height: 1.7;
   color: var(--text-muted); max-width: 72ch; margin: 0 0 16px; }
 .dt-stages { display: grid; gap: 12px;
@@ -320,6 +414,14 @@ CSS = """
   color: var(--text); }
 .dt-stage .dt-who { font-size: 12.5px; line-height: 1.55;
   color: var(--text-muted); margin: 0 0 11px; }
+.dt-latest { margin: 11px 0 0; padding-top: 10px;
+  border-top: 1px solid var(--border); font-size: 12.5px; line-height: 1.55;
+  color: var(--text); }
+.dt-latest i { font-style: normal; font-size: 10.5px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-muted); margin-right: 6px; }
+.dt-latest a { color: var(--accent); }
+.dt-counted { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-muted); }
 .dt-bars { display: flex; flex-direction: column; gap: 5px; }
 .dt-bar { display: grid; grid-template-columns: 74px 1fr 46px; gap: 8px;
   align-items: center; font-size: 11.5px; color: var(--text-muted); }
@@ -363,6 +465,20 @@ body.dark .dt-up { color: #86C79A; } body.dark .dt-down { color: #E08C76; }
   font-size: 13.5px; line-height: 1.65; color: var(--text-muted); }
 .dt-list li b { color: var(--text); font-weight: 600; }
 .dt-role-at { color: var(--text-muted); font-size: 12px; letter-spacing: .04em; }
+.dt-checks { display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+.dt-check { border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 15px 12px; background: var(--card); }
+.dt-check h3 { margin: 0 0 6px; font-size: 14.5px; font-weight: 600; }
+.dt-check .dt-assert { margin: 0 0 5px; font-size: 13.5px; line-height: 1.55;
+  color: var(--text); }
+.dt-check .dt-catch { margin: 0 0 10px; font-size: 12.5px; line-height: 1.55;
+  color: var(--text-muted); }
+.dt-check pre { margin: 0; overflow-x: auto; border-radius: 7px;
+  background: rgba(0, 0, 0, .22); padding: 10px 12px; }
+body.light .dt-check pre { background: rgba(0, 0, 0, .05); }
+.dt-check code { font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--text); white-space: pre; }
 .dt-gap { border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 13px 15px; font-size: 13.5px; line-height: 1.7;
   color: var(--text-muted); margin: 14px 0 0; }
@@ -388,12 +504,32 @@ def bars(table, key):
         cell = table[(key, cloud)]
         width = 100.0 * cell["share"] / peak
         shown = ("%.1f%%" % cell["share"]) if cell["n"] else "&mdash;"
-        out.append('<div class="dt-bar dt-%s"><i>%s</i>'
+        # A bar you can only compare is half a chart. The title carries the
+        # counts the percentage is derived from, so a reader can find out
+        # what is in it without leaving the card.
+        tip = ("%s: %d announcements after roll-up (%d before), "
+               "%.1f%% of its own output in the window"
+               % (label, cell["n"], cell["raw"], cell["share"]))             if cell["n"] else             ("%s: nothing tagged in this window" % label)
+        out.append('<div class="dt-bar dt-%s" title="%s"><i>%s</i>'
                    '<span class="dt-track"><span class="dt-fill" '
                    'style="width:%.1f%%"></span></span><b>%s</b></div>'
-                   % (cloud, label, width, shown))
+                   % (cloud, esc(tip), label, width, shown))
     out.append("</div>")
     return "".join(out)
+
+
+def fold(title, open_=False):
+    """A section a reader opens, rather than one they have to scroll past.
+
+    Reported as the page being overwhelming: eight sections, four tables, all
+    the same size, nothing saying which to read first. Collapsing deletes
+    nothing and makes the page answer one question on arrival instead of
+    nine. <details> does it with no script, so it works before the JS lands
+    and with JS off.
+    """
+    return ('<details class="dt-sec dt-fold"%s><summary><h2>%s</h2>'
+            '<span class="dt-chev" aria-hidden="true"></span></summary>'
+            % (" open" if open_ else "", title))
 
 
 def build():
@@ -404,7 +540,7 @@ def build():
     today = datetime.date.today()
     news = load(NEWS, {"items": []})
     items = news.get("items", [])
-    table, newest, totals, cut, nwin = measure(items, today)
+    table, newest, counted, totals, cut, nwin = measure(items, today)
     fmts = format_counts(items, today)
     rel = load(RELEASES, {"releases": [], "sources": [], "no_feed": []})
     eco = load(ECONOMICS, {"firms": [], "private": []})
@@ -452,16 +588,40 @@ def build():
              "underneath them did not: somebody still has to get the data "
              "in, keep it, make it mean something, and answer for it when "
              "the number is wrong.</p>")
-    b.append('<p class="dt-sub">So this is not a list of tools I like. It is '
-             "six stages of that work, and for each one, what the three "
-             "clouds actually shipped into it over the last %d days, what "
-             "the open-source engines underneath released, and what the "
-             "independent platforms earn. Everything with a number refreshes "
-             "itself. Everything that is my judgement is labelled as "
-             "mine.</p>" % WINDOW_DAYS)
+    b.append('<p class="dt-sub">Six stages of that work, measured against '
+             "what the three clouds actually shipped over the last %d days. "
+             "Everything with a number refreshes itself; everything that is "
+             "my judgement says so.</p>" % WINDOW_DAYS)
     b.append("</div>")
 
-    b.append('<section class="dt-sec"><h2>The six stages</h2>')
+    # One finding, before anything else.
+    #
+    # Reported as the page being overwhelming -- eight sections all the same
+    # size, nothing saying which mattered. A reader arriving at a reference
+    # page needs one thing to carry away; the rest is for the reader who
+    # decided to stay. Generated from the counts rather than written down,
+    # so it cannot quietly stop being true.
+    top = sorted(fmts.items(), key=lambda x: -x[1]["total"])
+    if top and top[0][1]["total"] > 0:
+        lead, rest = top[0], top[1]
+        b.append('<div class="dt-hero">')
+        b.append('<p class="dt-hero-kick">The finding, from %s announcements '
+                 "across all three clouds</p>" % "{:,}".format(nwin))
+        b.append('<p class="dt-hero-num"><b>%d</b><i>against</i><b>%d</b></p>'
+                 % (lead[1]["total"], rest[1]["total"]))
+        b.append('<p class="dt-hero-say">Mentions of <b>%s</b> against '
+                 "mentions of <b>%s</b>. Two formats solving the same "
+                 "problem &mdash; transactional tables over object storage "
+                 "&mdash; and the argument about which one wins is being "
+                 "settled in the vendors&rsquo; own release notes while "
+                 "everyone else is still having it in meetings.</p>"
+                 % (esc(lead[0]), esc(rest[0])))
+        b.append('<p class="dt-hero-fine">Vendor attention, not installed '
+                 "base. It says what the clouds are building against; it "
+                 "does not say what is running in your warehouse.</p>")
+        b.append("</div>")
+
+    b.append(fold("The six stages", True))
     b.append('<p class="dt-note">Every data platform does these six things, '
              "whatever it is called this year and whoever sells it. The bars "
              "are each cloud&rsquo;s share of its <em>own</em> announcements "
@@ -482,6 +642,32 @@ def build():
         b.append("<p>%s</p>" % meaning)
         b.append('<p class="dt-who">%s</p>' % who)
         b.append(bars(table, key))
+
+        # The most recent thing anyone actually shipped into this stage.
+        # A share tells a reader how much attention a stage gets; this tells
+        # them what the attention WAS, which is the part worth clicking.
+        recent = [(c, newest[(key, c)]) for c, _l in CLOUDS
+                  if (key, c) in newest]
+        if recent:
+            cloud, item = max(recent, key=lambda r: r[1].get("d") or "")
+            label = dict(CLOUDS)[cloud]
+            title = esc((item.get("t") or "")[:96])
+            link = ('<a href="%s" rel="noopener">%s</a>'
+                    % (esc(item.get("u") or ""), title)) if item.get("u") \
+                else title
+            b.append('<p class="dt-latest"><i>Latest</i> %s '
+                     '<span class="dt-tick">%s &middot; %s</span></p>'
+                     % (link, esc(label), esc(item.get("d") or "")))
+
+        every = collections.Counter()
+        for c, _l in CLOUDS:
+            every.update(counted.get((key, c)) or {})
+        if every:
+            top = [n for n, _c in every.most_common(5)]
+            more = len(every) - len(top)
+            b.append('<p class="dt-counted">Counted from %s%s</p>'
+                     % (", ".join(esc(t) for t in top),
+                        (" and %d more" % more) if more > 0 else ""))
         b.append("</div>")
     b.append("</div>")
     b.append('<div class="dt-gap"><b>Two cells are blank, and they mean '
@@ -494,12 +680,11 @@ def build():
              "zero and an inability to measure are different claims, and "
              "printing both as &ldquo;0&rdquo; would make them look like "
              "one.</div>")
-    b.append("</section>")
+    b.append("</details>")
 
     ranked = sorted(fmts.items(), key=lambda x: -x[1]["total"])
     peak = max(v["total"] for _, v in ranked) or 1
-    b.append('<section class="dt-sec"><h2>The format question, being '
-             "answered in public</h2>")
+    b.append(fold("The format question, being answered in public", True))
     b.append('<p class="dt-note">Iceberg, Delta Lake and Hudi solve the same '
              "problem: transactional tables over object storage, so several "
              "engines can read one copy without trampling each other. Which "
@@ -517,7 +702,7 @@ def build():
     b.append('<p class="dt-foot">Vendor attention, not installed base. It '
              "says what the clouds are building against; it does not say "
              "what is running in your warehouse.</p>")
-    b.append("</section>")
+    b.append("</details>")
 
     by_vendor = collections.Counter()
     latest, kinds = {}, {}
@@ -526,7 +711,7 @@ def build():
         kinds[r["vendor"]] = r["kind"]
         if r["date"] > latest.get(r["vendor"], {"date": ""})["date"]:
             latest[r["vendor"]] = r
-    b.append('<section class="dt-sec"><h2>What the engines shipped</h2>')
+    b.append(fold("What the engines shipped"))
     b.append('<p class="dt-note">The clouds rent you a platform; these are '
              "the parts it is built out of. A tagged release is a fact with "
              "a date, which is why this reads release feeds rather than "
@@ -565,9 +750,9 @@ def build():
                                     for g in gaps)
                  + " They are named rather than dropped, because a vendor "
                  "absent from a table reads as a vendor doing nothing.</div>")
-    b.append("</section>")
+    b.append("</details>")
 
-    b.append('<section class="dt-sec"><h2>What the independents earn</h2>')
+    b.append(fold("What the independents earn"))
     b.append('<p class="dt-note">Total company revenue for the most recent '
              "quarter each firm has filed, read from its own 10-Q or 10-K at "
              "the SEC. Not a data-platform segment &mdash; none of them "
@@ -600,9 +785,9 @@ def build():
              "<b>Teradata</b>, and it is here precisely because it is "
              "shrinking. A table that printed only the firms going up would "
              "be making its argument by choosing the rows.</div>")
-    b.append("</section>")
+    b.append("</details>")
 
-    b.append('<section class="dt-sec"><h2>Who does what</h2>')
+    b.append(fold("Who does what"))
     b.append('<p class="dt-note">Editorial, and the titles vary by company. '
              "What does not vary is the work, which is why the stages come "
              "first and the titles hang off them.</p>")
@@ -610,26 +795,33 @@ def build():
     for title, stages, what in ROLES:
         b.append('<li><b>%s</b> <span class="dt-role-at">&mdash; %s</span>'
                  "<br>%s</li>" % (esc(title), stages, what))
-    b.append("</ul></section>")
+    b.append("</ul></details>")
 
-    b.append('<section class="dt-sec"><h2>Data quality, as checks that can '
-             "fail</h2>")
+    b.append(fold("Data quality, as checks that can fail"))
     b.append('<p class="dt-note">&ldquo;Ensure data quality&rdquo; is not a '
              "plan. These six are, because each is an assertion a pipeline "
              "can run and stop on. Same discipline this site&rsquo;s own "
              "publishing checks use: a check that cannot fail is worse than "
              "no check.</p>")
-    b.append('<div class="dt-scroll"><table class="dt-tbl"><thead><tr>'
-             "<th>Check</th><th>The assertion</th><th>What it catches</th>"
-             "</tr></thead><tbody>")
-    for name, assertion, catches in QUALITY:
-        b.append("<tr><th>%s</th><td>%s</td><td>%s</td></tr>"
-                 % (esc(name), assertion, catches))
-    b.append("</tbody></table></div></section>")
+    b.append('<div class="dt-checks">')
+    for name, assertion, catches, sql in QUALITY:
+        b.append('<div class="dt-check">'
+                 "<h3>%s</h3>"
+                 '<p class="dt-assert">%s</p>'
+                 '<p class="dt-catch">%s</p>'
+                 "<pre><code>%s</code></pre>"
+                 "</div>" % (esc(name), assertion, catches, sql))
+    b.append("</div>")
+    b.append('<p class="dt-foot">Each one returns rows <em>only when it '
+             "fails</em>, which is the whole design: a check that returns a "
+             "number needs somebody to decide whether the number is bad, and "
+             "nobody ever does. ANSI SQL &mdash; they read the same on "
+             "Snowflake, BigQuery, Redshift or Postgres, and the interval "
+             "syntax is the one thing your engine will argue with.</p>")
+    b.append("</details>")
 
     if posts:
-        b.append('<section class="dt-sec"><h2>Before any of this was a '
-                 "platform</h2>")
+        b.append(fold("Before any of this was a platform"))
         b.append('<p class="dt-note">The database writing on this site, from '
                  "the years when the storage layer was a machine you could "
                  "walk up to. Read out of the archive, not a list I keep by "
@@ -640,11 +832,10 @@ def build():
                 if p["date"] else ""
             b.append('<li><b><a href="/blog/%s/">%s</a></b>%s</li>'
                      % (esc(p["slug"]), esc(p["title"]), when))
-        b.append("</ul></section>")
+        b.append("</ul></details>")
 
     ok = [s for s in rel.get("sources", []) if s.get("status") == "ok"]
-    b.append('<section class="dt-sec"><h2>Where every number here came '
-             "from</h2>")
+    b.append(fold("Where every number here came from"))
     b.append('<div class="dt-scroll"><table class="dt-tbl"><thead><tr>'
              "<th>Section</th><th>Source</th><th>Refreshed</th></tr></thead>"
              "<tbody>")
@@ -673,7 +864,7 @@ def build():
              "once. What this method cannot see is written down in "
              "<code>scripts/build_data_page.py</code>.</p>"
              % (cut, today.isoformat()))
-    b.append("</section>")
+    b.append("</details>")
     b.append("</main>")
 
     doc = (head + "</head>\n<body>\n" + nav + "\n" + "\n".join(b)
