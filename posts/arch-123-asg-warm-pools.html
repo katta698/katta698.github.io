@@ -152,7 +152,7 @@ verified_claims:
   <div class="section" id="architecture">
     <h2>Architecture</h2>
 
-    <img src="/blog/assets/diagrams/arch-123-asg-warm-pools.svg" alt="Diagram: Amazon EC2 Auto Scaling warm pools. A warm pool is a pool of pre-initialized EC2 instances alongside an Auto Scaling group, and as instances leave the pool they count toward the group's desired capacity, a warm start. The documentation opens with a warning: creating a warm pool when it is not required can lead to unnecessary costs, and if first boot time does not cause noticeable latency issues there probably is not a need for one. By default the pool size is the difference between the group's maximum and desired capacity, so desired 6 with maximum 10 gives a pool of 4, and the documentation's large example contrasts 500 instances reserved for future use against a deliberate pool of 100 for a group of 1,000 with a maximum of 1,500. MaxGroupPreparedCapacity specifies the maximum number of instances allowed in the warm pool or in any state except Terminated for the group, so it targets combined capacity rather than the pool alone, and MinSize floors the pool and can carry combined capacity above it; only equal values give the pool an absolute size. Three states are available: Stopped, where you pay only for the volumes you use and the Elastic IP addresses attached, described as an effective way to minimize costs; Hibernated, which saves RAM to the EBS root volume so you pay for EBS including storage for the RAM contents plus Elastic IPs; and Running, which is possible but highly discouraged to avoid incurring unnecessary charges. The critical interaction is with lifecycle hooks: Auto Scaling stops or hibernates instances as they enter the pool and does not wait for user data to finish running, so the action can interrupt long-running user data, and without a lifecycle hook instances that take a long time to initialize could be stopped or hibernated and then put in service during a scale-out before they are ready. On scale in the default is to terminate instances and launch new ones into the pool, while an instance reuse policy returns them instead, falling back to stopped when they do not meet hibernation requirements. Scaling policies only scale out on the metric from instances in the InService state. A depleted pool means instances launch directly into the group, a cold start. An instance that fails to reach InService is treated as a failed launch and terminated regardless of the underlying cause. Warm pools are not supported with weighted mixed instance groups, require an EBS root volume to stop or hibernate, and an instance refresh replaces InService instances before pool instances.">
+    <img src="/blog/assets/diagrams/arch-123-asg-warm-pools.svg" alt="Diagram: Amazon EC2 Auto Scaling warm pools. A warm pool is a pool of pre-initialized EC2 instances alongside an Auto Scaling group, and as instances leave the pool they count toward the group's desired capacity, a warm start. The documentation opens with a warning: creating a warm pool when it is not required can lead to unnecessary costs, and if first boot time does not cause noticeable latency issues there probably is not a need for one. By default the pool size is the difference between the group's maximum and desired capacity, so desired 6 with maximum 10 gives a pool of 4, and the documentation's large example contrasts 500 instances reserved for future use against a deliberate pool of 100 for a group of 1,000 with a maximum of 1,500. MaxGroupPreparedCapacity specifies the maximum number of instances allowed in the warm pool or in any state except Terminated for the group, so it targets combined capacity rather than the pool alone, and MinSize floors the pool and can carry combined capacity above it; only equal values give the pool an absolute size. Three states are available: Stopped, where you pay only for the volumes you use and the Elastic IP addresses attached, described as an effective way to minimize costs; Hibernated, which saves RAM to the EBS root volume so you pay for EBS including storage for the RAM contents plus Elastic IPs; and Running, which is possible but highly discouraged to avoid incurring unnecessary charges. The critical interaction is with lifecycle hooks: Auto Scaling stops or hibernates instances as they enter the pool and does not wait for user data to finish running, so the action can interrupt long-running user data, and without a lifecycle hook instances that take a long time to initialize could be stopped or hibernated and then put in service during a scale-out before they are ready. On scale in the default is to terminate instances and launch new ones into the pool, while an instance reuse policy returns them instead, falling back to stopped when they do not meet hibernation requirements. Instance-based scaling considers instances in the InService state rather than warm pool instances, though custom metrics aggregate according to their own implementation. A depleted pool means instances launch directly into the group, a cold start. An instance that fails to reach InService is treated as a failed launch and terminated regardless of the underlying cause. Warm pools are not supported with weighted mixed instance groups, require an EBS root volume to stop or hibernate, and an instance refresh replaces InService instances before pool instances.">
 
     <h3>Sizing: one derived default and two explicit controls</h3>
     <div class="table-scroll">
@@ -212,7 +212,7 @@ verified_claims:
       disk to avoid paying for memory in RAM.
     </p>
 
-    <h3>Why the lifecycle hook is not optional here</h3>
+    <h3>Why a lifecycle hook matters more here than anywhere else</h3>
     <p>
       The previous post treated hooks as a readiness mechanism for the main group. In a warm pool they are
       load-bearing in a second way:
@@ -254,17 +254,23 @@ verified_claims:
       hibernating may be stopping, with the warm start you were paying RAM-on-disk for quietly absent.
     </p>
 
-    <h3>The pool is invisible to your scaling policies</h3>
+    <h3>How scaling policies treat pool instances</h3>
     <p>
       <em>&ldquo;While instances are in the warm pool, your scaling policies only scale out if the metric
       value from instances that are in the InService state is greater than the scaling policy's alarm high
       threshold.&rdquo;</em>
     </p>
     <p>
-      That is the right design &mdash; a stopped instance contributing zero CPU to a target-tracking
-      average would suppress scaling exactly when it is needed &mdash; and it is worth knowing explicitly,
-      because it means pool size never dilutes your metrics. The pool is a launch accelerator, not part of
-      the capacity the policy reasons about.
+      That is the right design for the instance-based case: a stopped instance contributing zero CPU to a
+      target-tracking average would suppress scaling exactly when it is needed.
+    </p>
+    <p>
+      The scope is worth stating carefully, though. AWS's documented instance-based scaling behavior
+      considers instances in the <code>InService</code> state rather than warm pool instances. However,
+      custom scaling metrics must be designed to exclude warm pool instances where appropriate, since
+      their aggregation depends on the metric implementation. A policy tracking a queue depth, a
+      business-level counter, or anything you publish yourself is aggregated the way you wrote it, and
+      nothing about the warm pool changes that.
     </p>
 
     <h3>Where the pool silently does not help</h3>
@@ -351,8 +357,8 @@ verified_claims:
           </tr>
           <tr>
             <td>Lifecycle hook</td>
-            <td>Mandatory, not optional</td>
-            <td>Without it the pool can interrupt bootstrap and then serve traffic from the instance</td>
+            <td>Strongly recommended where instances need initialization before stopping, hibernating or entering service; set the heartbeat timeout, completion conditions and <code>DefaultResult</code> deliberately</td>
+            <td>Without one the pool can interrupt bootstrap and then serve traffic from the instance &mdash; but a hook's presence alone does not guarantee initialization completed</td>
           </tr>
           <tr>
             <td>Scale-in</td>
@@ -409,8 +415,11 @@ verified_claims:
     <p>
       So the useful discipline with this feature is the one its own documentation opens with: establish
       that first boot time is actually hurting you, with a number, before adding a pool. And if you add
-      one, add the hook in the same change &mdash; because the version without a hook is not a cheaper
-      warm pool, it is a mechanism for putting half-built instances into service.
+      one, add a lifecycle hook in the same change for any instance that needs initialization before being
+      stopped, hibernated or put into service &mdash; configuring the heartbeat timeout, the completion
+      condition and the <code>DefaultResult</code> rather than accepting the defaults. A hook is not an
+      AWS requirement and its presence alone does not prove initialization finished; it is the only place
+      you get to say so.
     </p>
 
     <div class="callout">
@@ -422,7 +431,7 @@ verified_claims:
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html" target="_blank" rel="noopener">Decrease latency for applications with long boot times using warm pools &#8212; the opening warning that a warm pool when not required leads to unnecessary costs, the definition of a warm pool and of a warm start, the default size as maximum minus desired capacity with the 6-and-10 and 1,000-and-1,500 examples, the <code>MaxGroupPreparedCapacity</code> and <code>MinSize</code> settings and that there is no default minimum, the three pool states with what each bills and that <code>Running</code> is highly discouraged, how lifecycle hooks delay instances from being stopped or hibernated and from being put in service, that Auto Scaling does not wait for user data to finish running and can interrupt it, the default terminate-and-relaunch scale-in behaviour and the instance reuse policy with its hibernation fallback, that scaling policies only act on <code>InService</code> metrics, cold starts on a depleted pool, failed launches being terminated regardless of cause, the weighted and Spot mixed-group limitations, the EBS root volume requirement, and that an instance refresh replaces <code>InService</code> instances before pool instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html" target="_blank" rel="noopener">Decrease latency for applications with long boot times using warm pools &#8212; the opening warning that a warm pool when not required leads to unnecessary costs, the definition of a warm pool and of a warm start, the default size as maximum minus desired capacity with the 6-and-10 and 1,000-and-1,500 examples, the <code>MaxGroupPreparedCapacity</code> and <code>MinSize</code> settings and that there is no default minimum, the three pool states with what each bills and that <code>Running</code> is highly discouraged, how lifecycle hooks delay instances from being stopped or hibernated and from being put in service, that Auto Scaling does not wait for user data to finish running and can interrupt it, the default terminate-and-relaunch scale-in behaviour and the instance reuse policy with its hibernation fallback, that scaling policies only scale out on the metric from instances in the <code>InService</code> state, cold starts on a depleted pool, failed launches being terminated regardless of cause, the weighted and Spot mixed-group limitations, the EBS root volume requirement, and that an instance refresh replaces <code>InService</code> instances before pool instances</a></li>
       <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/warm-pool-instance-lifecycle.html" target="_blank" rel="noopener">Use lifecycle hooks with a warm pool in Auto Scaling group &#8212; further reading on the warm pool wait states and supported notification targets; no claims in this post are drawn from it</a></li>
       <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html" target="_blank" rel="noopener">Amazon EC2 Auto Scaling lifecycle hooks &#8212; further reading on the hook mechanism covered in #122, which this feature depends on; no claims in this post are drawn from it</a></li>
       <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/hibernating-prerequisites.html" target="_blank" rel="noopener">Hibernation prerequisites &#8212; further reading on the requirements an instance must meet before the <code>Hibernated</code> pool state is available; no claims in this post are drawn from it</a></li>
