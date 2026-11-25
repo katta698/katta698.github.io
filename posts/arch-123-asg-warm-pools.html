@@ -23,6 +23,16 @@ verified_claims:
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html
   - claim: "To specify the warm pool's maximum capacity separately, use the custom specification (MaxGroupPreparedCapacity) option and set a custom value for it that is greater than the current capacity of the group"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html
+  - claim: "Specifies the maximum number of instances that are allowed to be in the warm pool or in any state except Terminated for the Auto Scaling group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutWarmPool.html
+  - claim: "If the desired capacity of the Auto Scaling group is higher than the MaxGroupPreparedCapacity, the capacity of the warm pool is 0, unless you specify a value for MinSize"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutWarmPool.html
+  - claim: "The size of the warm pool is dynamic. Only when MaxGroupPreparedCapacity and MinSize are set to the same value does the warm pool have an absolute size"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutWarmPool.html
+  - claim: "MinSize Specifies the minimum number of instances to maintain in the warm pool. This helps you to ensure that there is always a certain number of warmed instances available to handle traffic spikes. Defaults to 0 if not specified"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutWarmPool.html
+  - claim: "PoolState Sets the instance state to transition to after the lifecycle actions are complete. Default is Stopped"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_PutWarmPool.html
   - claim: "an Auto Scaling group with 1,000 instances, a maximum capacity of 1,500 (to provide extra capacity for emergency traffic spikes), and a warm pool of 100 instances might help you achieve your goals better than keeping 500 instances reserved for future use inside the warm pool"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html
   - claim: "There is no minimum size set by default"
@@ -142,7 +152,7 @@ verified_claims:
   <div class="section" id="architecture">
     <h2>Architecture</h2>
 
-    <img src="/blog/assets/diagrams/arch-123-asg-warm-pools.svg" alt="Diagram: Amazon EC2 Auto Scaling warm pools. A warm pool is a pool of pre-initialized EC2 instances alongside an Auto Scaling group, and as instances leave the pool they count toward the group's desired capacity, a warm start. The documentation opens with a warning: creating a warm pool when it is not required can lead to unnecessary costs, and if first boot time does not cause noticeable latency issues there probably is not a need for one. By default the pool size is the difference between the group's maximum and desired capacity, so desired 6 with maximum 10 gives a pool of 4, and the documentation's large example contrasts 500 instances reserved for future use against a deliberate pool of 100 for a group of 1,000 with a maximum of 1,500. MaxGroupPreparedCapacity caps the pool separately and MinSize floors it, with no minimum set by default. Three states are available: Stopped, where you pay only for the volumes you use and the Elastic IP addresses attached, described as an effective way to minimize costs; Hibernated, which saves RAM to the EBS root volume so you pay for EBS including storage for the RAM contents plus Elastic IPs; and Running, which is possible but highly discouraged to avoid incurring unnecessary charges. The critical interaction is with lifecycle hooks: Auto Scaling stops or hibernates instances as they enter the pool and does not wait for user data to finish running, so the action can interrupt long-running user data, and without a lifecycle hook instances that take a long time to initialize could be stopped or hibernated and then put in service during a scale-out before they are ready. On scale in the default is to terminate instances and launch new ones into the pool, while an instance reuse policy returns them instead, falling back to stopped when they do not meet hibernation requirements. Scaling policies only scale out on the metric from instances in the InService state. A depleted pool means instances launch directly into the group, a cold start. An instance that fails to reach InService is treated as a failed launch and terminated regardless of the underlying cause. Warm pools are not supported with weighted mixed instance groups, require an EBS root volume to stop or hibernate, and an instance refresh replaces InService instances before pool instances.">
+    <img src="/blog/assets/diagrams/arch-123-asg-warm-pools.svg" alt="Diagram: Amazon EC2 Auto Scaling warm pools. A warm pool is a pool of pre-initialized EC2 instances alongside an Auto Scaling group, and as instances leave the pool they count toward the group's desired capacity, a warm start. The documentation opens with a warning: creating a warm pool when it is not required can lead to unnecessary costs, and if first boot time does not cause noticeable latency issues there probably is not a need for one. By default the pool size is the difference between the group's maximum and desired capacity, so desired 6 with maximum 10 gives a pool of 4, and the documentation's large example contrasts 500 instances reserved for future use against a deliberate pool of 100 for a group of 1,000 with a maximum of 1,500. MaxGroupPreparedCapacity specifies the maximum number of instances allowed in the warm pool or in any state except Terminated for the group, so it targets combined capacity rather than the pool alone, and MinSize floors the pool and can carry combined capacity above it; only equal values give the pool an absolute size. Three states are available: Stopped, where you pay only for the volumes you use and the Elastic IP addresses attached, described as an effective way to minimize costs; Hibernated, which saves RAM to the EBS root volume so you pay for EBS including storage for the RAM contents plus Elastic IPs; and Running, which is possible but highly discouraged to avoid incurring unnecessary charges. The critical interaction is with lifecycle hooks: Auto Scaling stops or hibernates instances as they enter the pool and does not wait for user data to finish running, so the action can interrupt long-running user data, and without a lifecycle hook instances that take a long time to initialize could be stopped or hibernated and then put in service during a scale-out before they are ready. On scale in the default is to terminate instances and launch new ones into the pool, while an instance reuse policy returns them instead, falling back to stopped when they do not meet hibernation requirements. Scaling policies only scale out on the metric from instances in the InService state. A depleted pool means instances launch directly into the group, a cold start. An instance that fails to reach InService is treated as a failed launch and terminated regardless of the underlying cause. Warm pools are not supported with weighted mixed instance groups, require an EBS root volume to stop or hibernate, and an instance refresh replaces InService instances before pool instances.">
 
     <h3>Sizing: one derived default and two explicit controls</h3>
     <div class="table-scroll">
@@ -152,18 +162,32 @@ verified_claims:
         </thead>
         <tbody>
           <tr><td>Default size</td><td>maximum capacity &minus; desired capacity. Desired 6, maximum 10 gives a pool of <strong>4</strong></td></tr>
-          <tr><td><code>MaxGroupPreparedCapacity</code></td><td>Caps the pool. Size becomes this value minus current desired capacity</td></tr>
+          <tr><td><code>MaxGroupPreparedCapacity</code></td><td>Target <strong>combined</strong> capacity of the group and its pool. Pool size becomes this value minus desired capacity, subject to <code>MinSize</code> &mdash; so combined capacity can exceed it</td></tr>
           <tr><td><code>MinSize</code></td><td>Floors the pool. <em>&ldquo;There is no minimum size set by default&rdquo;</em></td></tr>
         </tbody>
       </table>
     </div>
     <p>
-      The two explicit controls work together, and the reason is subtle:
-      <code>MinSize</code> <em>&ldquo;is useful when you specify MaxGroupPreparedCapacity to ensure that a
-      minimum number of instances are maintained in the warm pool even when the desired capacity of the
-      Auto Scaling group is higher than the MaxGroupPreparedCapacity&rdquo;</em>. Without the floor, a
-      busy group can push desired capacity up to the cap and leave the pool empty &mdash; which is the
-      moment you most wanted a warm start.
+      The name invites a misreading, and the API reference is the precise statement:
+      <code>MaxGroupPreparedCapacity</code>
+      <em>&ldquo;Specifies the maximum number of instances that are allowed to be in the warm pool or in
+      any state except Terminated for the Auto Scaling group.&rdquo;</em> It bounds the <strong>combined</strong>
+      set &mdash; group plus pool &mdash; not the pool alone. The pool size is then the difference between
+      that value and desired capacity.
+    </p>
+    <p>
+      And it is a target rather than a hard ceiling, because the floor wins:
+      <em>&ldquo;If the desired capacity of the Auto Scaling group is higher than the
+      MaxGroupPreparedCapacity, the capacity of the warm pool is 0, unless you specify a value for
+      MinSize.&rdquo;</em> So with both set, a busy group can push combined capacity above
+      <code>MaxGroupPreparedCapacity</code>. That is usually what you want &mdash; without the floor, the
+      pool empties exactly when you most wanted a warm start &mdash; but it means the setting does not cap
+      what you pay for.
+    </p>
+    <p>
+      One consequence worth knowing if you are trying to reason about cost:
+      <em>&ldquo;The size of the warm pool is dynamic. Only when MaxGroupPreparedCapacity and MinSize are
+      set to the same value does the warm pool have an absolute size.&rdquo;</em>
     </p>
 
     <h3>What each state actually bills</h3>
@@ -317,8 +341,8 @@ verified_claims:
           </tr>
           <tr>
             <td>Pool size</td>
-            <td>Always set <code>MaxGroupPreparedCapacity</code>; add <code>MinSize</code> with it</td>
-            <td>The default is max minus desired, which is your emergency headroom</td>
+            <td>Set <code>MaxGroupPreparedCapacity</code>, and <code>MinSize</code> with it; set both equal for a fixed pool</td>
+            <td>The default is max minus desired, which is your emergency headroom; only equal values give the pool an absolute size</td>
           </tr>
           <tr>
             <td>Pool state</td>
@@ -348,7 +372,8 @@ verified_claims:
     <ul>
       <li>
         Every warm pool with no <code>MaxGroupPreparedCapacity</code> set, compared against the group's
-        maximum capacity. That difference is what you are paying for.
+        maximum capacity. That difference is what you are paying for. Where it is set, check
+        <code>MinSize</code> too, since the floor can carry combined capacity above it.
       </li>
       <li>
         Every warm pool without a launching lifecycle hook. Those pools can stop instances mid-bootstrap.
