@@ -70,8 +70,7 @@ STAGES = [
      "into somewhere you can work on it &mdash; in batches, or as a stream "
      "that never stops.",
      "Data engineers, mostly. This is the stage that wakes people up.",
-     {"aws": ["Kinesis", "Amazon MSK", "Amazon MSK Standard Brokers",
-              "Amazon MSK Express Brokers", "Amazon MSK Replicator", "Kafka",
+     {"aws": ["Kinesis", "Kafka", "Managed Streaming for Kafka",
               "DataSync", "Kinesis Video Streams", "DynamoDB Streams",
               "OpenSearch Ingestion", "AWS DMS Schema Conversion",
               "Storage Gateway", "MSK"],
