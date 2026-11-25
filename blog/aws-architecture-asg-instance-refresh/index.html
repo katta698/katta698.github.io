@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #124 — On $Latest there is no way back | Jayanth Katta Blog</title>
+<meta name="description" content="An instance refresh is the supported way to roll a new AMI or launch template across an Auto Scaling group, and it has a rollback. The rollback has conditions, and one of them disqualifies a common convenience: it is not available if the group is configured to use the $Latest or $Default launch template version, nor if the template uses an SSM Parameter Store AMI alias. A group pinned to $Latest rolls forward onto whatever version exists and has no supported way back. Three other settings - skip matching, standby instances and scale-in protected instances - default differently in the console than in the CLI and SDK, and the difference inverts the failure mode: the console quietly leaves instances on the old configuration where the API fails the operation after an hour."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="On $Latest there is no way back"/>
+<meta property="og:description" content="An instance refresh is the supported way to roll a new AMI or launch template across an Auto Scaling group, and it has a rollback. The rollback has conditions, and one of them disqualifies a common convenience: it is not available if the group is configured to use the $Latest or $Default launch template version, nor if the template uses an SSM Parameter Store AMI alias. A group pinned to $Latest rolls forward onto whatever version exists and has no supported way back. Three other settings - skip matching, standby instances and scale-in protected instances - default differently in the console than in the CLI and SDK, and the difference inverts the failure mode: the console quietly leaves instances on the old configuration where the API fails the operation after an hour."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-asg-instance-refresh/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="On $Latest there is no way back"/>
+<meta name="twitter:description" content="An instance refresh is the supported way to roll a new AMI or launch template across an Auto Scaling group, and it has a rollback. The rollback has conditions, and one of them disqualifies a common convenience: it is not available if the group is configured to use the $Latest or $Default launch template version, nor if the template uses an SSM Parameter Store AMI alias. A group pinned to $Latest rolls forward onto whatever version exists and has no supported way back. Three other settings - skip matching, standby instances and scale-in protected instances - default differently in the console than in the CLI and SDK, and the difference inverts the failure mode: the console quietly leaves instances on the old configuration where the API fails the operation after an hour."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-asg-instance-refresh/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6d75b39c"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=26de8759" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=26de8759">
+<script src="/blog/assets/site-footer.js?v=26de8759" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #124 — On $Latest there is no way back…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #124 — On $Latest there is no way back</h1>
+      <p class="post-description">An instance refresh is the supported way to roll a new AMI or launch template across an Auto Scaling group, and it has a rollback. The rollback has conditions, and one of them disqualifies a common convenience: it is not available if the group is configured to use the $Latest or $Default launch template version, nor if the template uses an SSM Parameter Store AMI alias. A group pinned to $Latest rolls forward onto whatever version exists and has no supported way back. Three other settings - skip matching, standby instances and scale-in protected instances - default differently in the console than in the CLI and SDK, and the difference inverts the failure mode: the console quietly leaves instances on the old configuration where the API fails the operation after an hour.</p>
+      <div class="post-info">
+        <span>Nov 25, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>14 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 25 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-asg-instance-refresh" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An instance refresh is how you roll a new AMI across a group without writing the orchestration
+      yourself, and it comes with a rollback, which is the thing that makes it feel safe to use. The
+      rollback is real. It is also conditional in a way that rules out a configuration a great many groups
+      are already using.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>$Latest and $Default disqualify the rollback entirely</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>You can only roll back to a previous version of a launch template if the
+          version is a specific numbered version. The rollback option is not available if the Auto Scaling
+          group is configured to use the $Latest or $Default launch template version.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And the same applies to a convenience many teams use for AMI selection:
+          <em>&ldquo;You also cannot roll back to a launch template that is configured to use an AMI alias
+          from the AWS Systems Manager Parameter Store.&rdquo;</em>
+        </p>
+        <p>
+          Pinning to <code>$Latest</code> is what you do so a new template version takes effect without
+          touching the group. The cost is that there is no numbered version to return to, so a refresh on
+          such a group rolls forward only.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Three settings default differently depending on how you start the refresh</strong></div>
+      <div class="challenge-body">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Setting</th><th>AWS CLI or SDK</th><th>Console</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Skip matching</td><td>Disabled</td><td><strong>Enabled</strong></td></tr>
+              <tr><td>Scale-in protected instances</td><td><strong>Wait</strong></td><td>Ignore</td></tr>
+              <tr><td>Standby instances</td><td><strong>Wait</strong></td><td>Ignore</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Those are not cosmetic. <em>Wait</em> means
+          <em>&ldquo;Waits one hour for you to remove scale-in protection. If you don't do so, the instance
+          refresh fails&rdquo;</em>. <em>Ignore</em> means it
+          <em>&ldquo;Ignores instances that are protected from scale in and continues to replace instances
+          that are not protected&rdquo;</em> &mdash; those instances stay on the old configuration, and the
+          refresh reports success.
+        </p>
+        <p>
+          Same operation, same group: scripted it fails loudly after an hour, clicked it succeeds while
+          leaving instances behind.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Skip matching compares AMI IDs, and cannot see your code</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When skip matching is enabled, Auto Scaling compares each instance's current AMI ID
+          against the AMI IDs in your desired configuration. It only replaces instances where the AMI IDs
+          don't match.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>Skip matching doesn't check for code changes that are deployed from a user
+          data script.</strong> If you use user data to pull new code and install these updates on new
+          instances, we recommend that you turn off skip matching&hellip;&rdquo;</em>
+        </p>
+        <p>
+          So on the deployment pattern where user data pulls the latest build, a console refresh with the
+          default on will skip every instance &mdash; which is precisely the set you wanted to replace.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-124-asg-instance-refresh.svg" alt="Diagram: Amazon EC2 Auto Scaling instance refresh. A refresh replaces instances using either the default rolling strategy, terminating and launching in batches, or the replace root volume strategy, which replaces only the root volume without terminating and so preserves network interfaces, non-root EBS volumes and instance store data. Three settings default differently between console and CLI or SDK: skip matching is disabled in the CLI and SDK but enabled in the console, and scale-in protected instances and standby instances both default to Wait in the CLI and SDK but Ignore in the console. Wait means Auto Scaling waits one hour for you to act and fails the refresh otherwise, while Ignore leaves those instances on the old configuration, so the same operation either fails loudly or silently skips depending on how it was started. Skip matching compares each instance's AMI ID against the desired configuration and only replaces mismatches, but it does not check for code changes deployed from a user data script, and AWS recommends turning it off when user data pulls new code. Rollback requires a desired configuration specified at start and a specific numbered launch template version; it is not available on the dollar-Latest or dollar-Default version, nor with an SSM Parameter Store AMI alias, and only while the refresh is still in progress. Auto rollback is disabled by default in both console and CLI, and specifying a CloudWatch alarm without enabling auto rollback means the refresh fails without rolling back; a maximum of 10 alarms is allowed and none may start in ALARM or INSUFFICIENT_DATA. Pacing defaults are minimum healthy 90 percent with no maintenance policy, maximum healthy 100 percent, bake time zero, checkpoints disabled with a one-hour checkpoint delay, and instance warmup falling back to the default instance warmup or the health check grace period. Both percentages at 100 replaces one instance at a time and launches before terminating; a minimum of 0 replaces all at once. A refresh may actively replace for up to 14 days and retries for an hour when it cannot continue. Mid-refresh scale-out uses the desired configuration, InService instances are replaced before warm pool instances, and attribute-based instance selection supports neither SkipMatching nor DesiredConfiguration.">
+
+    <h3>Two strategies, and what the quieter one preserves</h3>
+    <p>
+      The default is the one everyone knows:
+      <em>&ldquo;Rolling strategy (default) &mdash; Terminates instances and launches new ones in batches
+      according to your preferences.&rdquo;</em> The other is worth knowing exists:
+      <em>&ldquo;Replace root volume strategy &mdash; Updates instances by replacing only the root volume
+      without terminating the instance. This preserves instance network interfaces, non-root EBS volumes,
+      and instance store data.&rdquo;</em>
+    </p>
+    <p>
+      That second strategy is the answer to a problem this series has circled repeatedly: replacement
+      discards the instance's identity and attachments, recovery does not. Root volume replacement sits
+      between them &mdash; a new image, the same instance. It has real prerequisites, including a mixed
+      instances policy with <code>ImageId</code> overrides, and it does not support Elastic Load
+      Balancing, which rules it out for most web tiers.
+    </p>
+
+    <h3>How a refresh decides to move on</h3>
+    <p>
+      Two numbers set the pace.
+      <em>&ldquo;The minimum healthy percentage is the percentage of the desired capacity to keep in
+      service, healthy, and ready to use during an instance refresh so that the refresh can
+      continue&rdquo;</em>, and the maximum is how far above desired capacity the group may go. The
+      difference between them <em>&ldquo;cannot be greater than 100&rdquo;</em>.
+    </p>
+    <p>
+      The two extremes are worth memorising, because they are stated plainly:
+      <em>&ldquo;To replace one instance at a time, set both the minimum and maximum healthy percentage to
+      100 percent. This changes the behavior of an instance refresh to launch before terminating&hellip;
+      To replace all instances at once, set a minimum healthy percentage of 0 percent.&rdquo;</em>
+    </p>
+    <p>
+      Then health is not the only gate:
+      <em>&ldquo;It waits for the warmup period before it moves on to replacing the next
+      instance.&rdquo;</em> And the warmup default is a chain, not a value:
+      <em>&ldquo;The default instance warmup, if defined, or the health check grace period
+      otherwise.&rdquo;</em>
+    </p>
+    <p>
+      That last line ties this post to #121. If a group was created through the API with no default
+      instance warmup and no grace period &mdash; both of which default to zero or nothing there &mdash;
+      then a refresh moves to the next instance as soon as the health check passes, with no settling time.
+      The setting you never configured for health checking is the one now pacing your deployment.
+    </p>
+
+    <h3>Rollback, and every condition it carries</h3>
+    <p>
+      Rollback is narrower than its presence suggests. All of the following must hold:
+    </p>
+    <ul>
+      <li>
+        <em>&ldquo;The rollback option is only available if you specify a desired configuration as part of
+        starting an instance refresh.&rdquo;</em> A refresh started without one cannot be rolled back.
+      </li>
+      <li>A specific numbered launch template version &mdash; not <code>$Latest</code>, not <code>$Default</code>.</li>
+      <li>No AMI alias from Systems Manager Parameter Store.</li>
+      <li>
+        <em>&ldquo;You can roll back an instance refresh that is still in progress. You can't roll it back
+        after it's finished.&rdquo;</em>
+      </li>
+      <li>
+        <em>&ldquo;The configuration that you last saved on the Auto Scaling group must be in a stable
+        state. If it's not in a stable state, the rollback workflow will still occur, but it will
+        eventually fail.&rdquo;</em>
+      </li>
+    </ul>
+    <p>
+      The last one deserves attention. A rollback returns the group to the configuration it had before, so
+      if that configuration was already broken &mdash; an AMI that no longer launches, a subnet that has
+      filled up &mdash; the rollback inherits the breakage. The documentation says the group
+      <em>&ldquo;might be in a failed state where it can no longer launch instances successfully&rdquo;</em>,
+      which is a worse position than either the old or the new config.
+    </p>
+
+    <h3>Auto rollback is off, and an alarm alone does not arm it</h3>
+    <p>
+      Auto rollback defaults to disabled in both the console and the CLI. The interaction with alarms is
+      the part that surprises:
+      <em>&ldquo;<strong>If you specify a CloudWatch alarm but do not enable auto rollback, and the alarm
+      state goes to ALARM, the instance refresh fails without rolling back.</strong>&rdquo;</em>
+    </p>
+    <p>
+      So attaching an alarm buys you a stop, not an undo. The refresh halts partway with some instances on
+      the new configuration and some on the old, and the group's settings have not yet been updated,
+      because that only happens on success.
+    </p>
+    <p>
+      Two further alarm constraints, both easy to trip:
+      <em>&ldquo;You can choose a maximum of 10 alarms when you start an instance refresh&rdquo;</em>, and
+      <em>&ldquo;If the alarm state is INSUFFICIENT_DATA or ALARM, you receive an error when you try to
+      start the instance refresh.&rdquo;</em> An alarm on a sparse metric is frequently in
+      <code>INSUFFICIENT_DATA</code>, which means a deployment guard can block the deployment it was meant
+      to protect &mdash; the same missing-data problem this series has met in three other services, here
+      turning into a refusal to start.
+    </p>
+
+    <h3>Checkpoints, and what continuous really means</h3>
+    <p>
+      <em>&ldquo;A checkpoint is a point in time where the instance refresh pauses for a specified amount
+      of time&rdquo;</em>, with a default delay of
+      <em>&ldquo;1 hour (3600 seconds)&rdquo;</em> &mdash; so a checkpointed refresh is slow by design,
+      and that is the point.
+    </p>
+    <p>
+      The alternative is stated without euphemism:
+      <em>&ldquo;If you don't use checkpoints, rolling replacements are performed
+      continuously.&rdquo;</em> Continuously means the whole group is replaced as fast as the healthy
+      percentages and warmup allow, with no pause at which a human could look. For a change you are
+      confident about that is what you want. For a new AMI it is how a bad image reaches every instance
+      before anyone notices.
+    </p>
+
+    <h3>Where a refresh fails outright</h3>
+    <ul>
+      <li>
+        <strong>Attribute-based instance selection.</strong>
+        <em>&ldquo;An instance refresh will fail if you start it with the SkipMatching parameter in an Auto
+        Scaling group that has InstanceRequirements configured.&rdquo;</em> The same applies to
+        <code>DesiredConfiguration</code> &mdash; and since rollback requires a desired configuration,
+        groups using attribute-based selection cannot have rollback at all.
+      </li>
+      <li>
+        <strong>The one-hour wall.</strong> When it cannot proceed,
+        <em>&ldquo;Amazon EC2 Auto Scaling keeps retrying for an hour&rdquo;</em> and then fails.
+      </li>
+      <li>
+        <strong>The fourteen-day ceiling.</strong>
+        <em>&ldquo;The maximum amount of time that an instance refresh can continue to actively replace
+        instances is 14 days.&rdquo;</em>
+      </li>
+    </ul>
+
+    <h3>Two behaviours during the refresh</h3>
+    <p>
+      <em>&ldquo;If a scale-out event occurs during an instance refresh, Amazon EC2 Auto Scaling launches
+      new instances with the desired configuration instead of the group's current settings.&rdquo;</em> So
+      a traffic spike mid-deployment accelerates the rollout rather than mixing in old instances, which is
+      the right call and worth knowing when reading capacity graphs afterwards.
+    </p>
+    <p>
+      And, connecting to the previous post:
+      <em>&ldquo;Replace InService instances before instances that are in a warm pool.&rdquo;</em> A warm
+      pool built from the old AMI keeps handing out warm starts on the old image until the refresh reaches
+      it, which is the last thing it does.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>The rollback conditions are honest rather than arbitrary</h3>
+    <p>
+      Every rollback restriction follows from the same fact: a rollback needs a specific thing to go back
+      to. <code>$Latest</code> is a moving pointer, an SSM AMI alias is a moving pointer, and a refresh
+      without a desired configuration never recorded a before state. AWS could have faked it by snapshotting
+      the resolved version, and chose not to. That is defensible &mdash; but it means the convenience and
+      the safety net are mutually exclusive, and the documentation is where you find that out.
+    </p>
+
+    <h3>Launch-before-terminate at 100 percent is the right lever</h3>
+    <p>
+      Expressing one-at-a-time replacement as <em>both percentages at 100</em> rather than as a separate
+      mode means the same two numbers describe every pace from one instance to the whole group. It is
+      harder to discover and better designed than a dropdown would have been.
+    </p>
+
+    <h3>Failing on an alarm without rolling back is the correct default</h3>
+    <p>
+      It looks like a gap, but an automatic rollback is itself a mass replacement, and performing one
+      because a metric was briefly red could make a bad situation worse. Stopping and waiting for a human
+      is the conservative action. The criticism is only that an operator attaching an alarm will probably
+      assume otherwise.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Launch template version on the group</td>
+            <td>A specific numbered version if you want rollback</td>
+            <td><code>$Latest</code> and <code>$Default</code> remove the rollback option entirely</td>
+          </tr>
+          <tr>
+            <td>Starting a refresh</td>
+            <td>Set skip matching, standby and scale-in-protected behaviour explicitly</td>
+            <td>All three default differently in the console and the API, with opposite failure modes</td>
+          </tr>
+          <tr>
+            <td>Skip matching with user-data deploys</td>
+            <td>Turn it off</td>
+            <td>It compares AMI IDs and cannot see code pulled by user data</td>
+          </tr>
+          <tr>
+            <td>Auto rollback</td>
+            <td>Enable it deliberately, with a desired configuration</td>
+            <td>Off by default, and an alarm alone only fails the refresh</td>
+          </tr>
+          <tr>
+            <td>New AMI rollouts</td>
+            <td>Checkpoints, and bake time above zero</td>
+            <td>Without checkpoints, replacements run continuously to the end of the group</td>
+          </tr>
+          <tr>
+            <td>Alarms used as deployment guards</td>
+            <td>Set missing-data treatment before using them here</td>
+            <td><code>INSUFFICIENT_DATA</code> at start is an error that blocks the refresh</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every Auto Scaling group whose launch template version is <code>$Latest</code> or
+        <code>$Default</code>. Those groups have no instance refresh rollback, whatever else is configured.
+      </li>
+      <li>
+        Every refresh automation that omits a desired configuration, which silently forgoes rollback.
+      </li>
+      <li>
+        Every pipeline that deploys code through user data and starts refreshes from the console, where
+        skip matching is on by default.
+      </li>
+      <li>
+        Any group with instances protected from scale in, checked against which door your refreshes come
+        through &mdash; the console will leave them behind and report success.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Five posts into Auto Scaling, the recurring theme is no longer the defaults themselves but what they
+      reveal: the service has two front doors, and they disagree. The health check grace period is 300
+      seconds through one and zero through the other. Skip matching is on through one and off through the
+      other. Standby and protected instances are waited for through one and ignored through the other.
+      Each difference is individually defensible as a choice about who the user is &mdash; a person
+      clicking wants the forgiving option, a script wants the strict one &mdash; and collectively they
+      mean you cannot reason about an Auto Scaling group without knowing how it was made.
+    </p>
+    <p>
+      The <code>$Latest</code> finding is the one I would act on first, because it is not a default you can
+      change at refresh time. It is a property of the group, probably set years ago for a good reason, and
+      it quietly removes the undo from every deployment you will ever run on that group. Worth knowing
+      before the deployment you need to undo.
+    </p>
+    <p>
+      And the smaller lesson, consistent with everything else in this run: read what the feature does when
+      it fails. A refresh that stops on an alarm leaves the group half-migrated. A rollback onto a broken
+      previous configuration leaves it unable to launch at all. Neither is a bug, both are documented, and
+      both are worse than the thing you were trying to avoid.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling instance maintenance policies: how a minimum and maximum healthy percentage set once on the group changes every replacement it performs, how that interacts with the per-refresh preferences, and why a policy is the setting that finally makes the defaults consistent.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html" target="_blank" rel="noopener">How an instance refresh works in an Auto Scaling group &#8212; the rolling and replace-root-volume strategies and what the latter preserves, that skip matching compares AMI IDs and is on by default in the console, that it cannot see code deployed by user data and the recommendation to turn it off, the minimum and maximum healthy percentage definitions and the 100-difference limit, the one-at-a-time and all-at-once settings, that the refresh waits for the warmup period before moving on, that a mid-refresh scale-out uses the desired configuration, that <code>InService</code> instances are replaced before warm pool instances, the checkpoint definition and the continuous behaviour without them, the 14-day active replacement ceiling, the one-hour retry before failure, and the attribute-based selection limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/understand-instance-refresh-default-values.html" target="_blank" rel="noopener">Understand the default values for an instance refresh &#8212; the full default table including minimum healthy percentage at 90 percent and maximum at 100 percent absent an instance maintenance policy, the 1 hour (3600 seconds) checkpoint delay, instance warmup falling back to the default instance warmup or the health check grace period, and the <code>Wait</code> versus <code>Ignore</code> defaults for standby and scale-in protected instances with what each one does</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-rollback.html" target="_blank" rel="noopener">Undo changes with a manual or auto rollback &#8212; that rollback requires a desired configuration and a specific numbered launch template version, that <code>$Latest</code> and <code>$Default</code> and an SSM Parameter Store AMI alias all disqualify it, that a finished refresh cannot be rolled back, that the previously saved configuration must be stable or the rollback itself fails, that an alarm without auto rollback fails the refresh without rolling back, the maximum of 10 alarms, and that an alarm in <code>ALARM</code> or <code>INSUFFICIENT_DATA</code> errors on start</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh.html" target="_blank" rel="noopener">Use an instance refresh to update instances in an Auto Scaling group &#8212; further reading on the situations an instance refresh is intended for; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-adding-checkpoints-instance-refresh.html" target="_blank" rel="noopener">Add checkpoints to an instance refresh &#8212; further reading on configuring checkpoint percentages and delays; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-maintenance-policy.html" target="_blank" rel="noopener">Instance maintenance policies &#8212; further reading on the group-level policy that supplies the healthy percentages a refresh otherwise defaults; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-quick-plugins/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #84 - The plugin you reviewed at install is not the one you keep</span></a><a href="/blog/aws-daily-intelligence-quick-ai-ready-datasets/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #85 - The largest instruction channel is the one nobody sees in the UI</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-asg-instance-refresh/';
+      this.page.identifier = 'aws-architecture-asg-instance-refresh';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=26de8759"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
