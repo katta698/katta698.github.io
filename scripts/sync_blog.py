@@ -373,6 +373,12 @@ def stamp_static_pages():
     # list, so a new page in that folder is covered by existing.
     targets += sorted((REPO_ROOT / "connect").glob("*.html"))
     targets += sorted(REPO_ROOT.glob("connect-demo*.html"))
+    # /reinvent-2026/ and its sub-pages, the third time this list has been
+    # short. They were pinned to a43406a8 on origin while the shared assets
+    # had moved to 26de8759, so a reader who had been to the site before ran
+    # a cached site-footer.js on them and nothing said so. Globbed, not
+    # listed, because the planner pages arrive a few at a time.
+    targets += sorted((REPO_ROOT / "reinvent-2026").glob("**/*.html"))
 
     # The subscribe block, into the hand-built posts only. Not index.html,
     # resume.html or now.html -- they have no comments section and are not
