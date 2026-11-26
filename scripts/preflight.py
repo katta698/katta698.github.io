@@ -208,6 +208,27 @@ ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast",
             "check_instrument_glyphs", "check_narration_true",
             "check_shell_parts"}
 
+# Site state rather than post state: nothing a post can cause. Blocking in CI,
+# advisory everywhere else.
+#
+# All three stopped a push this week for another window's change -- four dead
+# service names on /data/, an AI store the daily cron had not refreshed, and 26
+# pages pinned to a CSS hash someone else moved. The hook is in the shared .git
+# directory, so whoever pushes next pays for all of it.
+#
+# Not folded into ADVISORY, because that set blocks nowhere and a check that
+# cannot fail goes stale -- see check_colophon_built above. CI runs the full
+# preflight on the merged tree, so these still have to pass there.
+SITE_STATE = {"check_data_page", "check_ai_fresh", "check_asset_stamps"}
+
+
+def is_advisory(name):
+    """Whether a failure from this check is allowed to stop a push."""
+    if name in ADVISORY:
+        return True
+    return name in SITE_STATE and not os.environ.get("CI")
+
+
 # What the pre-push hook runs: everything needing no browser, plus the browser
 # checks that guard the things a reader actually reports.
 #
@@ -515,7 +536,7 @@ def run_one(name):
                 "\n  in the check why zero is legitimate here.\n")
             return name, 1, out, secs, False
         return name, code, out, secs, False
-    if name in ADVISORY:
+    if is_advisory(name):
         return name, code, out, secs, False
     code2, out2, secs2 = run_once(name)
     if code2 == 0:
@@ -808,11 +829,11 @@ def main():
         for name, code, out, secs, retried in pool.map(run_one, names):
             slowest.append((secs, name))
             mark = ("ok  " if code == 0 else
-                    ("warn" if name in ADVISORY else "FAIL"))
+                    ("warn" if is_advisory(name) else "FAIL"))
             print("    %-4s %-28s %5.1fs%s"
                   % (mark, name, secs, "  (retried)" if retried else ""))
             if code != 0:
-                (advisory if name in ADVISORY else failed).append(
+                (advisory if is_advisory(name) else failed).append(
                     (name, out.strip()))
 
     print("\n  %d check(s) in %.0fs" % (len(names), time.time() - t0))
