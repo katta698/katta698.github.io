@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #125 — The policy sets a floor that three events ignore | Jayanth Katta Blog</title>
+<meta name="description" content="An instance maintenance policy is the setting that finally makes replacement behaviour consistent across an Auto Scaling group: one minimum and maximum healthy percentage, applied to every event that replaces an instance, instead of a different answer per feature. It does make the defaults consistent. What it does not do is guarantee the floor it appears to set - AWS documents three situations in which a group continues to terminate and launch regardless of the policy, and in each one capacity can fall below the policy's lower threshold. The defaults without a policy are not uniform either: three of the four replacement events default to terminate and launch, and rebalancing defaults to launch before terminating and is allowed to exceed the group's size limits by up to 10 percent."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The policy sets a floor that three events ignore"/>
+<meta property="og:description" content="An instance maintenance policy is the setting that finally makes replacement behaviour consistent across an Auto Scaling group: one minimum and maximum healthy percentage, applied to every event that replaces an instance, instead of a different answer per feature. It does make the defaults consistent. What it does not do is guarantee the floor it appears to set - AWS documents three situations in which a group continues to terminate and launch regardless of the policy, and in each one capacity can fall below the policy's lower threshold. The defaults without a policy are not uniform either: three of the four replacement events default to terminate and launch, and rebalancing defaults to launch before terminating and is allowed to exceed the group's size limits by up to 10 percent."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-asg-instance-maintenance-policy/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The policy sets a floor that three events ignore"/>
+<meta name="twitter:description" content="An instance maintenance policy is the setting that finally makes replacement behaviour consistent across an Auto Scaling group: one minimum and maximum healthy percentage, applied to every event that replaces an instance, instead of a different answer per feature. It does make the defaults consistent. What it does not do is guarantee the floor it appears to set - AWS documents three situations in which a group continues to terminate and launch regardless of the policy, and in each one capacity can fall below the policy's lower threshold. The defaults without a policy are not uniform either: three of the four replacement events default to terminate and launch, and rebalancing defaults to launch before terminating and is allowed to exceed the group's size limits by up to 10 percent."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-asg-instance-maintenance-policy/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6d75b39c"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=bf6a32ba" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=bf6a32ba">
+<script src="/blog/assets/site-footer.js?v=bf6a32ba" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #125 — The policy sets a floor that three events ignore…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #125 — The policy sets a floor that three events ignore</h1>
+      <p class="post-description">An instance maintenance policy is the setting that finally makes replacement behaviour consistent across an Auto Scaling group: one minimum and maximum healthy percentage, applied to every event that replaces an instance, instead of a different answer per feature. It does make the defaults consistent. What it does not do is guarantee the floor it appears to set - AWS documents three situations in which a group continues to terminate and launch regardless of the policy, and in each one capacity can fall below the policy's lower threshold. The defaults without a policy are not uniform either: three of the four replacement events default to terminate and launch, and rebalancing defaults to launch before terminating and is allowed to exceed the group's size limits by up to 10 percent.</p>
+      <div class="post-info">
+        <span>Nov 26, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>13 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 26 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-asg-instance-maintenance-policy" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous four posts in this series each ended at the same place: a replacement behaviour that
+      depends on which feature triggered it. A health check failure replaces one way, an instance refresh
+      another, a maximum instance lifetime a third. An instance maintenance policy is AWS's answer to
+      that, and it works &mdash; one minimum and maximum healthy percentage set on the group, applied to
+      every event that replaces an instance.
+    </p>
+    <p>
+      The reason to read the page rather than set the policy and move on is that the floor it establishes
+      is not a guarantee, and the documentation says so plainly in a paragraph that is easy to read past.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Three situations go below the policy's lower threshold</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Amazon EC2 Auto Scaling will continue to default to terminate and launch in the
+          following situations. Therefore, when one of these situations occur, your group's capacity might
+          be less than the lower threshold of your instance maintenance policy.&rdquo;</em>
+        </p>
+        <ul>
+          <li>An instance terminates unexpectedly, for example because of human action.</li>
+          <li>Amazon EC2 reboots, stops or retires an instance as part of a scheduled event before Auto
+            Scaling can launch the replacement.</li>
+          <li>The Spot Service initiates an interruption and a Spot Instance is then forcibly terminated.</li>
+        </ul>
+        <p>
+          None of the three is exotic. The second is ordinary scheduled maintenance on AWS's side, and the
+          third is the normal operation of a Spot fleet: <em>&ldquo;because Spot Instances are not
+          guaranteed to remain available and can be terminated with a two-minute Spot Instance
+          interruption notice, your instance maintenance policy's lower threshold can be exceeded if
+          instances are interrupted before your new instances have launched.&rdquo;</em>
+        </p>
+        <p>
+          So the policy governs replacements that Auto Scaling initiates and schedules. It does not govern
+          the ones it merely reacts to, and a minimum healthy percentage read as a capacity guarantee is
+          being read as something stronger than it is.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Without a policy, three events default one way and the fourth the other</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;The default for an Auto Scaling group is to not have an instance maintenance policy,
+          which causes it to respond to instance maintenance events with the default behaviors.&rdquo;</em>
+          Those behaviours are not the same for every event.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Event</th><th>Default behaviour</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Health check failure</td><td>Terminate and launch</td></tr>
+              <tr><td>Instance refresh</td><td>Terminate and launch</td></tr>
+              <tr><td>Maximum instance lifetime</td><td>Terminate and launch</td></tr>
+              <tr><td>Rebalancing</td><td><strong>Launch before terminating</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Rebalancing is also the one event permitted to overshoot:
+          <em>&ldquo;Amazon EC2 Auto Scaling can exceed your group's size limits by up to 10 percent of
+          its <strong>maximum capacity</strong>. However, if you're using Capacity Rebalancing, it can
+          only exceed these limits by up to 10 percent of the <strong>desired capacity</strong>.&rdquo;</em>
+        </p>
+        <p>
+          Two different bases for the same 10 percent, decided by whether Capacity Rebalancing is on. For
+          a group whose maximum is well above its desired capacity, those are very different numbers of
+          instances.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Four places can set the same two numbers</strong></div>
+      <div class="challenge-body">
+        <p>
+          The percentages can come from an instance refresh preference, a group policy, an account
+          setting, or nowhere. The order matters and is documented across two pages rather than one.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Set where</th><th>Wins over</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Instance refresh preferences</td><td>Everything, for that refresh</td></tr>
+              <tr><td>Instance maintenance policy on the group</td><td>The account setting</td></tr>
+              <tr><td><code>launchBeforeTerminate</code> account setting</td><td>The per-event defaults</td></tr>
+              <tr><td>Nothing set</td><td>&mdash; the per-event defaults above apply</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <em>&ldquo;If you configure an instance maintenance policy on a group, that policy takes
+          precedence.&rdquo;</em> And the account setting is not a toggle with no numbers behind it:
+          <em>&ldquo;When the account setting is enabled, Amazon EC2 Auto Scaling uses a minimum healthy
+          percentage of 100 and a maximum healthy percentage of 110 by default.&rdquo;</em>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-125-asg-instance-maintenance-policy.svg" alt="Diagram: Amazon EC2 Auto Scaling instance maintenance policies. A policy sets a minimum and maximum healthy percentage that applies to every event that replaces an instance in the group. The console offers three options: launch before terminating, where a new instance must be provisioned first before an existing instance can be terminated; terminate and launch, where new instances are provisioned at the same time existing ones are terminated; and a custom policy with its own minimum and maximum range. Without a policy the group uses per-event defaults, and these are not uniform: health check failure, instance refresh and maximum instance lifetime all default to terminate and launch, while rebalancing defaults to launch before terminating and may exceed the group's size limits by up to 10 percent of its maximum capacity, or by up to 10 percent of the desired capacity when Capacity Rebalancing is enabled. Three documented situations continue to default to terminate and launch regardless of the policy, so group capacity might be less than the policy's lower threshold: an instance terminating unexpectedly such as through human action, Amazon EC2 rebooting stopping or retiring an instance as part of a scheduled event before a replacement can launch, and a Spot Instance being forcibly terminated after the Spot Service initiates an interruption, which carries a two-minute interruption notice. Four places can set the percentages and the precedence runs from instance refresh preferences, through the instance maintenance policy on the group, to the launchBeforeTerminate account setting, which applies a minimum of 100 and a maximum of 110 when nothing more specific is set, and finally to the per-event defaults. Valid values are 0 to 100 percent for the minimum healthy percentage and 100 to 200 percent for the maximum. An instance counts toward the minimum only after it completes its first health check and the specified warmup time passes, so the default instance warmup prevents instances being counted before they are ready. With a warm pool the percentages are applied separately to the group and the warm pool, so a minimum of 90 and maximum of 120 against a desired capacity of 100 and a warm pool of 10 gives 90 to 120 instances in the group and 9 to 12 in the warm pool. A policy only applies to instance maintenance events and does not prevent the group being manually or automatically scaled. Launch before terminate runs one additional instance for a short time during each replacement, and if capacity for the replacement cannot be obtained the original instance is kept in service and retried. With a targeted Capacity Reservation referenced by a specific Capacity Reservation ID, the freed slot does not reclaim the replacement instance, so one instance keeps running as On-Demand capacity while one reserved slot stays unused.">
+
+    <h3>What the three console options actually set</h3>
+    <p>
+      The console presents three choices, and two of them are the ends of one range rather than separate
+      mechanisms. <em>&ldquo;Launch before terminating &ndash; A new instance must be provisioned first
+      before an existing instance can be terminated.&rdquo;</em> Against
+      <em>&ldquo;Terminate and launch &ndash; New instances are provisioned at the same time your existing
+      instances are terminated.&rdquo;</em> The third, a custom policy, exposes the minimum and maximum
+      directly.
+    </p>
+    <p>
+      The valid ranges are not symmetrical, and they tell you what each number is for. The minimum healthy
+      percentage accepts 0 to 100 percent: it describes how far below desired capacity the group may fall.
+      The maximum accepts 100 to 200 percent: it describes how far above. Neither can cross into the
+      other's territory, which is why one dial cannot express both and the policy needs two.
+    </p>
+
+    <h3>When an instance starts counting</h3>
+    <p>
+      The minimum healthy percentage is a count of instances that are ready, not instances that exist.
+      <em>&ldquo;An instance is considered healthy and ready to use after it successfully completes its
+      first health check and the specified warmup time passes.&rdquo;</em>
+    </p>
+    <p>
+      That makes the default instance warmup part of this policy's behaviour rather than a separate
+      concern. Without it, an instance that has passed one health check but is still loading a cache
+      counts toward the minimum, and Auto Scaling is free to terminate the next instance on the strength
+      of capacity that cannot yet serve a request. With it, the group waits.
+    </p>
+
+    <h3>Warm pools are counted separately</h3>
+    <p>
+      <em>&ldquo;When you use an instance maintenance policy with an Auto Scaling group that has a warm
+      pool, the minimum and maximum healthy percentages are applied separately to the Auto Scaling group
+      and the warm pool.&rdquo;</em>
+    </p>
+    <p>
+      AWS's own worked example is the clearest statement of it. With a minimum of 90 percent, a maximum of
+      120 percent, a desired capacity of 100 and a warm pool of 10:
+      <em>&ldquo;During any instance maintenance event, your Auto Scaling group might have as few as 90
+      instances and as many as 120.&rdquo;</em> Then, once the group is done,
+      <em>&ldquo;While this is happening, the warm pool might have as few as 9 instances and as many as
+      12.&rdquo;</em>
+    </p>
+    <p>
+      One policy, two independent applications of it, and the group is replaced before the warm pool is
+      touched.
+    </p>
+
+    <h3>What the policy does not touch</h3>
+    <p>
+      <em>&ldquo;An instance maintenance policy only applies to instance maintenance events and doesn't
+      prevent the group from being manually or automatically scaled.&rdquo;</em> Scaling policies and
+      scheduled actions keep running during a maintenance event and can move desired capacity underneath
+      it, within the group's scaling limits.
+    </p>
+    <p>
+      Worth stating because the percentages are expressed against desired capacity. If a scheduled action
+      halves desired capacity in the middle of an instance refresh, the absolute number of instances the
+      minimum healthy percentage protects halves with it.
+    </p>
+
+    <h3>One setting for every group in the account</h3>
+    <p>
+      <code>launchBeforeTerminate</code> is an account setting, applied with
+      <code>put-account-setting</code>, that makes launch before terminate the default for groups that
+      have neither a policy nor refresh preferences. It brings two numbers with it &mdash; 100 and 110
+      &mdash; and
+      <em>&ldquo;An instance refresh started without those preferences uses the 100 and 110 defaults if
+      there is no instance maintenance policy.&rdquo;</em>
+    </p>
+    <p>
+      It also brings a cost that is stated rather than implied:
+      <em>&ldquo;This setting runs one additional instance for a short time during each replacement.&rdquo;</em>
+      For an account with many small groups replacing instances regularly, that is a real line item, and
+      it is the correct trade for availability-sensitive groups and the wrong one for a batch fleet.
+    </p>
+
+    <h3>The failure mode is the safe one</h3>
+    <p>
+      Launch before terminate has to get capacity before it can proceed, which raises the obvious
+      question of what happens when it cannot.
+      <em>&ldquo;If Amazon EC2 Auto Scaling can't get capacity for the replacement, it keeps the original
+      instance in service and retries, so your group doesn't lose capacity.&rdquo;</em>
+    </p>
+    <p>
+      That is the right answer, and it means a capacity shortage during a replacement shows up as a slow
+      refresh rather than as a shrunken group. The documented remedies are to reserve more capacity than
+      desired capacity, to let the group use On-Demand capacity, and to give it more instance types and
+      Availability Zones.
+    </p>
+
+    <h3>The Capacity Reservation case that leaves a slot empty</h3>
+    <p>
+      This is the sharpest detail on the page, and it only exists because launch before terminate needs
+      one extra instance. A group of 10 with a fully used reservation for 10 momentarily needs capacity
+      for 11, so the replacement launches as regular On-Demand. What happens next depends on how the
+      reservation is referenced.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Reservation referenced as</th><th>After the old instance terminates</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Open Capacity Reservation</td><td>The freed slot reclaims the instance; coverage restored</td></tr>
+          <tr><td>Through a Capacity Reservation resource group</td><td>The freed slot reclaims the instance; coverage restored</td></tr>
+          <tr><td>Targeted, by a specific Capacity Reservation ID</td><td><strong>Neither</strong> &mdash; see below</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <em>&ldquo;If you use a targeted Capacity Reservation that you reference by a specific Capacity
+      Reservation ID, the freed slot does not reclaim the instance. One instance keeps running as
+      On-Demand capacity while one reserved slot stays unused.&rdquo;</em>
+    </p>
+    <p>
+      You are then paying twice for one instance's worth of capacity &mdash; the unused reserved slot and
+      the uncovered On-Demand instance &mdash; and nothing about the group's health reports it. The
+      documented fix is to reference the reservation through a resource group using
+      <code>CapacityReservationResourceGroupArns</code>, or to use an open reservation.
+    </p>
+
+    <h3>The one case where the extra instance is free</h3>
+    <p>
+      If the reservation has more capacity than the group uses, the replacement launches straight into a
+      free reserved slot. No uncovered instance, no idle slot. A reservation sized one above desired
+      capacity is what makes launch before terminate and a targeted reservation compatible.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Naming the exceptions is better than a floor that quietly leaks</h3>
+    <p>
+      A minimum healthy percentage that Auto Scaling honoured for its own replacements and silently missed
+      for a Spot interruption would be worse than one with three documented exceptions. The three cases
+      share a property: Auto Scaling learns about the termination at the same time as it happens, or
+      after. There is no point at which it could have launched first. Stating that is the honest option,
+      and it is the one AWS took.
+    </p>
+
+    <h3>Two ranges rather than one dial</h3>
+    <p>
+      Minimum 0 to 100 and maximum 100 to 200 looks redundant until you notice they meet at exactly one
+      value. Capacity during a replacement is a band around desired capacity, and the two numbers are its
+      edges. A single dial for how aggressively to replace would have had to pick a shape for that band
+      on your behalf.
+    </p>
+
+    <h3>Rebalancing defaulting the other way is right</h3>
+    <p>
+      The one event that defaults to launch before terminating is the one you did not ask for. A health
+      check failure, a refresh and a maximum lifetime expiry are all consequences of something you
+      configured; rebalancing happens because an Availability Zone recovered or a Spot pool moved. A
+      default that protects capacity during an event you did not schedule is the defensible asymmetry,
+      and it is the only one on the page.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Consistent replacement behaviour</td>
+            <td>Set an instance maintenance policy on the group</td>
+            <td>Without one, the four replacement events do not agree</td>
+          </tr>
+          <tr>
+            <td>Treating the minimum as a capacity guarantee</td>
+            <td>Do not</td>
+            <td>Three documented situations can take capacity below it</td>
+          </tr>
+          <tr>
+            <td>Spot fleets</td>
+            <td>Size for the floor being breached, not for the policy</td>
+            <td>A forced Spot termination bypasses the policy by design</td>
+          </tr>
+          <tr>
+            <td>Account-wide launch before terminate</td>
+            <td>Enable deliberately, per account</td>
+            <td>It brings 100 and 110, and one extra instance per replacement</td>
+          </tr>
+          <tr>
+            <td>Instances that need warmup</td>
+            <td>Set the default instance warmup as well</td>
+            <td>The minimum counts ready instances, not running ones</td>
+          </tr>
+          <tr>
+            <td>Targeted Capacity Reservations</td>
+            <td>Reference them through a resource group</td>
+            <td>By ID, a replacement leaves a reserved slot unused and pays On-Demand</td>
+          </tr>
+          <tr>
+            <td>Overriding the policy for one rollout</td>
+            <td>Set refresh preferences on that refresh</td>
+            <td>They take precedence, and only for that operation</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every group with a maintenance policy, checked for whether the workload can survive the lower
+        threshold being breached &mdash; because for Spot and scheduled EC2 events it will be.
+      </li>
+      <li>
+        Every account, for whether <code>launchBeforeTerminate</code> is enabled, since it changes the
+        replacement behaviour of every group that has no policy of its own.
+      </li>
+      <li>
+        Every group that references a targeted Capacity Reservation by ID and uses launch before
+        terminate in any form, for the unused slot.
+      </li>
+      <li>
+        Every group with a policy but no default instance warmup, where the minimum is being satisfied by
+        instances that have passed one health check and nothing else.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Six posts into Auto Scaling, this is the first setting whose purpose is to make the others agree,
+      and it is worth noticing what that costs. The policy does not replace the per-feature settings; it
+      sits above them, below the per-refresh preferences, and above an account setting that most people do
+      not know exists. Consistency arrived as a fourth place to look rather than as a replacement for the
+      other three.
+    </p>
+    <p>
+      The finding I would act on is the floor. A minimum healthy percentage reads like a contract, and for
+      the replacements Auto Scaling schedules it is one. For a Spot interruption, an EC2 scheduled event
+      or a human with the console open it is a preference, and the group will go below it without
+      reporting anything unusual. If the number you chose was chosen because the workload breaks below it,
+      the number is not the thing protecting you.
+    </p>
+
+    <div class="next-post">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling maximum instance lifetime: why a fleet-wide replacement schedule is expressed as a per-instance age, what AWS does to stop every instance ageing out at once, and the minimum value that makes the feature usable.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html" target="_blank" rel="noopener">Instance maintenance policy for Auto Scaling group &#8212; the three console options and what each provisions, the per-event default behaviour table including rebalancing defaulting to launch before terminating, the 10 percent overshoot and its two bases, the three situations that continue to default to terminate and launch and can take capacity below the policy's lower threshold, the two-minute Spot interruption notice, the minimum and maximum healthy percentage definitions and their valid ranges, when an instance starts counting toward the minimum, that the policy does not prevent scaling, and the warm pool worked example</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html" target="_blank" rel="noopener">Launch replacement instances before terminating old ones &#8212; the <code>launchBeforeTerminate</code> account setting, its 100 and 110 defaults, that a group policy and refresh preferences both take precedence over it, the extra instance per replacement and its cost, the retry behaviour when replacement capacity cannot be obtained, and the Capacity Reservation example in which a targeted reservation referenced by ID leaves one reserved slot unused</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/set-instance-maintenance-policy-on-group.html" target="_blank" rel="noopener">Set an instance maintenance policy on your Auto Scaling groups &#8212; that setting a policy removes the need to specify minimum and maximum healthy percentages for an instance refresh unless you intend to override the policy</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-maintenance-policy.html" target="_blank" rel="noopener">Instance maintenance policies &#8212; further reading on the small-group case the feature was designed for; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-default-instance-warmup.html" target="_blank" rel="noopener">Set the default instance warmup for an Auto Scaling group &#8212; further reading on the warmup period that decides when an instance counts toward the minimum; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-quick-ai-ready-datasets/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #85 - The largest instruction channel is the one nobody sees in the UI</span></a><a href="/blog/azure-architecture-network-segmentation-patterns-for-regulated-workloads/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #104 — Network Segmentation Patterns for Regulated Workloads</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-asg-instance-maintenance-policy/';
+      this.page.identifier = 'aws-architecture-asg-instance-maintenance-policy';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=bf6a32ba"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

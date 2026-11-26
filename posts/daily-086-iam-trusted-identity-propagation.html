@@ -1,0 +1,491 @@
+---
+title: "AWS Daily Intelligence #86 - Turning it on can reject the logins that already work"
+date: '2026-11-26T09:30:00'
+slug: aws-daily-intelligence-iam-trusted-identity-propagation
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-11-26'
+catch: "AWS extended Trusted Identity Propagation to IAM federation and IAM Roles Anywhere, so a SAML assertion, an OIDC token or an X.509 certificate can put the originating human or workload identity onto a role session and carry it through role chains without per-role trust policy changes. The announcement reads as purely additive. The documentation is blunter: enabling TIP on an identity provider that is already in use can make AWS STS reject the federation request outright with InvalidIdentityToken, if the provider does not send the Subject you configured. The second finding is quieter. TIP context stops at an AWS organization edge - STS drops it on a cross-organization role assumption while allowing the assumption to succeed - so the access keeps working and the attribution does not. A direct cross-organization request to a resource keeps the context, because no new role session is created, which means the same boundary behaves in opposite ways depending on whether a role is assumed."
+verified_claims:
+  - claim: "Trusted identity propagation (TIP) attaches identity context from a trusted source when AWS creates a role session"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "After AWS attaches the context, callers cannot change it during the lifetime of the role session"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "Trusted sources include configured external identity providers for AWS IAM federation and X.509 certificates validated against configured trust anchors for IAM Roles Anywhere"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "TIP context does not grant permissions. IAM policies and supported AWS services determine how to use the context"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "AWS STS drops TIP context at the time of the new role assumption. The role assumption can still succeed if the applicable IAM permissions and the target role's trust policy allow the request"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "A direct request to an AWS resource in an account that belongs to another AWS organization uses the original session credentials and does not create another role session"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "AWS STS does not use the AWS service principal's account"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html
+  - claim: "A missing required source or a present invalid mapped value causes AWS STS to reject the federation request with InvalidIdentityToken"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "You can optionally configure a fixed or mapped Subject type and map up to 10 additional values as runtime claims"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "TIP for IAM federation is available in supported Commercial AWS Regions, AWS China Regions, AWS GovCloud (US) Regions, and the AWS European Sovereign Cloud (Germany) Region"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "AWS recommends that you do not include personally identifying, confidential, or sensitive information in the configured Subject or runtime claims. Consider selecting an opaque, immutable identifier as the Subject"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "The IAM role remains the AWS principal in the event"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "An absent optional runtime claim is omitted from the session. A present optional runtime claim that violates a requirement causes the federation request to fail"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "The Subject, a mapped Subject type, and each mapped runtime claim must contain one value of no more than 128 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "Each supplied key must contain 1 to 128 characters. It can contain only ASCII letters and digits, single spaces, and the characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "TIP context shares the capacity of the AWS STS session token with other session data; it does not have a separate fixed aggregate runtime-claim quota in the IAM service model. If the combined session content is too large, the federation request fails with PackedPolicyTooLarge"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "For SAML federation, aws:OriginIdentity/Issuer is the lowercase hexadecimal SHA-384 hash of the DER-encoded public key that AWS used to verify the SAML assertion's signature. The resulting value identifies the signing key, not the SAML assertion Issuer element"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "AWS STS flattens an object claim nested one level into"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "The Subject value must match the corresponding user's Username in IAM Identity Center so that the AWS service can resolve group membership"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "If Role B is within the boundary, AWS STS carries TIP context into the new role session without requiring a customer-authored Allow for sts:SetContext"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html
+  - claim: "Core origin identity appears in userIdentity.onBehalfOf. Runtime claims appear in userIdentity.transactionContext.IdentityProvider"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html
+  - claim: "AWS IAM extends trusted identity propagation to IAM federation and IAM Roles Anywhere, and simplifies it in IAM Identity Center"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/aws-iam/
+---
+
+<div id="jk-post">
+
+<p class="lead">
+  This launch is about attribution: putting the identity of the human or workload that started a workflow
+  onto a role session, so a shared role stops being the end of the audit trail. The feature is a good one.
+  The two things worth knowing before you enable it are that switching it on can break federation that
+  currently works, and that the context has a boundary which drops it without stopping the request.
+</p>
+
+<p>
+  <em>&ldquo;A missing required source or a present invalid mapped value causes AWS STS to reject the
+  federation request with <strong>InvalidIdentityToken</strong>.&rdquo;</em>
+</p>
+
+<div class="section" id="summary">
+  <h2>Executive summary</h2>
+  <p>
+    The announcement is titled
+    <em>&ldquo;AWS IAM extends trusted identity propagation to IAM federation and IAM Roles Anywhere, and
+    simplifies it in IAM Identity Center&rdquo;</em>. What that extension means is that
+    <em>&ldquo;Trusted identity propagation (TIP) attaches identity context from a trusted source when AWS
+    creates a role session&rdquo;</em>, and that
+    <em>&ldquo;Trusted sources include configured external identity providers for AWS IAM federation and
+    X.509 certificates validated against configured trust anchors for IAM Roles Anywhere.&rdquo;</em>
+  </p>
+  <p>
+    Two properties make it worth using. The context is immutable &mdash;
+    <em>&ldquo;After AWS attaches the context, callers cannot change it during the lifetime of the role
+    session&rdquo;</em> &mdash; and it survives a role chain without per-role configuration:
+    <em>&ldquo;If Role B is within the boundary, AWS STS carries TIP context into the new role session
+    without requiring a customer-authored Allow for <code>sts:SetContext</code>.&rdquo;</em>
+  </p>
+  <p>
+    What the announcement does not set out is the failure mode on enablement, the shape of the propagation
+    boundary, or the limits: one Subject, up to ten runtime claims, and 128 characters per value.
+  </p>
+</div>
+
+<div class="section" id="changed">
+  <h2>What changed</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>Identity now sourced from</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>TIP for IAM federation</td><td>A SAML assertion field or OIDC token claim</td></tr>
+        <tr><td>TIP for IAM Roles Anywhere</td><td>An X.509 certificate validated against a trust anchor</td></tr>
+        <tr><td>Outbound identity federation</td><td>An AWS-signed JWT from <code>GetWebIdentityToken</code>, carrying the context outward</td></tr>
+        <tr><td>IAM Identity Center</td><td>Username alongside user IDs</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The announcement gives availability as all commercial AWS Regions, the AWS GovCloud (US) Regions and
+    the AWS European Sovereign Cloud (Germany) Region. The documentation's own availability statement is
+    worded differently and includes a partition the announcement does not mention:
+    <em>&ldquo;TIP for IAM federation is available in supported Commercial AWS Regions, AWS China Regions,
+    AWS GovCloud (US) Regions, and the AWS European Sovereign Cloud (Germany) Region.&rdquo;</em> Check
+    the Region you need rather than reading either sentence as a complete list.
+  </p>
+</div>
+
+<div class="section" id="architecture">
+  <h2>Architecture</h2>
+
+  <img src="/blog/assets/diagrams/daily-086-iam-trusted-identity-propagation.svg" alt="Diagram: AWS IAM trusted identity propagation extended to IAM federation and IAM Roles Anywhere. TIP attaches identity context from a trusted source when AWS creates a role session, and after AWS attaches the context callers cannot change it during the lifetime of the session. Trusted sources include configured external identity providers for AWS IAM federation and X.509 certificates validated against configured trust anchors for IAM Roles Anywhere. Enabling TIP on an identity provider already in use carries a hard failure mode: a missing required Subject source or a present invalid mapped value causes AWS STS to reject the federation request with InvalidIdentityToken, while an absent optional runtime claim is simply omitted from the session. The propagation boundary is derived by AWS from the account that owns the IAM identity provider and, when that account belongs to an organization, from that organization. Within the boundary AWS STS carries TIP context into a new role session without requiring a customer-authored Allow for sts:SetContext. Outside it, AWS STS drops TIP context at the time of the new role assumption, and the role assumption can still succeed if the applicable IAM permissions and the target role's trust policy allow the request, so access continues while attribution stops. The same boundary behaves differently for a direct request, because a direct request to a resource in an account belonging to another organization uses the original session credentials and does not create another role session, so the context is still carried. When a supported AWS service assumes an IAM service role, AWS STS applies the same boundary and does not use the AWS service principal's account. Limits are one Subject, an optional Subject type, and up to 10 additional values mapped as runtime claims; each key is 1 to 128 characters of ASCII letters, digits, single spaces and a limited punctuation set; each value must be a single value of no more than 128 characters. There is no separate aggregate runtime-claim quota because TIP context shares the capacity of the AWS STS session token with other session data, and an oversized session fails with PackedPolicyTooLarge. For OIDC, AWS STS flattens an object claim nested one level, rejects anything deeper, and rejects a flattened key that collides with another claim of the same name. For SAML, the Issuer context key is the lowercase hexadecimal SHA-384 hash of the DER-encoded public key used to verify the assertion signature, and identifies the signing key rather than the assertion Issuer element. TIP context does not grant permissions; IAM policies and supported AWS services determine how to use it. In CloudTrail, core origin identity appears in userIdentity.onBehalfOf and runtime claims in userIdentity.transactionContext.IdentityProvider, while the IAM role remains the AWS principal in the event. AWS recommends not including personally identifying, confidential or sensitive information in the Subject or runtime claims and suggests an opaque immutable identifier, yet group-based access requires the Subject value to match the corresponding user's Username in IAM Identity Center.">
+
+  <h3>The enablement failure nobody schedules</h3>
+  <p>
+    TIP is configured on the identity provider, which is a shared object. Every role session created
+    through that provider goes through the new validation, and the validation is not advisory. The
+    documentation puts a warning on it:
+    <em>&ldquo;Before you enable TIP on an IAM identity provider that is already in use, confirm that the
+    identity provider sends every required Subject and mapped Subject type value.&rdquo;</em>
+  </p>
+  <p>
+    The asymmetry between the two kinds of mapping is the part to hold on to:
+    <em>&ldquo;An absent optional runtime claim is omitted from the session. A present optional runtime
+    claim that violates a requirement causes the federation request to fail.&rdquo;</em>
+  </p>
+  <p>
+    So a claim your provider never sends costs you nothing. A claim it does send, in a shape TIP rejects,
+    costs you the login. The rejection list includes a source that is present but empty, one that contains
+    only whitespace, one that contains multiple values, one longer than 128 characters, and a mapped
+    Subject type whose value is anything other than <code>user</code> or <code>workload</code>. A
+    multi-valued group attribute in an existing SAML assertion satisfies several of those at once.
+  </p>
+
+  <h3>The boundary drops context and lets the call through</h3>
+  <p>
+    The propagation boundary is not something you write. AWS derives it from the account that owns the IAM
+    identity provider, and from that account's organization when it has one. What happens at the edge is
+    stated precisely:
+    <em>&ldquo;AWS STS drops TIP context at the time of the new role assumption. The role assumption can
+    still succeed if the applicable IAM permissions and the target role's trust policy allow the
+    request.&rdquo;</em>
+  </p>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Origin account</th><th>Target role's account</th><th>Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>In an organization</td><td>Same organization</td><td>Carried</td></tr>
+        <tr><td>In an organization</td><td>Standalone, or a different organization</td><td><strong>Dropped</strong></td></tr>
+        <tr><td>Not in an organization</td><td>The origin account</td><td>Carried</td></tr>
+        <tr><td>Not in an organization</td><td>Any other account</td><td><strong>Dropped</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    This is the right design &mdash; identity context should not leak into an organization you do not
+    control &mdash; but it means the thing that stops at the boundary is the audit trail, not the access.
+    A cross-organization role chain that works today will keep working, and the CloudTrail events on the
+    far side will attribute the activity to the role.
+  </p>
+
+  <h3>Assuming a role and calling a resource behave oppositely</h3>
+  <p>
+    The boundary applies to role assumptions that create new session credentials, and a direct request
+    does not create any:
+    <em>&ldquo;A direct request to an AWS resource in an account that belongs to another AWS organization
+    uses the original session credentials and does not create another role session.&rdquo;</em>
+  </p>
+  <p>
+    Reading those two rules together: calling a resource in another organization directly keeps the
+    context, and assuming a role in that same organization loses it. The determining factor is whether new
+    credentials are minted, not where the target lives. For cross-organization resource access the
+    documentation notes that a resource policy can evaluate the TIP condition keys carried in the request.
+  </p>
+
+  <h3>Service roles use your boundary, not the service's</h3>
+  <p>
+    When a supported AWS service assumes a service role on your behalf, the obvious implementation would
+    check the service principal's account. It does not:
+    <em>&ldquo;AWS STS does not use the AWS service principal's account.&rdquo;</em> The same origin
+    account and origin organization decide it, which is what makes the boundary mean one thing across both
+    paths.
+  </p>
+
+  <h3>The limits, and the one that is not a number</h3>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Thing</th><th>Limit</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Subject</td><td>Exactly one, required</td></tr>
+        <tr><td>Subject type</td><td>Optional, <code>user</code> or <code>workload</code></td></tr>
+        <tr><td>Runtime claims</td><td>Up to 10</td></tr>
+        <tr><td>Each source or target key</td><td>1 to 128 characters</td></tr>
+        <tr><td>Each mapped value</td><td>One value, 128 characters maximum</td></tr>
+        <tr><td>All of it together</td><td>No separate quota &mdash; see below</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The aggregate is the interesting one, because there is no figure to design against:
+    <em>&ldquo;TIP context shares the capacity of the AWS STS session token with other session data; it
+    does not have a separate fixed aggregate runtime-claim quota in the IAM service model. If the combined
+    session content is too large, the federation request fails with
+    <strong>PackedPolicyTooLarge</strong>.&rdquo;</em>
+  </p>
+  <p>
+    That puts runtime claims in competition with session policies and session tags for one budget. Ten
+    claims at 128 characters is a small addition on its own and a meaningful one on top of a session that
+    is already carrying a packed policy.
+  </p>
+
+  <h3>Two shapes that will surprise you</h3>
+  <p>
+    For OIDC, nesting is supported exactly one level deep:
+    <em>&ldquo;AWS STS flattens an object claim nested one level into&rdquo;</em> a
+    <code>claim/member</code> source, so <code>org/team</code> is mappable from an <code>org</code> object
+    containing <code>team</code>. Deeper nesting is rejected, the object itself is treated as absent, and a
+    flattened key that collides with another claim of the same name is rejected even when neither is
+    mapped.
+  </p>
+  <p>
+    For SAML, the Issuer context key is not what the name suggests:
+    <em>&ldquo;For SAML federation, <code>aws:OriginIdentity/Issuer</code> is the lowercase hexadecimal
+    SHA-384 hash of the DER-encoded public key that AWS used to verify the SAML assertion's signature. The
+    resulting value identifies the signing key, not the SAML assertion Issuer element.&rdquo;</em>
+  </p>
+  <p>
+    A policy condition written against the entity ID you see in your identity provider's metadata will
+    never match. It also means the value changes when the signing certificate is rotated, so any policy
+    that pins Issuer for SAML is pinned to a key rather than to a provider.
+  </p>
+
+  <h3>The guidance on the Subject points two ways</h3>
+  <p>
+    On choosing a Subject, the documentation is clear:
+    <em>&ldquo;AWS recommends that you do not include personally identifying, confidential, or sensitive
+    information in the configured Subject or runtime claims. Consider selecting an opaque, immutable
+    identifier as the Subject.&rdquo;</em>
+  </p>
+  <p>
+    And on group-based access, equally clear:
+    <em>&ldquo;The Subject value must match the corresponding user's Username in IAM Identity Center so
+    that the AWS service can resolve group membership.&rdquo;</em>
+  </p>
+  <p>
+    Those are reconcilable only if the Identity Center Username is itself opaque, which for most
+    directories it is not &mdash; it is an email address. A deployment that wants group-based
+    authorisation and an opaque Subject has to make the usernames opaque in the directory, and that is a
+    decision about the directory rather than about IAM. The simplification the announcement mentions,
+    adding username alongside user IDs in Identity Center, is the same seam from the other side.
+  </p>
+</div>
+
+<div class="section" id="value">
+  <h2>Business value</h2>
+  <p>
+    The problem TIP addresses is real and common:
+    <em>&ldquo;Multiple human users or workloads can use the same IAM role. The role determines what the
+    session can do, but the role alone does not identify the human user or workload throughout an AWS
+    workflow.&rdquo;</em>
+  </p>
+  <p>
+    Every organisation running a CI/CD platform or a shared analytics role has this. One role, many
+    actors, and a CloudTrail record that names the role. The extension to IAM federation matters because
+    it does not require moving to IAM Identity Center first &mdash; the existing SAML or OIDC federation
+    path stays, and TIP is added to the provider.
+  </p>
+  <p>
+    The value is in two places. For authorisation, a policy can now condition on who started the
+    workflow rather than only on which role is being used. For audit, the originator appears in CloudTrail
+    alongside the role. Both are improvements on a role name, and neither requires the role count to grow.
+  </p>
+</div>
+
+<div class="section" id="security">
+  <h2>Security considerations</h2>
+  <p>
+    The most important sentence in the documentation is a disclaimer:
+    <em>&ldquo;TIP context does not grant permissions. IAM policies and supported AWS services determine
+    how to use the context.&rdquo;</em> Attaching context changes nothing about what a session can do
+    until a policy is written to read it.
+  </p>
+  <p>
+    The immutability is what makes it trustworthy. Context is attached only after AWS validates the
+    assertion or token, a downstream caller cannot change or remove it, and the namespaces are separated
+    so a customer-mapped runtime claim cannot overwrite the Subject or Issuer.
+  </p>
+  <p>
+    Two things to hold in mind. First, the origin account and organization keys are AWS-derived and not
+    configurable, which is what makes the boundary a boundary rather than a setting. Second, the context
+    is identity data travelling with requests, and the documentation says so:
+    the identifier and attributes travel to the accounts and Regions your federated users access, and AWS
+    may also process them in default Regions required to fulfil a request. That is the reason behind the
+    recommendation against putting personal data in the Subject.
+  </p>
+  <p>
+    On audit, note what does not change:
+    <em>&ldquo;The IAM role remains the AWS principal in the event.&rdquo;</em> TIP adds the originator
+    next to the principal; it does not replace it.
+  </p>
+</div>
+
+<div class="section" id="cost">
+  <h2>Cost considerations</h2>
+  <p>
+    No price is attached to TIP in the announcement, and the capability is part of IAM, AWS STS and IAM
+    Roles Anywhere rather than a separate product. The documentation does flag that AWS uses the
+    propagated identifier and attributes to calculate fees and allocate costs to users, which is a
+    statement about attribution rather than about a new charge.
+  </p>
+  <p>
+    The real cost is operational and it lands once: auditing an existing identity provider's assertions
+    before enabling TIP on it. That is cheaper than the alternative, which is discovering the gap through
+    rejected logins.
+  </p>
+</div>
+
+<div class="section" id="operational">
+  <h2>Operational considerations</h2>
+  <p>
+    Enable it on a new identity provider, or on a copy, before enabling it on the one your users depend
+    on. The configuration is per provider and the validation is per federation request, so there is no
+    gradual rollout inside a single provider &mdash; the change is live for everyone who uses it the
+    moment it is saved.
+  </p>
+  <p>
+    For verification, CloudTrail is the instrument:
+    <em>&ldquo;Core origin identity appears in <code>userIdentity.onBehalfOf</code>. Runtime claims appear
+    in <code>userIdentity.transactionContext.IdentityProvider</code>.&rdquo;</em> The federation event that
+    creates the session records the context, so a single test login tells you whether the mapping produced
+    what you expected.
+  </p>
+  <p>
+    Reserved target-key suffixes will bite anyone mapping obvious names: <code>subject</code>,
+    <code>subjecttype</code>, <code>identitystorearn</code>, <code>identitycenterinstancearn</code> and
+    <code>identitycentersessionid</code> are taken, in any capitalisation. There is also a derived-key
+    rule worth knowing before it surprises you &mdash; a target key ending in <code>IssueTime</code>
+    reserves the matching <code>Age</code> key, so <code>loginIssueTime</code> reserves
+    <code>loginAge</code>, and a claim mapped to an <code>IssueTime</code> key must contain an integer.
+  </p>
+</div>
+
+<div class="section" id="tradeoffs">
+  <h2>Tradeoffs</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Design choice</th><th>What you get</th><th>What it costs</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Validation that rejects the federation request</td>
+          <td>A mapping that silently produced nothing is impossible</td>
+          <td>Enabling TIP on a live provider can refuse logins</td>
+        </tr>
+        <tr>
+          <td>Dropping context at the organization edge</td>
+          <td>Identity does not leak into organizations you do not control</td>
+          <td>Cross-organization activity is attributed to the role only</td>
+        </tr>
+        <tr>
+          <td>Letting the assumption succeed without the context</td>
+          <td>No existing cross-organization workflow breaks</td>
+          <td>The attribution gap is silent; nothing reports it</td>
+        </tr>
+        <tr>
+          <td>An AWS-derived boundary</td>
+          <td>Nobody can widen propagation by editing a policy</td>
+          <td>No way to deliberately extend it to a partner organization</td>
+        </tr>
+        <tr>
+          <td>No aggregate claim quota</td>
+          <td>Claims are not capped below what the session can hold</td>
+          <td>The ceiling is shared and only visible as a failure</td>
+        </tr>
+        <tr>
+          <td>Subject as the Identity Center Username</td>
+          <td>Group-based authorisation resolves</td>
+          <td>Pulls against the advice to keep the Subject opaque</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section" id="implementation">
+  <h2>Implementation guidance</h2>
+  <p>
+    Start by reading one real assertion or token from the provider you intend to change, and pick the
+    Subject from what is actually in it. The source has to be present on every federation, single-valued,
+    within 128 characters, and stable enough that a policy written against it stays true.
+  </p>
+  <p>
+    Map runtime claims second and sparingly. Each one is a new way for a federation request to fail, and
+    the ones worth the risk are the ones a policy or an audit query will read &mdash; a repository name, a
+    workflow name, an environment. A claim nobody will condition on is pure downside.
+  </p>
+  <p>
+    Then write the policy conditions. The documentation's advice on this is specific and easy to get
+    wrong: when a policy identifies a specific originator, evaluate Subject together with Issuer. A
+    Subject on its own is only unique within the provider that issued it.
+  </p>
+  <p>
+    Finally, decide the group-based access question deliberately rather than by default. It is a separate
+    switch, it associates an Identity Center instance with the provider, and it imposes the Username
+    constraint on the Subject you have already chosen.
+  </p>
+</div>
+
+<div class="section" id="practices">
+  <h2>Best practices</h2>
+  <ul>
+    <li>Audit the identity provider's assertions before enabling TIP on it, not after.</li>
+    <li>Prefer an opaque, immutable Subject, and resolve the Identity Center Username conflict in the
+      directory rather than by giving up on it.</li>
+    <li>Pair Subject with Issuer in every policy condition that names an originator.</li>
+    <li>Do not pin <code>aws:OriginIdentity/Issuer</code> for SAML to anything you expect to survive a
+      signing-certificate rotation.</li>
+    <li>Map the claims a policy or an audit will read, and nothing else.</li>
+    <li>Confirm a service carries TIP context into its service role credentials before writing a policy
+      that depends on it there.</li>
+    <li>Treat a cross-organization role assumption as an attribution boundary, and plan the audit story on
+      the far side of it.</li>
+  </ul>
+</div>
+
+<div class="section" id="adopt">
+  <h2>Who should adopt this and when</h2>
+  <p>
+    Anyone running a shared role with many actors behind it, and particularly anyone whose CI/CD platform
+    federates into AWS through OIDC. The documentation's own example is a GitHub Actions workload using
+    OIDC to assume a shared role, with the repository, workflow and run identity attached to the session.
+    That is the case where a role name is least informative and the gain is largest.
+  </p>
+  <p>
+    Also worth it for organisations that have stayed on IAM federation rather than moving to IAM Identity
+    Center, because this is the first time TIP is available on that path without changing it.
+  </p>
+  <p>
+    Not yet, if the downstream services you care about do not consume the context. TIP context attaches
+    regardless, and the audit value is immediate, but the authorisation value depends on service support.
+  </p>
+</div>
+
+<div class="section" id="takeaways">
+  <h2>Key takeaways</h2>
+  <ul>
+    <li>Enabling TIP on a provider already in use can make AWS STS reject federation requests with
+      <code>InvalidIdentityToken</code>. An absent optional claim is harmless; a present invalid one is
+      not.</li>
+    <li>Context is dropped at an organization edge and the role assumption still succeeds, so access
+      continues and attribution stops, with nothing reporting it.</li>
+    <li>A direct cross-organization request keeps the context, because no new role session is created.
+      Minting credentials is the trigger, not crossing an account line.</li>
+    <li>One Subject, up to 10 runtime claims, 128 characters per key and per value, and no separate
+      aggregate quota &mdash; the ceiling is the AWS STS session token, shared with session policies and
+      tags.</li>
+    <li>For SAML, the Issuer key is a hash of the signing public key, not the assertion's Issuer element.
+      It changes when the certificate rotates.</li>
+    <li>The Subject should be opaque, and group-based access requires it to equal the Identity Center
+      Username. Both statements are in the documentation.</li>
+  </ul>
+</div>
+
+<div class="section" id="references">
+  <h2>Official AWS references</h2>
+  <ul>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/11/aws-iam/" target="_blank" rel="noopener">AWS IAM extends trusted identity propagation to IAM federation and IAM Roles Anywhere, and simplifies it in IAM Identity Center &#8212; the announcement, its stated Region availability, and the four capabilities covered above</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip.html" target="_blank" rel="noopener">Trusted identity propagation with IAM &#8212; what TIP attaches and when, the trusted sources, that the context is immutable for the life of the session, that it grants no permissions, the propagation boundary table and the behaviour at each edge, that a direct cross-organization request does not create a role session, and that a service assuming a service role does not use the service principal's account</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation.html" target="_blank" rel="noopener">TIP for IAM federation &#8212; the warning to confirm the provider sends every required value before enabling TIP on a provider in use, the <code>InvalidIdentityToken</code> rejection, the limit of 10 runtime claims, Regional and partition availability, the recommendation against personal data in the Subject, the CloudTrail locations, and that the IAM role remains the principal in the event</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_federation_context_keys.html" target="_blank" rel="noopener">TIP context keys and runtime claims for IAM federation &#8212; every context key and its presence rule, the 1 to 128 character key requirement and permitted characters, the single-value 128-character limit, the reserved target-key suffixes and the <code>IssueTime</code> derived-key rule, one-level OIDC object flattening and the collision rejection, the SAML Issuer being a SHA-384 hash of the signing key, the absent-versus-invalid claim asymmetry, <code>PackedPolicyTooLarge</code>, that no Allow for <code>sts:SetContext</code> is needed within the boundary, and the Identity Center Username requirement for group resolution</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_outbound.html" target="_blank" rel="noopener">Federating AWS identities to external services &#8212; further reading on the outbound path and the signed JWT from <code>GetWebIdentityToken</code>; no claims in this post are drawn from it</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_cloudtrail.html" target="_blank" rel="noopener">Logging TIP activity with AWS CloudTrail &#8212; further reading on event fields, recipient accounts, retention and redaction; no claims in this post are drawn from it</a></li>
+    <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_tip_services.html" target="_blank" rel="noopener">AWS services that support TIP &#8212; further reading on which services can use the context in policies and log it; no claims in this post are drawn from it</a></li>
+  </ul>
+</div>
+
+</div>

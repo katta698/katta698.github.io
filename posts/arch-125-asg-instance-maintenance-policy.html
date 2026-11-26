@@ -1,0 +1,436 @@
+---
+title: "AWS Architecture Series #125 — The policy sets a floor that three events ignore"
+date: '2026-11-26T09:00:00'
+slug: aws-architecture-asg-instance-maintenance-policy
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-26'
+problem: "An instance maintenance policy is the setting that finally makes replacement behaviour consistent across an Auto Scaling group: one minimum and maximum healthy percentage, applied to every event that replaces an instance, instead of a different answer per feature. It does make the defaults consistent. What it does not do is guarantee the floor it appears to set - AWS documents three situations in which a group continues to terminate and launch regardless of the policy, and in each one capacity can fall below the policy's lower threshold. The defaults without a policy are not uniform either: three of the four replacement events default to terminate and launch, and rebalancing defaults to launch before terminating and is allowed to exceed the group's size limits by up to 10 percent."
+builds: "A precise reading of what an instance maintenance policy controls: the three console options and what each sets, the per-event default behaviours and the one that differs, the three documented situations that bypass the policy's lower threshold, the full precedence chain from instance refresh preferences through the policy to the launchBeforeTerminate account setting, the valid ranges for each percentage, how warm pools are counted separately, what instance warmup changes about the minimum, and the Capacity Reservation interaction that leaves a reserved slot unused."
+verified_claims:
+  - claim: "Launch before terminating – A new instance must be provisioned first before an existing instance can be terminated"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "Terminate and launch – New instances are provisioned at the same time your existing instances are terminated"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "The default for an Auto Scaling group is to not have an instance maintenance policy, which causes it to respond to instance maintenance events with the default behaviors"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "Amazon EC2 Auto Scaling can exceed your group's size limits by up to 10 percent of its maximum capacity. However, if you're using Capacity Rebalancing, it can only exceed these limits by up to 10 percent of the desired capacity"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "Amazon EC2 Auto Scaling will continue to default to terminate and launch in the following situations. Therefore, when one of these situations occur, your group's capacity might be less than the lower threshold of your instance maintenance policy"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "because Spot Instances are not guaranteed to remain available and can be terminated with a two-minute Spot Instance interruption notice, your instance maintenance policy's lower threshold can be exceeded if instances are interrupted before your new instances have launched"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "An instance is considered healthy and ready to use after it successfully completes its first health check and the specified warmup time passes"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "An instance maintenance policy only applies to instance maintenance events and doesn't prevent the group from being manually or automatically scaled"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "During any instance maintenance event, your Auto Scaling group might have as few as 90 instances and as many as 120"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "While this is happening, the warm pool might have as few as 9 instances and as many as 12"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "When you use an instance maintenance policy with an Auto Scaling group that has a warm pool, the minimum and maximum healthy percentages are applied separately to the Auto Scaling group and the warm pool"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html
+  - claim: "By setting an instance maintenance policy on your Auto Scaling group, you no longer have to specify values for minimum and maximum healthy percentage parameters for the instance refresh feature unless you want to override the instance maintenance policy"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/set-instance-maintenance-policy-on-group.html
+  - claim: "When the account setting is enabled, Amazon EC2 Auto Scaling uses a minimum healthy percentage of 100 and a maximum healthy percentage of 110 by default"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+  - claim: "If you configure an instance maintenance policy on a group, that policy takes precedence"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+  - claim: "An instance refresh started without those preferences uses the 100 and 110 defaults if there is no instance maintenance policy"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+  - claim: "This setting runs one additional instance for a short time during each replacement"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+  - claim: "If Amazon EC2 Auto Scaling can't get capacity for the replacement, it keeps the original instance in service and retries, so your group doesn't lose capacity"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+  - claim: "If you use a targeted Capacity Reservation that you reference by a specific Capacity Reservation ID, the freed slot does not reclaim the instance. One instance keeps running as On-Demand capacity while one reserved slot stays unused"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html
+---
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #125 &middot; Reliability</div>
+  <h1 class="post-title">The policy sets a floor that three events ignore</h1>
+  <p class="post-subtitle">An instance maintenance policy makes every replacement in a group obey one minimum and maximum. It is the setting that finally makes the defaults consistent &mdash; and AWS documents three situations in which a group replaces instances the old way anyway, each of which can take capacity below the number you set.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Cost Optimization</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous four posts in this series each ended at the same place: a replacement behaviour that
+      depends on which feature triggered it. A health check failure replaces one way, an instance refresh
+      another, a maximum instance lifetime a third. An instance maintenance policy is AWS's answer to
+      that, and it works &mdash; one minimum and maximum healthy percentage set on the group, applied to
+      every event that replaces an instance.
+    </p>
+    <p>
+      The reason to read the page rather than set the policy and move on is that the floor it establishes
+      is not a guarantee, and the documentation says so plainly in a paragraph that is easy to read past.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Three situations go below the policy's lower threshold</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Amazon EC2 Auto Scaling will continue to default to terminate and launch in the
+          following situations. Therefore, when one of these situations occur, your group's capacity might
+          be less than the lower threshold of your instance maintenance policy.&rdquo;</em>
+        </p>
+        <ul>
+          <li>An instance terminates unexpectedly, for example because of human action.</li>
+          <li>Amazon EC2 reboots, stops or retires an instance as part of a scheduled event before Auto
+            Scaling can launch the replacement.</li>
+          <li>The Spot Service initiates an interruption and a Spot Instance is then forcibly terminated.</li>
+        </ul>
+        <p>
+          None of the three is exotic. The second is ordinary scheduled maintenance on AWS's side, and the
+          third is the normal operation of a Spot fleet: <em>&ldquo;because Spot Instances are not
+          guaranteed to remain available and can be terminated with a two-minute Spot Instance
+          interruption notice, your instance maintenance policy's lower threshold can be exceeded if
+          instances are interrupted before your new instances have launched.&rdquo;</em>
+        </p>
+        <p>
+          So the policy governs replacements that Auto Scaling initiates and schedules. It does not govern
+          the ones it merely reacts to, and a minimum healthy percentage read as a capacity guarantee is
+          being read as something stronger than it is.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Without a policy, three events default one way and the fourth the other</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;The default for an Auto Scaling group is to not have an instance maintenance policy,
+          which causes it to respond to instance maintenance events with the default behaviors.&rdquo;</em>
+          Those behaviours are not the same for every event.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Event</th><th>Default behaviour</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Health check failure</td><td>Terminate and launch</td></tr>
+              <tr><td>Instance refresh</td><td>Terminate and launch</td></tr>
+              <tr><td>Maximum instance lifetime</td><td>Terminate and launch</td></tr>
+              <tr><td>Rebalancing</td><td><strong>Launch before terminating</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Rebalancing is also the one event permitted to overshoot:
+          <em>&ldquo;Amazon EC2 Auto Scaling can exceed your group's size limits by up to 10 percent of
+          its <strong>maximum capacity</strong>. However, if you're using Capacity Rebalancing, it can
+          only exceed these limits by up to 10 percent of the <strong>desired capacity</strong>.&rdquo;</em>
+        </p>
+        <p>
+          Two different bases for the same 10 percent, decided by whether Capacity Rebalancing is on. For
+          a group whose maximum is well above its desired capacity, those are very different numbers of
+          instances.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Four places can set the same two numbers</strong></div>
+      <div class="challenge-body">
+        <p>
+          The percentages can come from an instance refresh preference, a group policy, an account
+          setting, or nowhere. The order matters and is documented across two pages rather than one.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Set where</th><th>Wins over</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Instance refresh preferences</td><td>Everything, for that refresh</td></tr>
+              <tr><td>Instance maintenance policy on the group</td><td>The account setting</td></tr>
+              <tr><td><code>launchBeforeTerminate</code> account setting</td><td>The per-event defaults</td></tr>
+              <tr><td>Nothing set</td><td>&mdash; the per-event defaults above apply</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <em>&ldquo;If you configure an instance maintenance policy on a group, that policy takes
+          precedence.&rdquo;</em> And the account setting is not a toggle with no numbers behind it:
+          <em>&ldquo;When the account setting is enabled, Amazon EC2 Auto Scaling uses a minimum healthy
+          percentage of 100 and a maximum healthy percentage of 110 by default.&rdquo;</em>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-125-asg-instance-maintenance-policy.svg" alt="Diagram: Amazon EC2 Auto Scaling instance maintenance policies. A policy sets a minimum and maximum healthy percentage that applies to every event that replaces an instance in the group. The console offers three options: launch before terminating, where a new instance must be provisioned first before an existing instance can be terminated; terminate and launch, where new instances are provisioned at the same time existing ones are terminated; and a custom policy with its own minimum and maximum range. Without a policy the group uses per-event defaults, and these are not uniform: health check failure, instance refresh and maximum instance lifetime all default to terminate and launch, while rebalancing defaults to launch before terminating and may exceed the group's size limits by up to 10 percent of its maximum capacity, or by up to 10 percent of the desired capacity when Capacity Rebalancing is enabled. Three documented situations continue to default to terminate and launch regardless of the policy, so group capacity might be less than the policy's lower threshold: an instance terminating unexpectedly such as through human action, Amazon EC2 rebooting stopping or retiring an instance as part of a scheduled event before a replacement can launch, and a Spot Instance being forcibly terminated after the Spot Service initiates an interruption, which carries a two-minute interruption notice. Four places can set the percentages and the precedence runs from instance refresh preferences, through the instance maintenance policy on the group, to the launchBeforeTerminate account setting, which applies a minimum of 100 and a maximum of 110 when nothing more specific is set, and finally to the per-event defaults. Valid values are 0 to 100 percent for the minimum healthy percentage and 100 to 200 percent for the maximum. An instance counts toward the minimum only after it completes its first health check and the specified warmup time passes, so the default instance warmup prevents instances being counted before they are ready. With a warm pool the percentages are applied separately to the group and the warm pool, so a minimum of 90 and maximum of 120 against a desired capacity of 100 and a warm pool of 10 gives 90 to 120 instances in the group and 9 to 12 in the warm pool. A policy only applies to instance maintenance events and does not prevent the group being manually or automatically scaled. Launch before terminate runs one additional instance for a short time during each replacement, and if capacity for the replacement cannot be obtained the original instance is kept in service and retried. With a targeted Capacity Reservation referenced by a specific Capacity Reservation ID, the freed slot does not reclaim the replacement instance, so one instance keeps running as On-Demand capacity while one reserved slot stays unused.">
+
+    <h3>What the three console options actually set</h3>
+    <p>
+      The console presents three choices, and two of them are the ends of one range rather than separate
+      mechanisms. <em>&ldquo;Launch before terminating &ndash; A new instance must be provisioned first
+      before an existing instance can be terminated.&rdquo;</em> Against
+      <em>&ldquo;Terminate and launch &ndash; New instances are provisioned at the same time your existing
+      instances are terminated.&rdquo;</em> The third, a custom policy, exposes the minimum and maximum
+      directly.
+    </p>
+    <p>
+      The valid ranges are not symmetrical, and they tell you what each number is for. The minimum healthy
+      percentage accepts 0 to 100 percent: it describes how far below desired capacity the group may fall.
+      The maximum accepts 100 to 200 percent: it describes how far above. Neither can cross into the
+      other's territory, which is why one dial cannot express both and the policy needs two.
+    </p>
+
+    <h3>When an instance starts counting</h3>
+    <p>
+      The minimum healthy percentage is a count of instances that are ready, not instances that exist.
+      <em>&ldquo;An instance is considered healthy and ready to use after it successfully completes its
+      first health check and the specified warmup time passes.&rdquo;</em>
+    </p>
+    <p>
+      That makes the default instance warmup part of this policy's behaviour rather than a separate
+      concern. Without it, an instance that has passed one health check but is still loading a cache
+      counts toward the minimum, and Auto Scaling is free to terminate the next instance on the strength
+      of capacity that cannot yet serve a request. With it, the group waits.
+    </p>
+
+    <h3>Warm pools are counted separately</h3>
+    <p>
+      <em>&ldquo;When you use an instance maintenance policy with an Auto Scaling group that has a warm
+      pool, the minimum and maximum healthy percentages are applied separately to the Auto Scaling group
+      and the warm pool.&rdquo;</em>
+    </p>
+    <p>
+      AWS's own worked example is the clearest statement of it. With a minimum of 90 percent, a maximum of
+      120 percent, a desired capacity of 100 and a warm pool of 10:
+      <em>&ldquo;During any instance maintenance event, your Auto Scaling group might have as few as 90
+      instances and as many as 120.&rdquo;</em> Then, once the group is done,
+      <em>&ldquo;While this is happening, the warm pool might have as few as 9 instances and as many as
+      12.&rdquo;</em>
+    </p>
+    <p>
+      One policy, two independent applications of it, and the group is replaced before the warm pool is
+      touched.
+    </p>
+
+    <h3>What the policy does not touch</h3>
+    <p>
+      <em>&ldquo;An instance maintenance policy only applies to instance maintenance events and doesn't
+      prevent the group from being manually or automatically scaled.&rdquo;</em> Scaling policies and
+      scheduled actions keep running during a maintenance event and can move desired capacity underneath
+      it, within the group's scaling limits.
+    </p>
+    <p>
+      Worth stating because the percentages are expressed against desired capacity. If a scheduled action
+      halves desired capacity in the middle of an instance refresh, the absolute number of instances the
+      minimum healthy percentage protects halves with it.
+    </p>
+
+    <h3>One setting for every group in the account</h3>
+    <p>
+      <code>launchBeforeTerminate</code> is an account setting, applied with
+      <code>put-account-setting</code>, that makes launch before terminate the default for groups that
+      have neither a policy nor refresh preferences. It brings two numbers with it &mdash; 100 and 110
+      &mdash; and
+      <em>&ldquo;An instance refresh started without those preferences uses the 100 and 110 defaults if
+      there is no instance maintenance policy.&rdquo;</em>
+    </p>
+    <p>
+      It also brings a cost that is stated rather than implied:
+      <em>&ldquo;This setting runs one additional instance for a short time during each replacement.&rdquo;</em>
+      For an account with many small groups replacing instances regularly, that is a real line item, and
+      it is the correct trade for availability-sensitive groups and the wrong one for a batch fleet.
+    </p>
+
+    <h3>The failure mode is the safe one</h3>
+    <p>
+      Launch before terminate has to get capacity before it can proceed, which raises the obvious
+      question of what happens when it cannot.
+      <em>&ldquo;If Amazon EC2 Auto Scaling can't get capacity for the replacement, it keeps the original
+      instance in service and retries, so your group doesn't lose capacity.&rdquo;</em>
+    </p>
+    <p>
+      That is the right answer, and it means a capacity shortage during a replacement shows up as a slow
+      refresh rather than as a shrunken group. The documented remedies are to reserve more capacity than
+      desired capacity, to let the group use On-Demand capacity, and to give it more instance types and
+      Availability Zones.
+    </p>
+
+    <h3>The Capacity Reservation case that leaves a slot empty</h3>
+    <p>
+      This is the sharpest detail on the page, and it only exists because launch before terminate needs
+      one extra instance. A group of 10 with a fully used reservation for 10 momentarily needs capacity
+      for 11, so the replacement launches as regular On-Demand. What happens next depends on how the
+      reservation is referenced.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Reservation referenced as</th><th>After the old instance terminates</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Open Capacity Reservation</td><td>The freed slot reclaims the instance; coverage restored</td></tr>
+          <tr><td>Through a Capacity Reservation resource group</td><td>The freed slot reclaims the instance; coverage restored</td></tr>
+          <tr><td>Targeted, by a specific Capacity Reservation ID</td><td><strong>Neither</strong> &mdash; see below</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <em>&ldquo;If you use a targeted Capacity Reservation that you reference by a specific Capacity
+      Reservation ID, the freed slot does not reclaim the instance. One instance keeps running as
+      On-Demand capacity while one reserved slot stays unused.&rdquo;</em>
+    </p>
+    <p>
+      You are then paying twice for one instance's worth of capacity &mdash; the unused reserved slot and
+      the uncovered On-Demand instance &mdash; and nothing about the group's health reports it. The
+      documented fix is to reference the reservation through a resource group using
+      <code>CapacityReservationResourceGroupArns</code>, or to use an open reservation.
+    </p>
+
+    <h3>The one case where the extra instance is free</h3>
+    <p>
+      If the reservation has more capacity than the group uses, the replacement launches straight into a
+      free reserved slot. No uncovered instance, no idle slot. A reservation sized one above desired
+      capacity is what makes launch before terminate and a targeted reservation compatible.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Naming the exceptions is better than a floor that quietly leaks</h3>
+    <p>
+      A minimum healthy percentage that Auto Scaling honoured for its own replacements and silently missed
+      for a Spot interruption would be worse than one with three documented exceptions. The three cases
+      share a property: Auto Scaling learns about the termination at the same time as it happens, or
+      after. There is no point at which it could have launched first. Stating that is the honest option,
+      and it is the one AWS took.
+    </p>
+
+    <h3>Two ranges rather than one dial</h3>
+    <p>
+      Minimum 0 to 100 and maximum 100 to 200 looks redundant until you notice they meet at exactly one
+      value. Capacity during a replacement is a band around desired capacity, and the two numbers are its
+      edges. A single dial for how aggressively to replace would have had to pick a shape for that band
+      on your behalf.
+    </p>
+
+    <h3>Rebalancing defaulting the other way is right</h3>
+    <p>
+      The one event that defaults to launch before terminating is the one you did not ask for. A health
+      check failure, a refresh and a maximum lifetime expiry are all consequences of something you
+      configured; rebalancing happens because an Availability Zone recovered or a Spot pool moved. A
+      default that protects capacity during an event you did not schedule is the defensible asymmetry,
+      and it is the only one on the page.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Consistent replacement behaviour</td>
+            <td>Set an instance maintenance policy on the group</td>
+            <td>Without one, the four replacement events do not agree</td>
+          </tr>
+          <tr>
+            <td>Treating the minimum as a capacity guarantee</td>
+            <td>Do not</td>
+            <td>Three documented situations can take capacity below it</td>
+          </tr>
+          <tr>
+            <td>Spot fleets</td>
+            <td>Size for the floor being breached, not for the policy</td>
+            <td>A forced Spot termination bypasses the policy by design</td>
+          </tr>
+          <tr>
+            <td>Account-wide launch before terminate</td>
+            <td>Enable deliberately, per account</td>
+            <td>It brings 100 and 110, and one extra instance per replacement</td>
+          </tr>
+          <tr>
+            <td>Instances that need warmup</td>
+            <td>Set the default instance warmup as well</td>
+            <td>The minimum counts ready instances, not running ones</td>
+          </tr>
+          <tr>
+            <td>Targeted Capacity Reservations</td>
+            <td>Reference them through a resource group</td>
+            <td>By ID, a replacement leaves a reserved slot unused and pays On-Demand</td>
+          </tr>
+          <tr>
+            <td>Overriding the policy for one rollout</td>
+            <td>Set refresh preferences on that refresh</td>
+            <td>They take precedence, and only for that operation</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every group with a maintenance policy, checked for whether the workload can survive the lower
+        threshold being breached &mdash; because for Spot and scheduled EC2 events it will be.
+      </li>
+      <li>
+        Every account, for whether <code>launchBeforeTerminate</code> is enabled, since it changes the
+        replacement behaviour of every group that has no policy of its own.
+      </li>
+      <li>
+        Every group that references a targeted Capacity Reservation by ID and uses launch before
+        terminate in any form, for the unused slot.
+      </li>
+      <li>
+        Every group with a policy but no default instance warmup, where the minimum is being satisfied by
+        instances that have passed one health check and nothing else.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Six posts into Auto Scaling, this is the first setting whose purpose is to make the others agree,
+      and it is worth noticing what that costs. The policy does not replace the per-feature settings; it
+      sits above them, below the per-refresh preferences, and above an account setting that most people do
+      not know exists. Consistency arrived as a fourth place to look rather than as a replacement for the
+      other three.
+    </p>
+    <p>
+      The finding I would act on is the floor. A minimum healthy percentage reads like a contract, and for
+      the replacements Auto Scaling schedules it is one. For a Spot interruption, an EC2 scheduled event
+      or a human with the console open it is a preference, and the group will go below it without
+      reporting anything unusual. If the number you chose was chosen because the workload breaks below it,
+      the number is not the thing protecting you.
+    </p>
+
+    <div class="next-post">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling maximum instance lifetime: why a fleet-wide replacement schedule is expressed as a per-instance age, what AWS does to stop every instance ageing out at once, and the minimum value that makes the feature usable.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-maintenance-policy-overview-and-considerations.html" target="_blank" rel="noopener">Instance maintenance policy for Auto Scaling group &#8212; the three console options and what each provisions, the per-event default behaviour table including rebalancing defaulting to launch before terminating, the 10 percent overshoot and its two bases, the three situations that continue to default to terminate and launch and can take capacity below the policy's lower threshold, the two-minute Spot interruption notice, the minimum and maximum healthy percentage definitions and their valid ranges, when an instance starts counting toward the minimum, that the policy does not prevent scaling, and the warm pool worked example</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-launch-before-terminate-account-setting.html" target="_blank" rel="noopener">Launch replacement instances before terminating old ones &#8212; the <code>launchBeforeTerminate</code> account setting, its 100 and 110 defaults, that a group policy and refresh preferences both take precedence over it, the extra instance per replacement and its cost, the retry behaviour when replacement capacity cannot be obtained, and the Capacity Reservation example in which a targeted reservation referenced by ID leaves one reserved slot unused</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/set-instance-maintenance-policy-on-group.html" target="_blank" rel="noopener">Set an instance maintenance policy on your Auto Scaling groups &#8212; that setting a policy removes the need to specify minimum and maximum healthy percentages for an instance refresh unless you intend to override the policy</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-maintenance-policy.html" target="_blank" rel="noopener">Instance maintenance policies &#8212; further reading on the small-group case the feature was designed for; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-default-instance-warmup.html" target="_blank" rel="noopener">Set the default instance warmup for an Auto Scaling group &#8212; further reading on the warmup period that decides when an instance counts toward the minimum; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>

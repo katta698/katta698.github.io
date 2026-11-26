@@ -92,6 +92,16 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 25 November 2026 - covered by post #86
+
+| Item | Service | Status | Importance | Link |
+| --- | --- | --- | --- | --- |
+| Trusted identity propagation extended to IAM federation and IAM Roles Anywhere, plus outbound identity federation | IAM | #86 | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-iam/) |
+
+Not a complete inventory for the day - this section records the item ranked and
+written. The What's New feed holds roughly a week, so anything else from 25
+November needs recovering by search if it is wanted later.
+
 ## 20 November 2026 - covered by posts #82 and #83
 
 74 announcements this day, the heaviest of the pre-re:Invent wave.
