@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #104 — The Global External Application Load Balancer | Jayanth Katta Blog</title>
+<meta name="description" content="The global external Application Load Balancer is routinely drawn as a box with an IP address, and almost every surprising thing it does follows from that drawing being wrong. It is a fleet of proxies sharing one advertised address, which means your backends never see the client, several proxies open connections to them at once, long-lived connections are deliberately killed on a timer, and a port scan of the address tells you almost nothing."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The Global External Application Load Balancer"/>
+<meta property="og:description" content="The global external Application Load Balancer is routinely drawn as a box with an IP address, and almost every surprising thing it does follows from that drawing being wrong. It is a fleet of proxies sharing one advertised address, which means your backends never see the client, several proxies open connections to them at once, long-lived connections are deliberately killed on a timer, and a port scan of the address tells you almost nothing."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-global-external-application-load-balancer/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The Global External Application Load Balancer"/>
+<meta name="twitter:description" content="The global external Application Load Balancer is routinely drawn as a box with an IP address, and almost every surprising thing it does follows from that drawing being wrong. It is a fleet of proxies sharing one advertised address, which means your backends never see the client, several proxies open connections to them at once, long-lived connections are deliberately killed on a timer, and a port scan of the address tells you almost nothing."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-global-external-application-load-balancer/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6d75b39c"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=26de8759" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=26de8759">
+<script src="/blog/assets/site-footer.js?v=26de8759" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #104 — The Global External Application Load Balancer…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #104 — The Global External Application Load Balancer</h1>
+      <p class="post-description">The global external Application Load Balancer is routinely drawn as a box with an IP address, and almost every surprising thing it does follows from that drawing being wrong. It is a fleet of proxies sharing one advertised address, which means your backends never see the client, several proxies open connections to them at once, long-lived connections are deliberately killed on a timer, and a port scan of the address tells you almost nothing.</p>
+      <div class="post-info">
+        <span>Nov 26, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>14 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 26 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-global-external-application-load-balancer" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #103 left us with a survivor: HTTP(S) traffic, external clients, backends in more than one region. This is that load balancer. <em>The Application Load Balancer is a proxy-based Layer 7 load balancer that lets you run and scale your services</em>, and the external mode <em>load balances traffic coming from clients on the internet.</em>
+    </p>
+    <p>
+      It is almost always drawn as a single box with an IP address on it. That drawing is the source of most operational surprises, because the documentation opens with the opposite: <em>the global external Application Load Balancers are implemented by many proxies called Google Front Ends (GFEs). There isn't just a single proxy.</em>
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Our backend firewall allows the load balancer's IP and traffic is still blocked"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The load balancer's address never appears at the backend. <em>The source IP address for packets, as seen by the backends, is not the Google Cloud external IP address of the load balancer. In other words, there are two TCP connections.</em> Client to GFE is one; GFE to backend is another, with a source from Google's GFE ranges.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Allow the documented GFE ranges, not the load balancer address &mdash; and expect more than one source, because <em>depending on where your clients are, multiple GFEs can initiate HTTP(S) connections to your backends.</em> Worth noting that the path itself is not yours either: <em>Google Cloud uses special routes not defined in your VPC network to route packets</em> between GFEs and backends, so you will not find that traffic in your route table.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Long-lived connections drop about once an hour and we cannot find the fault"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          There is no fault. <em>To ensure that traffic is load balanced evenly, the load balancer periodically closes long-lived client connections.</em> Specifically: <em>for example, a connection is closed when an active client connection reaches a maximum age of 60 minutes.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat reconnection as normal operation rather than an incident, and check that your client library handles the signal rather than treating it as an error. The close is deliberate and polite: <em>the GFE closes the client connection between requests either by sending a Connection: close response header followed by a FIN ACK packet (for HTTP/1.1) or by issuing an HTTP/2 or HTTP/3 GOAWAY frame after completing a response.</em> And in-flight work is safe &mdash; <em>this behavior doesn't interfere with any active requests or responses, including upgraded WebSocket connections.</em>
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We need to turn off HTTP/2 because a backend misbehaves under it"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not available as a load balancer setting. <em>When HTTPS is used, modern clients default to HTTP/2. This is controlled on the client, not on the HTTPS load balancer</em>, and the documentation closes the door explicitly: <em>you cannot disable HTTP/2 by making a configuration change on the load balancer.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Fix it at one of the two ends you do control. The client side is possible per-caller &mdash; the documentation's own example is <code>curl --http1.1</code> &mdash; but that does not scale to the public internet. The durable answer is the backend protocol, which is a backend service setting: the GFE speaks to your backend over HTTP, HTTPS or HTTP/2 independently of what the client negotiated, and <em>for HTTP or HTTPS connections, the HTTP version used is HTTP 1.1.</em> So a backend that cannot cope with HTTP/2 can be served over HTTP/1.1 while clients keep using HTTP/2 to the front door.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A fleet of proxies behind one advertised address, and five consequences.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-104-global-external-application-load-balancer.svg" alt="Diagram: the global external Application Load Balancer; it is many Google Front Ends rather than one proxy, with the same global external address advertised from several points of presence so each client reaches its nearest front end, meaning multiple front ends open connections to backends and the address belongs to no single device; every request crosses two TCP connections, so backends see a Google Front End range rather than the load balancer address and the front-end-to-backend path uses special routes not defined in your VPC network; connections are recycled deliberately, with a configurable client keepalive of 610 seconds against a fixed backend keepalive of 600 seconds and long-lived connections closed at a maximum age of 60 minutes using a connection close header and FIN ACK or an HTTP/2 or HTTP/3 GOAWAY frame, without disturbing in-flight requests including upgraded WebSockets, while a capacity scaler change reroutes new requests without closing existing ones; HTTP/2 is chosen by the client under HTTPS and cannot be disabled on the load balancer, HTTP/1.0 through HTTP/3 are accepted, and Google QUIC was removed in April 2023 in favour of HTTP/3 over IETF QUIC; and a port scan is not an audit because front ends always show ports 80 and 443 open while refusing connections where no forwarding rule exists, answer SYN probes only for configured ports, and one scan interrogates a single front end rather than the fleet" />
+      <figcaption>The box with an IP address on it is the wrong picture.</figcaption>
+    </figure>
+
+    <h3>What "global" actually is</h3>
+    <p>
+      Not a load balancer in a special region. A property of how one address is announced: <em>in Premium Tier, the same global external IP address is advertised from various points of presence, and client requests are directed to the client's nearest GFE.</em>
+    </p>
+    <p>
+      Those front ends are a coordinated fleet &mdash; <em>global external Application Load Balancers and classic Application Load Balancers use GFEs that are distributed globally, operating together by using Google's global network and control plane</em> &mdash; and the routing decision is made with capacity in mind, not just distance: <em>GFEs offer multi-region load balancing in the Premium tier, directing traffic to the closest healthy backend that has capacity and terminating HTTP(S) traffic as close as possible to your users.</em>
+    </p>
+    <p>
+      Two words in that sentence carry weight. <em>Healthy</em> means health checks decide eligibility, which is #107's subject. <em>Has capacity</em> means a nearer backend at its limit is skipped in favour of a further one &mdash; so "closest" is a preference, not a rule, and a latency anomaly can be a capacity signal rather than a network one.
+    </p>
+    <p>
+      There is also a tier dependency worth stating, because it changes what the product is: <em>in the Standard Network Service Tier, this load balancer can distribute traffic to backends in a single region only.</em> The global behaviour is a Premium Tier behaviour. #103's note that global external products are Premium-only is the same fact seen from the other side.
+    </p>
+
+    <div class="callout">
+      <strong>Two implementations under one name</strong>
+      <p>The external Application Load Balancer is not one engine. <em>External Application Load Balancers are implemented using Google Front Ends (GFEs) or managed proxies</em>, and the split is by mode: GFEs for global and classic, while <em>global external Application Load Balancers and regional external Application Load Balancers use the open source Envoy proxy software to enable advanced traffic management capabilities.</em></p>
+      <p>So the global mode uses both &mdash; GFEs at the edge, with Envoy providing the advanced traffic management that classic lacks. That is the practical reason to prefer global over classic beyond scope, and it is why #103's one-way scheme rule matters: <em>it is possible to attach EXTERNAL_MANAGED backend services to EXTERNAL forwarding rules. However, EXTERNAL backend services cannot be attached to EXTERNAL_MANAGED forwarding rules.</em></p>
+    </div>
+
+    <h3>The keepalive asymmetry, and why it is the right way round</h3>
+    <p>
+      Two timeouts govern connection reuse, and only one is yours. <em>The GFE uses a client HTTP keepalive timeout of 610 seconds and a default backend keepalive timeout value of 600 seconds</em>, and <em>you can update the client HTTP keepalive timeout but the backend keepalive timeout value is fixed.</em>
+    </p>
+    <p>
+      The ten-second gap is not an accident. The client-side timeout exceeds the backend-side one, so under normal operation the GFE-to-backend connection expires first and the GFE handles it, rather than the client discovering a dead connection mid-request. Raise the client keepalive and you widen that margin; the backend side stays where it is whatever you do.
+    </p>
+    <p>
+      One clarification the documentation volunteers, because the two get conflated constantly: <em>though closely related, an HTTP keepalive and a TCP idle timeout are not the same thing.</em>
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Behaviour</th>
+            <th>Value</th>
+            <th>Yours to change?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Client HTTP keepalive timeout</td>
+            <td>610 seconds</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td>Backend keepalive timeout</td>
+            <td>600 seconds</td>
+            <td><strong>No &mdash; fixed</strong></td>
+          </tr>
+          <tr>
+            <td>Maximum age of an active client connection</td>
+            <td>60 minutes</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td>Request and response timeout</td>
+            <td>backend service timeout</td>
+            <td>Yes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      One more behaviour belongs in that table by absence. Changing backend capacity does not disturb live traffic: adjusting the capacity scaler <em>affects how GFEs route new requests, but doesn't by itself cause GFEs to close existing client connections.</em> Draining a backend by lowering its capacity is therefore a gradual operation, not an abrupt one &mdash; which is the behaviour you want, and the opposite of what #101 found for Cloud NAT, where reducing an allocation severs everything immediately.
+    </p>
+
+    <h3>The protocols, and the one you do not control</h3>
+    <p>
+      On the client side the load balancer is permissive: <em>clients can communicate with the load balancer by using the HTTP/1.0, HTTP/1.1, HTTP/2, or HTTP/3 protocol</em>, and <em>external Application Load Balancers support the HTTP/1.1 100 Continue response.</em>
+    </p>
+    <p>
+      HTTP/3 has settled on the standard: <em>Google QUIC (also known as gQUIC) support was removed in April 2023 in favor of HTTP/3 over IETF QUIC.</em> If any internal documentation still mentions gQUIC, it predates that change by years.
+    </p>
+    <p>
+      The classic mode lags in two specific ways worth checking before choosing it. On addressing: <em>client IPv6 requests are terminated at the load balancing layer and then proxied over IPv4 or IPv6 (provided the backends are configured as dual-stack) connections to your backends</em> &mdash; but <em>note that classic load balancers only support proxying over IPv4 to your backends.</em> And on cleartext HTTP/2 to the backend: <em>H2C is not supported on classic Application Load Balancers.</em>
+    </p>
+
+    <div class="callout">
+      <strong>A port scan of a GFE is not an audit</strong>
+      <p>This section of the documentation exists because the result misleads auditors in both directions, and it is worth having to hand when someone brings you a scan report.</p>
+      <p><em>GFEs have several open ports to support other Google services that run on the same architecture.</em> GFE-based load balancers <em>always show ports 80 and 443 as open (along with any other port you've configured in your load balancer's forwarding rules)</em> &mdash; yet <em>if you haven't configured a forwarding rule for port 80 or for port 443, any connections sent to those ports are refused.</em> Open in the scan, closed in practice.</p>
+      <p>The negative result is equally weak. <em>GFEs send SYN-ACK packets in response to SYN probes only for ports on which you have configured a forwarding rule</em>, and because the address is shared across a fleet, <em>scanning the IP address of a GFE-based load balancer doesn't scan all the GFEs in Google's fleet.</em> One scan interrogates one front end per TCP connection.</p>
+      <p>The clean comparison: <em>conversely, regional external Application Load Balancers are implemented using Envoy proxies and don't show extra open ports during a scan.</em> If a compliance regime requires a clean scan as evidence, that difference may matter more than any feature in the comparison table.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      <em>There isn't just a single proxy.</em> Take that seriously and the rest stops being a list of quirks.
+    </p>
+    <p>
+      Backends cannot see the client, because the proxy that received the request is not the one your backend talks to &mdash; hence two TCP connections and GFE source ranges. Several sources appear at once, because clients in different places land on different front ends. The address cannot be scanned meaningfully, because <em>the IP address of your load balancer isn't assigned to a single device or system.</em> Connections get recycled, because even distribution across a fleet requires periodically re-deciding which front end and which backend a client uses. And "closest healthy backend that has capacity" is a fleet-wide decision no single proxy could make.
+    </p>
+    <p>
+      Which also explains what you give up. There is no instance to log into, no single process to restart, no interface counter to read. Everything you can observe is what the control plane chooses to expose, and the mental model that survives contact with it is "a globally advertised service I configure declaratively", not "a load balancer I operate".
+    </p>
+
+    <div class="callout">
+      <strong>The practical reading</strong>
+      <p><strong>Stop drawing it as a box with an IP address. Draw it as an advertised address with a fleet behind it.</strong></p>
+      <p>Then the firewall rule is obviously a range and not an address. The hourly reconnect is obviously a policy and not a fault. The port scan is obviously inconclusive. The HTTP/2 request obviously belongs at the client or the backend. And the 610-versus-600 asymmetry is obviously deliberate, because something has to expire first and it should be the hop the platform controls.</p>
+      <p>Every one of those is a question I have seen asked, and all of them dissolve at the diagram rather than at the documentation.</p>
+    </div>
+
+    <h3>One constraint for the frontend design</h3>
+    <p>
+      Easy to miss in the table and annoying to discover late: a forwarding rule <em>can reference exactly one port from 1-65535.</em> Serving both HTTP and HTTPS is therefore two forwarding rules against the same address, not one rule with two ports &mdash; which is also why the port-scan section has to talk about 80 and 443 separately.
+    </p>
+    <p>
+      And the compliance escape hatch from #103 remains available here, phrased as a positive recommendation: <em>some workloads with regulatory or compliance requirements require that network configurations and traffic termination reside in a specific region.</em> If that is your situation, the global mode's great strength &mdash; terminating as close to the user as possible &mdash; is precisely the thing you cannot have.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Writing backend firewall rules</strong></td>
+            <td><strong>Allow the GFE ranges, not the load balancer address</strong></td>
+            <td><strong>Backends never see the load balancer's external address.</strong></td>
+          </tr>
+          <tr>
+            <td>Looking for GFE-to-backend traffic in route tables</td>
+            <td>It is not there</td>
+            <td>Special routes not defined in your VPC network carry it.</td>
+          </tr>
+          <tr>
+            <td>Connections dropping roughly hourly</td>
+            <td>Expected; handle reconnection</td>
+            <td>Active client connections are closed at 60 minutes.</td>
+          </tr>
+          <tr>
+            <td>Client treats Connection: close or GOAWAY as an error</td>
+            <td>Fix the client</td>
+            <td>That is how the load balancer signals a planned close.</td>
+          </tr>
+          <tr>
+            <td>Worried an hourly close breaks a WebSocket</td>
+            <td>It does not</td>
+            <td>Active requests and upgraded WebSockets are unaffected.</td>
+          </tr>
+          <tr>
+            <td>Draining a backend</td>
+            <td>Lower the capacity scaler</td>
+            <td>It reroutes new requests without closing existing ones.</td>
+          </tr>
+          <tr>
+            <td>Tuning keepalive</td>
+            <td>Only the client side is adjustable</td>
+            <td>The backend keepalive timeout is fixed at 600 seconds.</td>
+          </tr>
+          <tr>
+            <td>Equating HTTP keepalive with TCP idle timeout</td>
+            <td>They are different things</td>
+            <td>The documentation says so explicitly.</td>
+          </tr>
+          <tr>
+            <td><strong>Wanting HTTP/2 disabled</strong></td>
+            <td><strong>Change the client or the backend protocol</strong></td>
+            <td><strong>It cannot be disabled on the load balancer.</strong></td>
+          </tr>
+          <tr>
+            <td>Backend cannot handle HTTP/2</td>
+            <td>Set the backend service protocol to HTTP/1.1</td>
+            <td>Backend protocol is independent of what clients negotiate.</td>
+          </tr>
+          <tr>
+            <td>Anything referencing gQUIC</td>
+            <td>Out of date</td>
+            <td>gQUIC was removed in April 2023.</td>
+          </tr>
+          <tr>
+            <td>Dual-stack backends</td>
+            <td>Global mode, not classic</td>
+            <td>Classic proxies to backends over IPv4 only.</td>
+          </tr>
+          <tr>
+            <td>Needing H2C to the backend</td>
+            <td>Not on classic</td>
+            <td>H2C is unsupported there.</td>
+          </tr>
+          <tr>
+            <td>Serving HTTP and HTTPS</td>
+            <td>Two forwarding rules</td>
+            <td>A rule references exactly one port.</td>
+          </tr>
+          <tr>
+            <td>An auditor presents a port scan</td>
+            <td>Explain why it is inconclusive both ways</td>
+            <td>80 and 443 show open yet refuse; one scan hits one GFE.</td>
+          </tr>
+          <tr>
+            <td>A compliance regime wants a clean scan</td>
+            <td>Regional Envoy-based is the one that gives it</td>
+            <td>It shows no extra open ports.</td>
+          </tr>
+          <tr>
+            <td>Budget forces Standard Tier</td>
+            <td>You lose multi-region entirely</td>
+            <td>Standard Tier serves backends in one region only.</td>
+          </tr>
+          <tr>
+            <td>Jurisdictional TLS-termination requirement</td>
+            <td>Regional external, not global</td>
+            <td>Global terminates as close to the user as possible.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Check two things. First, what your backend firewall rules actually allow &mdash; if any rule names the load balancer's external address, it is doing nothing, and whatever is working is working for another reason. Second, how your longest-lived clients behave at the hour mark: if the logs show errors rather than reconnections at roughly 60-minute intervals, the load balancer is behaving correctly and the client is not.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The documentation does something unusual in the port-scan section: it argues against a piece of evidence someone will eventually put in front of you, and explains why both the positive and the negative reading are wrong. Ports 80 and 443 appear open whether or not you use them, and connections to them are refused if you have not configured a rule. The scan cannot cover the fleet because the address is not a device. That is three paragraphs spent dismantling a report rather than describing a feature, which tells you how often the report arrives.
+    </p>
+    <p>
+      It is the same lesson this whole networking block keeps producing, in a new costume. The instrument is not measuring what its name implies &mdash; #102's "Port usage" metric, #98's working-but-NXDOMAIN private zone, and now a port scan that reports open ports which refuse traffic. The fix each time is not a better tool but a correct model of the thing being measured.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#105 takes the regional pair &mdash; regional external and internal Application Load Balancers &mdash; where the proxy is Envoy rather than a Google Front End, and the proxy-only subnet from #103 stops being a prerequisite and becomes part of the data path.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https/request-distribution" target="_blank" rel="noopener">Request distribution for external Application Load Balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/application-load-balancer" target="_blank" rel="noopener">Application Load Balancer overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https" target="_blank" rel="noopener">External Application Load Balancer overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https/global-applb-failover-overview" target="_blank" rel="noopener">Global external Application Load Balancer failover</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/firewall-rules" target="_blank" rel="noopener">Firewall rules for load balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https/traffic-management-global" target="_blank" rel="noopener">Traffic management for global external Application Load Balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/backend-service" target="_blank" rel="noopener">Backend services overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/forwarding-rule-concepts" target="_blank" rel="noopener">Forwarding rules overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/url-map-concepts" target="_blank" rel="noopener">URL map concepts</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/ssl-certificates" target="_blank" rel="noopener">SSL certificates overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/choosing-load-balancer" target="_blank" rel="noopener">Choose a load balancer</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/features" target="_blank" rel="noopener">Load balancer feature comparison</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-quick-ai-ready-datasets/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #85 - The largest instruction channel is the one nobody sees in the UI</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-global-external-application-load-balancer/';
+      this.page.identifier = 'gcp-architecture-global-external-application-load-balancer';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=26de8759"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
