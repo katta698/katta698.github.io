@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #105 — Regional External and Internal Application Load Balancers | Jayanth Katta Blog</title>
+<meta name="description" content="#104's proxies belong to Google and run somewhere you cannot see. These ones run in a subnet you created, on routes you administer, shared with every other Envoy load balancer in the region — which changes who can be exposed, what a source address tells you, and what one team's routing decision does to another team's load balancer. And the mode you pick at creation cannot be changed afterwards."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Regional External and Internal Application Load Balancers"/>
+<meta property="og:description" content="#104's proxies belong to Google and run somewhere you cannot see. These ones run in a subnet you created, on routes you administer, shared with every other Envoy load balancer in the region — which changes who can be exposed, what a source address tells you, and what one team's routing decision does to another team's load balancer. And the mode you pick at creation cannot be changed afterwards."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-regional-external-and-internal-application-load-balancers/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Regional External and Internal Application Load Balancers"/>
+<meta name="twitter:description" content="#104's proxies belong to Google and run somewhere you cannot see. These ones run in a subnet you created, on routes you administer, shared with every other Envoy load balancer in the region — which changes who can be exposed, what a source address tells you, and what one team's routing decision does to another team's load balancer. And the mode you pick at creation cannot be changed afterwards."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-regional-external-and-internal-application-load-balancers/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6d75b39c"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=bf6a32ba" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=bf6a32ba">
+<script src="/blog/assets/site-footer.js?v=bf6a32ba" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #105 — Regional External and Internal Application Load Balancers…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #105 — Regional External and Internal Application Load Balancers</h1>
+      <p class="post-description">#104's proxies belong to Google and run somewhere you cannot see. These ones run in a subnet you created, on routes you administer, shared with every other Envoy load balancer in the region — which changes who can be exposed, what a source address tells you, and what one team's routing decision does to another team's load balancer. And the mode you pick at creation cannot be changed afterwards.</p>
+      <div class="post-info">
+        <span>Nov 26, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>15 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 26 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-regional-external-and-internal-application-load-balancers" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #104's global load balancer ran on Google Front Ends: a fleet you cannot see, reach or size. The regional and internal Application Load Balancers are the same product family with a different engine. <em>A Google Cloud internal Application Load Balancer is a proxy-based Layer 7 load balancer that enables you to run and scale your services behind a single internal IP address</em>, and it is <em>implemented as a managed service based on the open-source Envoy proxy.</em>
+    </p>
+    <p>
+      Managed, but local. The proxies run in a subnet you created, using routes you administer, alongside every other Envoy load balancer in the region. That one difference drives most of this post.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We peered a network to share one internal service and exposed everything"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That is the documented behaviour, and it has no partial setting: <em>you cannot selectively share only some internal passthrough Network Load Balancers, regional internal proxy Network Load Balancers, or internal Application Load Balancers by using VPC Network Peering. All internal load balancers are shared automatically.</em>
+        </p>
+        <p>
+          And the control you would reach for does not travel with the peering &mdash; <em>Google Cloud firewall rules aren't shared among networks when using VPC Network Peering.</em> So reachability arrives by default and restriction does not.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat "peer this network" as "publish every internal load balancer in it", then write the ingress rules that narrow it back down, because nothing else will. If a service genuinely must not be reachable from the peer, the answer is a different network, not a firewall rule you intend to add later.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We need to convert the regional load balancer to cross-region"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not possible as an edit. <em>After you create a load balancer, you can't edit its mode. Instead, you must delete the load balancer and create a new one.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Plan the scope before creating anything, and reserve the address so a rebuild does not also become a DNS incident: <em>we recommend that you reserve a static IP address; otherwise, you must update your DNS record with the newly assigned ephemeral IP address whenever you delete a forwarding rule and create a new one.</em> That recommendation reads like housekeeping until the day the mode is wrong, at which point it is the difference between a rebuild and a rebuild plus a propagation wait.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Backend logs show one source range and we cannot tell which load balancer sent the request"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You cannot, from the address. <em>Backend VMs or endpoints of all internal Application Load Balancers in a region and VPC network receive connections from the proxy-only subnet</em> &mdash; the same shared subnet #103 introduced, now carrying production traffic rather than merely existing as a prerequisite.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Identify the caller at the HTTP layer rather than the IP layer: a header set by the load balancer's URL map, or the <code>Host</code> it was reached on. The connected-networks page recommends the same approach for access control &mdash; controlling access <em>by using HTTP headers (for example, X-Forwarded-For)</em> &mdash; which is an admission that the network layer cannot distinguish these callers either.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      One shared subnet in the data path, a permanent mode choice, and high availability assembled from parts.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-105-regional-external-and-internal-application-load-balancers.svg" alt="Diagram: regional external and internal Application Load Balancers; these are Envoy-based, so the proxy-only subnet becomes the data path, shared by every internal Application Load Balancer in a region and network, with backends receiving connections from it, cross-region and regional load balancers unable to share subnets because their purposes differ, and the load balancer's own virtual address living outside it; the mode cannot be edited after creation, so changing between cross-region and regional means deleting and recreating; cross-region is always globally accessible with global backends and cross-region failover while regional is not globally accessible by default, serves same-region backends only and fails over within its region, with global access on the forwarding rule the one flag that widens client reach; high availability for the regional external variant comes from isolation plus Cloud DNS steering, active-passive by failover policy or active-active by geolocation policy, with health checks that must name exactly three source regions and must be global, and automatic failback; and reaching an internal load balancer from a connected network has its own rules, since peering shares no firewall rules, all internal load balancers are shared automatically with no selective exposure, a Cloud VPN gateway must sit in the load balancer's region unless global access is enabled, and the network's dynamic routing mode decides which routes the Envoy proxies can use" />
+      <figcaption>Managed proxies, in infrastructure you own and share.</figcaption>
+    </figure>
+
+    <h3>The proxy-only subnet, promoted from prerequisite to data path</h3>
+    <p>
+      #103 treated the proxy-only subnet as a thing you must create before deploying. Here it is where the traffic actually comes from, and three facts about it shape the design.
+    </p>
+    <p>
+      <strong>It is shared, per region and network.</strong> <em>You must create a proxy-only subnet in each region of a VPC network where you use internal Application Load Balancers</em>, and <em>all the regional Envoy-based load balancers in a region and VPC network share the same proxy-only subnet.</em> So its sizing is a platform concern and its address range is the one your backend firewall rules must allow &mdash; for every load balancer at once.
+    </p>
+    <p>
+      <strong>It is not for your backends, and not for the VIP.</strong> <em>Proxy-only subnets are only used for Envoy proxies, not your backends</em>, and <em>the virtual IP address of an internal Application Load Balancer is not located in the proxy-only subnet.</em> Three distinct address spaces are in play: an ordinary subnet for the VIP, the proxy-only subnet for the proxies, and a subnet for the backends.
+    </p>
+    <p>
+      <strong>The two modes cannot share one.</strong> <em>Cross-region and regional load balancers cannot share the same subnets</em>, because the purposes differ &mdash; <code>GLOBAL_MANAGED_PROXY</code> for cross-region, <code>REGIONAL_MANAGED_PROXY</code> for regional. And <em>the cross-region Envoy-based load balancer must have a proxy-only subnet in each region in which the load balancer is configured.</em> Running both modes in one region means two proxy-only subnets, each with its own address budget.
+    </p>
+
+    <h3>Cross-region and regional internal, side by side</h3>
+    <p>
+      The two internal modes are genuinely different products, and the table in the documentation is worth reproducing because the differences are not guessable from the names.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Cross-region internal</th>
+            <th>Regional internal</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Client access</td>
+            <td><strong>Always globally accessible</strong> &mdash; clients from any region in a VPC</td>
+            <td>Not globally accessible by default; global access is optional</td>
+          </tr>
+          <tr>
+            <td>Backends</td>
+            <td>Global &mdash; any region</td>
+            <td>Same region as the <em>proxy</em></td>
+          </tr>
+          <tr>
+            <td>Failover</td>
+            <td>Same <strong>or different</strong> regions</td>
+            <td>Same region only</td>
+          </tr>
+          <tr>
+            <td>Backend service</td>
+            <td>VIPs from multiple regions can share one global backend service</td>
+            <td>Regional</td>
+          </tr>
+          <tr>
+            <td>Proxy-only subnet purpose</td>
+            <td><code>GLOBAL_MANAGED_PROXY</code></td>
+            <td><code>REGIONAL_MANAGED_PROXY</code></td>
+          </tr>
+          <tr>
+            <td>Console region column</td>
+            <td><strong>Blank</strong></td>
+            <td>Names a region</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Two details in that table repay attention. The regional backend constraint is phrased against the proxy, not the load balancer &mdash; <em>regional backends. Load balancer can only send traffic to backends that are in the same region as the proxy of the load balancer</em> &mdash; which is the more precise statement once you know the proxies live in a regional subnet. And the console tell is genuinely useful: <em>if the region is blank, then the load balancer is in the cross-region mode.</em>
+    </p>
+    <p>
+      Global access is the one flag that moves the regional mode's boundary, and it is worth knowing which way each default points. For cross-region, <em>global access is enabled by default to allow clients from any region in a VPC to access your load balancer.</em> For regional, <em>clients can be limited to that region or can be in any region, based on whether global access is disabled or enabled on the forwarding rule.</em> It widens client reach only &mdash; backends stay regional either way.
+    </p>
+
+    <div class="callout">
+      <strong>What global access also unlocks elsewhere</strong>
+      <p>The flag reaches further than the client question, because two separate restrictions are written as waived when it is on.</p>
+      <p>Over peering: <em>for regional internal Application Load Balancers, client virtual machine (VM) instances in the peer network must be located in the same region as your internal load balancer. This restriction is waived if you configure global access.</em> Over VPN: <em>both the Cloud VPN gateway and tunnel(s) must be located in the same region as the load balancer when global access is disabled.</em></p>
+      <p>So a hybrid design where the tunnel lands in one region and the load balancer sits in another is not a routing problem to solve &mdash; it is a flag that has not been set.</p>
+    </div>
+
+    <h3>High availability for the regional external variant</h3>
+    <p>
+      There is no global mode for a regional external load balancer, so high availability is assembled rather than configured. <em>To achieve high availability, deploy multiple individual regional external Application Load Balancers in regions that best support your application's traffic.</em>
+    </p>
+    <p>
+      The reason that works is isolation, stated unusually plainly: <em>regional external Application Load Balancers in different regions are not only isolated from each other, they are also isolated from any global external Application Load Balancer or classic Application Load Balancer infrastructure running in the same region.</em> Independence is the feature.
+    </p>
+    <p>
+      The steering is not a load balancer feature at all &mdash; it is #97's Cloud DNS. Active-passive: <em>in steady state, Cloud DNS routes all traffic to the primary load balancer</em>, and <em>if the primary load balancer fails health checks, Cloud DNS uses a failover routing policy to route traffic to the backup regional load balancers.</em> Active-active: <em>use a Cloud DNS geolocation routing policy to direct clients to the nearest healthy region.</em> Recovery needs no intervention &mdash; <em>failback is automatic when health checks start passing again.</em>
+    </p>
+    <p>
+      One requirement in that design is exact rather than advisory, and it is the kind of thing that fails a <code>terraform apply</code> rather than a review: <em>you must specify exactly three source regions when you create the health check.</em> Not two, not four. Also <em>only global health checks can specify source regions</em>, and the probes are not quite where you name them &mdash; <em>the health check probes originate from a Point of Presence (PoP) on the internet within some small distance of the configured Google Cloud source region.</em>
+    </p>
+    <p>
+      And one requirement that is easy to let drift once the deployment exists: <em>each of these load balancers must have the same traffic management and security configurations.</em> Two regional load balancers that have diverged are not a failover pair; they are two services that happen to share a DNS name.
+    </p>
+
+    <h3>Frontend details that differ from #104</h3>
+    <p>
+      Two differences from the global external load balancer are worth carrying forward.
+    </p>
+    <p>
+      <strong>HTTP/1.0 is not accepted.</strong> <em>Clients connecting to a load balancer must use HTTP version 1.1 or later.</em> #104's global mode accepts HTTP/1.0 through HTTP/3; this one starts at 1.1. Any ancient internal client or hand-rolled health prober that still speaks 1.0 works through one and not the other.
+    </p>
+    <p>
+      <strong>Several forwarding rules can share one address.</strong> The port rule is the same &mdash; <em>each forwarding rule for an Application Load Balancer can reference a single port from 1-65535. To support multiple ports, you must configure multiple forwarding rules</em> &mdash; but the sharing is explicit here: <em>you can configure multiple forwarding rules to use the same internal IP address (VIP) and to reference the same target HTTP or HTTPS proxy as long as the overall combination of IP address, port, and protocol is unique for each forwarding rule.</em> One VIP, one URL map, many ports, several applications.
+    </p>
+    <p>
+      For IPv6 the prerequisites are specific: <em>you must use a custom mode VPC network configured with the --enable-ula-internal-ipv6 flag</em>, and <em>the forwarding rule must reference a /96 range of IPv6 addresses from the subnet's /64 internal IPv6 address range.</em> A /96 carved out of a /64 is a very large range reserved for a single forwarding rule, which is a reminder that IPv6 subnetting does not reward IPv4 instincts.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      Both of these load balancers are managed services. Google allocates the proxies &mdash; <em>after the load balancer is configured, it automatically allocates Envoy proxies to meet your traffic needs</em> &mdash; and you never see a proxy instance. But the resources they depend on are entirely yours, and that is where the operational surprises live.
+    </p>
+    <p>
+      The proxies draw addresses from your subnet, so you own its sizing and its exhaustion. They send from that subnet, so your backend firewall rules must name it and cannot distinguish between the load balancers using it. And they route using your routes, which produces the sharpest cross-reference in this post: <em>the dynamic routing mode determines which custom dynamic routes are available to proxies in the proxy-only subnet.</em>
+    </p>
+    <p>
+      That is #84, returning four weeks later with teeth. A VPC network on regional dynamic routing learns on-premises prefixes only in the region where the Cloud Router sits &mdash; so an Envoy proxy in another region cannot reach an on-premises backend, no matter how correct the backend service is. The load balancer looks misconfigured; the network's routing mode is the cause.
+    </p>
+
+    <div class="callout">
+      <strong>The practical reading</strong>
+      <p><strong>A regional Envoy load balancer is a managed service wired into shared, self-administered infrastructure.</strong> The proxy is Google's problem. The subnet, the firewall rules, the routes and the DNS are yours &mdash; and three of those four are shared with other teams.</p>
+      <p>Which suggests one habit: before deploying, check the proxy-only subnet's remaining addresses, confirm the network's dynamic routing mode covers every region your backends live in, and look at who else is already behind the same subnet. None of that is in the load balancer's configuration, and all of it can stop the load balancer working.</p>
+    </div>
+
+    <h3>Where this one wins</h3>
+    <p>
+      It is worth being clear that the regional modes are not a lesser option. They terminate TLS in a region you name, which #103 established is the only way to satisfy a jurisdictional requirement. They show no extra open ports to a scan, which #104 noted the GFE-based ones do. They are isolated from each other and from global infrastructure, which is what makes the Cloud DNS failover pattern credible. And in the internal case they are the only Application Load Balancer available at all, since #103's rule still holds: only external load balancers come in a global mode.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Peering a network to share one internal service</strong></td>
+            <td><strong>Assume every internal load balancer is now reachable</strong></td>
+            <td><strong>All internal load balancers are shared automatically.</strong></td>
+          </tr>
+          <tr>
+            <td>Restricting a peer's access</td>
+            <td>Write ingress rules yourself</td>
+            <td>Firewall rules aren't shared across a peering.</td>
+          </tr>
+          <tr>
+            <td>A service must not be reachable from the peer</td>
+            <td>Separate network, not a firewall rule</td>
+            <td>Sharing has no per-load-balancer setting.</td>
+          </tr>
+          <tr>
+            <td>Choosing cross-region or regional</td>
+            <td>Decide before creating; it is permanent</td>
+            <td>The mode cannot be edited after creation.</td>
+          </tr>
+          <tr>
+            <td>Any internal Application Load Balancer</td>
+            <td>Reserve a static VIP</td>
+            <td>A rebuild otherwise changes the address and your DNS.</td>
+          </tr>
+          <tr>
+            <td>Running both modes in one region</td>
+            <td>Two proxy-only subnets</td>
+            <td>The two modes cannot share one.</td>
+          </tr>
+          <tr>
+            <td>Backend firewall rules</td>
+            <td>Allow the proxy-only subnet range</td>
+            <td>All connections arrive from it.</td>
+          </tr>
+          <tr>
+            <td><strong>Identifying which load balancer called a backend</strong></td>
+            <td><strong>Use an HTTP header or Host, not the source IP</strong></td>
+            <td><strong>Every Envoy LB in the region shares one source range.</strong></td>
+          </tr>
+          <tr>
+            <td>Clients in another region, regional mode</td>
+            <td>Enable global access on the forwarding rule</td>
+            <td>Not globally accessible by default.</td>
+          </tr>
+          <tr>
+            <td>VPN tunnel lands in a different region to the LB</td>
+            <td>Enable global access</td>
+            <td>The same-region restriction is waived by it.</td>
+          </tr>
+          <tr>
+            <td>Backends needed in several regions, internally</td>
+            <td>Cross-region mode</td>
+            <td>Regional backends must match the proxy's region.</td>
+          </tr>
+          <tr>
+            <td>High availability for regional external</td>
+            <td>Several load balancers plus Cloud DNS</td>
+            <td>Their isolation from each other is the mechanism.</td>
+          </tr>
+          <tr>
+            <td>Active-passive versus active-active</td>
+            <td>Failover policy versus geolocation policy</td>
+            <td>Both are Cloud DNS routing policies.</td>
+          </tr>
+          <tr>
+            <td>Health check for a multi-region deployment</td>
+            <td>Exactly three source regions, global check</td>
+            <td>Both are hard requirements, not defaults.</td>
+          </tr>
+          <tr>
+            <td>A failover pair whose configs have drifted</td>
+            <td>Reconcile them</td>
+            <td>They must have the same traffic and security config.</td>
+          </tr>
+          <tr>
+            <td>A client that only speaks HTTP/1.0</td>
+            <td>It will not work here</td>
+            <td>Clients must use HTTP 1.1 or later.</td>
+          </tr>
+          <tr>
+            <td>Several applications on one internal address</td>
+            <td>Multiple forwarding rules sharing the VIP</td>
+            <td>Allowed if IP, port and protocol are unique per rule.</td>
+          </tr>
+          <tr>
+            <td><strong>Proxies cannot reach an on-premises backend</strong></td>
+            <td><strong>Check the network's dynamic routing mode</strong></td>
+            <td><strong>It decides which routes the proxies can use.</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Two checks, both outside the load balancer. First, list which internal load balancers exist in any network you have peered to another party &mdash; that list is what the peer can reach, and the only thing narrowing it is your ingress rules. Second, if any Envoy-based load balancer has backends reached over VPN or Interconnect, confirm the VPC network is on global dynamic routing; on regional mode, proxies outside the Cloud Router's region cannot see those prefixes, and the symptom will look like an unhealthy backend.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The contrast with #104 is the whole post. A global external Application Load Balancer fails in ways you cannot inspect and cannot cause &mdash; the fleet is Google's, the routes are Google's, and your only lever is configuration. These fail in ways you can absolutely cause, because the proxy's addresses, firewall rules, routes and DNS records are all administered by you, and three of the four are shared with people who have never heard of your service.
+    </p>
+    <p>
+      That is not worse, it is differently distributed. But it does mean the pre-deployment checklist is longer and almost none of it is in the load balancer: how many addresses are left in the proxy-only subnet, what the network's dynamic routing mode is, who else is behind the same subnet, and whether peering this network has already published more than anyone intended.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#106 leaves Layer 7 for the Network Load Balancers &mdash; passthrough and proxy &mdash; where direct server return means the load balancer sees only half the conversation, and the client's source address survives all the way to the backend.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/l7-internal" target="_blank" rel="noopener">Internal Application Load Balancer overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https/reg-applb-ha-overview" target="_blank" rel="noopener">High availability for regional external Application Load Balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/l7-internal/internal-https-lb-and-other-networks" target="_blank" rel="noopener">Internal Application Load Balancers and connected networks</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/proxy-only-subnets" target="_blank" rel="noopener">Proxy-only subnets for Envoy-based load balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/https" target="_blank" rel="noopener">External Application Load Balancer overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/application-load-balancer" target="_blank" rel="noopener">Application Load Balancer overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/l7-internal/traffic-management" target="_blank" rel="noopener">Traffic management for internal Application Load Balancers</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/health-check-concepts" target="_blank" rel="noopener">Health check concepts</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/forwarding-rule-concepts" target="_blank" rel="noopener">Forwarding rules overview</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/l7-internal/l7-internal-shared-vpc" target="_blank" rel="noopener">Internal Application Load Balancers and Shared VPC</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/choosing-load-balancer" target="_blank" rel="noopener">Choose a load balancer</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/features" target="_blank" rel="noopener">Load balancer feature comparison</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-global-external-application-load-balancer/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">The Global External Application Load Balancer</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-regional-external-and-internal-application-load-balancers/';
+      this.page.identifier = 'gcp-architecture-regional-external-and-internal-application-load-balancers';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=bf6a32ba"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
