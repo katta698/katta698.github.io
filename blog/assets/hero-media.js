@@ -62,7 +62,8 @@
   // half-filled theme ships without breaking anything.
   // scripts/validate_hero_media.py fails if these numbers drift from what
   // is actually on disk.
-  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 7 };
+  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 7,
+                 christmas: 24 };
 
   // Audio follows the clip, not the week. The track restarts on every page
   // load regardless — it is not a stream running across a week — so holding
@@ -77,13 +78,24 @@
 
   // Audio is counted separately: there are far fewer tracks than clips, and
   // they rotate per theme-recurrence rather than per day.
-  var AUDIO_COUNTS = { ocean: 3, mountains: 5, forest: 3, rain: 5, sunset: 2, boho: 3 };
+  var AUDIO_COUNTS = { ocean: 3, mountains: 5, forest: 3, rain: 5, sunset: 2, boho: 3,
+                       christmas: 4 };
 
   var now = new Date();
   // Some ISO years have 53 weeks — 2026 does, because 1 January was a
   // Thursday. Without this wrap, week 53 would index past the plan and the
   // hero would go blank for a week, once every five or six years.
   var theme = PLAN[(isoWeek(now) - 1) % PLAN.length];
+
+  // A dated season, not a plan entry. ISO week 53 straddles the new year, so a
+  // week-based festive theme would still be running on 2 January; these dates
+  // stop on the 31st and the plan resumes by itself with no edit to undo.
+  var SEASON = { theme: 'christmas', from: '2026-11-26', to: '2026-12-31' };
+  var today = now.getFullYear() + '-'
+            + String(now.getMonth() + 1).padStart(2, '0') + '-'
+            + String(now.getDate()).padStart(2, '0');
+  var inSeason = today >= SEASON.from && today <= SEASON.to;
+  if (inSeason && COUNTS[SEASON.theme]) theme = SEASON.theme;
 
   // There was a dusk rule here: between 17:00 and 21:00 local, sunset took the
   // evening whatever the week said. The intent was variety for someone
@@ -106,6 +118,15 @@
   if (!COUNTS[theme]) theme = FALLBACK;            // theme has no clips yet
   var count = COUNTS[theme] || 1;
   var n = (now.getDay() % count) + 1;              // wraps on the real count
+
+  // Day-of-week only ever reaches seven clips. A season with more than that
+  // needs a counter that keeps climbing, so every clip gets a turn before any
+  // repeats - 36 days over 24 clips means the first twelve come round twice.
+  if (inSeason && theme === SEASON.theme) {
+    var dayOne = new Date(SEASON.from + 'T00:00:00');
+    var elapsed = Math.floor((now - dayOne) / 86400000);
+    n = ((elapsed % count) + count) % count + 1;
+  }
 
   // ?clip=5 forces a particular clip, so any of a theme's clips can be seen
   // without waiting for the day of week to come round. Out-of-range values are
