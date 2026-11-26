@@ -11,6 +11,10 @@ verified_claims:
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html
   - claim: "Replace root volume strategy — Updates instances by replacing only the root volume without terminating the instance. This preserves instance network interfaces, non-root EBS volumes, and instance store data"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html
+  - claim: "If you start an instance refresh with both skip matching and a desired configuration, Amazon EC2 Auto Scaling checks to see if any instances match your desired configuration. Then, it only replaces the instances that don't match your desired configuration"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh-skip-matching.html
+  - claim: "You can use skip matching with a new launch template, a new version of a launch template, or a set of instance types"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh-skip-matching.html
   - claim: "When skip matching is enabled, Auto Scaling compares each instance's current AMI ID against the AMI IDs in your desired configuration. It only replaces instances where the AMI IDs don't match"
     source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html
   - claim: "When you start an instance refresh from the console, skip matching is on by default"
@@ -148,12 +152,22 @@ verified_claims:
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">3</span><strong>Skip matching compares AMI IDs, and cannot see your code</strong></div>
+      <div class="challenge-header"><span class="num">3</span><strong>Skip matching compares the desired configuration, and cannot see your code</strong></div>
       <div class="challenge-body">
         <p>
+          <em>&ldquo;If you start an instance refresh with both skip matching and a desired configuration,
+          Amazon EC2 Auto Scaling checks to see if any instances match your desired configuration. Then, it
+          only replaces the instances that don't match your desired configuration.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;You can use skip matching with a new launch template, a new version of a launch
+          template, or a set of instance types.&rdquo;</em>
+        </p>
+        <p>
+          AMI-ID comparison belongs to the replace root volume strategy.
           <em>&ldquo;When skip matching is enabled, Auto Scaling compares each instance's current AMI ID
-          against the AMI IDs in your desired configuration. It only replaces instances where the AMI IDs
-          don't match.&rdquo;</em>
+          against the AMI IDs in your desired configuration.&rdquo;</em> A rolling refresh matches on the
+          desired configuration itself, applicable launch template versions and instance types included.
         </p>
         <p>
           <em>&ldquo;<strong>Skip matching doesn't check for code changes that are deployed from a user
@@ -171,7 +185,7 @@ verified_claims:
   <div class="section" id="architecture">
     <h2>Architecture</h2>
 
-    <img src="/blog/assets/diagrams/arch-124-asg-instance-refresh.svg" alt="Diagram: Amazon EC2 Auto Scaling instance refresh. A refresh replaces instances using either the default rolling strategy, terminating and launching in batches, or the replace root volume strategy, which replaces only the root volume without terminating and so preserves network interfaces, non-root EBS volumes and instance store data. Three settings default differently between console and CLI or SDK: skip matching is disabled in the CLI and SDK but enabled in the console, and scale-in protected instances and standby instances both default to Wait in the CLI and SDK but Ignore in the console. Wait means Auto Scaling waits one hour for you to act and fails the refresh otherwise, while Ignore leaves those instances on the old configuration, so the same operation either fails loudly or silently skips depending on how it was started. Skip matching compares each instance's AMI ID against the desired configuration and only replaces mismatches, but it does not check for code changes deployed from a user data script, and AWS recommends turning it off when user data pulls new code. Rollback requires a desired configuration specified at start and a specific numbered launch template version; it is not available on the dollar-Latest or dollar-Default version, nor with an SSM Parameter Store AMI alias, and only while the refresh is still in progress. Auto rollback is disabled by default in both console and CLI, and specifying a CloudWatch alarm without enabling auto rollback means the refresh fails without rolling back; a maximum of 10 alarms is allowed and none may start in ALARM or INSUFFICIENT_DATA. Pacing defaults are minimum healthy 90 percent with no maintenance policy, maximum healthy 100 percent, bake time zero, checkpoints disabled with a one-hour checkpoint delay, and instance warmup falling back to the default instance warmup or the health check grace period. Both percentages at 100 replaces one instance at a time and launches before terminating; a minimum of 0 replaces all at once. A refresh may actively replace for up to 14 days and retries for an hour when it cannot continue. Mid-refresh scale-out uses the desired configuration, InService instances are replaced before warm pool instances, and attribute-based instance selection supports neither SkipMatching nor DesiredConfiguration.">
+    <img src="/blog/assets/diagrams/arch-124-asg-instance-refresh.svg" alt="Diagram: Amazon EC2 Auto Scaling instance refresh. A refresh replaces instances using either the default rolling strategy, terminating and launching in batches, or the replace root volume strategy, which replaces only the root volume without terminating and so preserves network interfaces, non-root EBS volumes and instance store data. Three settings default differently between console and CLI or SDK: skip matching is disabled in the CLI and SDK but enabled in the console, and scale-in protected instances and standby instances both default to Wait in the CLI and SDK but Ignore in the console. Wait means Auto Scaling waits one hour for you to act and fails the refresh otherwise, while Ignore leaves those instances on the old configuration, so the same operation either fails loudly or silently skips depending on how it was started. For a rolling refresh, skip matching compares each instance against the desired configuration, including applicable launch template versions and instance types, and only replaces those that do not match; the AMI-ID comparison applies to the replace root volume strategy. Skip matching does not check for code changes deployed from a user data script, and AWS recommends turning it off when user data pulls new code. Rollback requires a desired configuration specified at start and a specific numbered launch template version; it is not available on the dollar-Latest or dollar-Default version, nor with an SSM Parameter Store AMI alias, and only while the refresh is still in progress. Auto rollback is disabled by default in both console and CLI, and specifying a CloudWatch alarm without enabling auto rollback means the refresh fails without rolling back; a maximum of 10 alarms is allowed and none may start in ALARM or INSUFFICIENT_DATA. Pacing defaults are minimum healthy 90 percent with no maintenance policy, maximum healthy 100 percent, bake time zero, checkpoints disabled with a one-hour checkpoint delay, and instance warmup falling back to the default instance warmup or the health check grace period. Both percentages at 100 replaces one instance at a time and launches before terminating; a minimum of 0 replaces all at once. A refresh may actively replace for up to 14 days and retries for an hour when it cannot continue. Mid-refresh scale-out uses the desired configuration, InService instances are replaced before warm pool instances, and attribute-based instance selection supports neither SkipMatching nor DesiredConfiguration.">
 
     <h3>Two strategies, and what the quieter one preserves</h3>
     <p>
@@ -325,11 +339,12 @@ verified_claims:
 
     <h3>The rollback conditions are honest rather than arbitrary</h3>
     <p>
-      Every rollback restriction follows from the same fact: a rollback needs a specific thing to go back
-      to. <code>$Latest</code> is a moving pointer, an SSM AMI alias is a moving pointer, and a refresh
-      without a desired configuration never recorded a before state. AWS could have faked it by snapshotting
-      the resolved version, and chose not to. That is defensible &mdash; but it means the convenience and
-      the safety net are mutually exclusive, and the documentation is where you find that out.
+      Two of the three restrictions follow from the same fact: a rollback needs a specific thing to go
+      back to, and <code>$Latest</code> and an SSM AMI alias are both moving pointers. The third is
+      documented as a requirement rather than explained &mdash; the rollback option is only available if
+      you specify a desired configuration as part of starting an instance refresh. Either way it means the
+      convenience and the safety net are mutually exclusive, and the documentation is where you find that
+      out.
     </p>
 
     <h3>Launch-before-terminate at 100 percent is the right lever</h3>
@@ -369,7 +384,7 @@ verified_claims:
           <tr>
             <td>Skip matching with user-data deploys</td>
             <td>Turn it off</td>
-            <td>It compares AMI IDs and cannot see code pulled by user data</td>
+            <td>It compares the desired configuration and cannot see code pulled by user data</td>
           </tr>
           <tr>
             <td>Auto rollback</td>
@@ -443,7 +458,8 @@ verified_claims:
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html" target="_blank" rel="noopener">How an instance refresh works in an Auto Scaling group &#8212; the rolling and replace-root-volume strategies and what the latter preserves, that skip matching compares AMI IDs and is on by default in the console, that it cannot see code deployed by user data and the recommendation to turn it off, the minimum and maximum healthy percentage definitions and the 100-difference limit, the one-at-a-time and all-at-once settings, that the refresh waits for the warmup period before moving on, that a mid-refresh scale-out uses the desired configuration, that <code>InService</code> instances are replaced before warm pool instances, the checkpoint definition and the continuous behaviour without them, the 14-day active replacement ceiling, the one-hour retry before failure, and the attribute-based selection limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-overview.html" target="_blank" rel="noopener">How an instance refresh works in an Auto Scaling group &#8212; the rolling and replace-root-volume strategies and what the latter preserves, that skip matching is on by default in the console and that the AMI-ID comparison belongs to the replace root volume strategy, that it cannot see code deployed by user data and the recommendation to turn it off, the minimum and maximum healthy percentage definitions and the 100-difference limit, the one-at-a-time and all-at-once settings, that the refresh waits for the warmup period before moving on, that a mid-refresh scale-out uses the desired configuration, that <code>InService</code> instances are replaced before warm pool instances, the checkpoint definition and the continuous behaviour without them, the 14-day active replacement ceiling, the one-hour retry before failure, and the attribute-based selection limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh-skip-matching.html" target="_blank" rel="noopener">Use an instance refresh with skip matching &#8212; that skip matching checks instances against the desired configuration and replaces only those that do not match, that it can be used with a new launch template, a new version of a launch template or a set of instance types, that it falls back to the group's last saved configuration when no desired configuration is given, and that it cannot tell whether a user data script will pull updated code</a></li>
       <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/understand-instance-refresh-default-values.html" target="_blank" rel="noopener">Understand the default values for an instance refresh &#8212; the full default table including minimum healthy percentage at 90 percent and maximum at 100 percent absent an instance maintenance policy, the 1 hour (3600 seconds) checkpoint delay, instance warmup falling back to the default instance warmup or the health check grace period, and the <code>Wait</code> versus <code>Ignore</code> defaults for standby and scale-in protected instances with what each one does</a></li>
       <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/instance-refresh-rollback.html" target="_blank" rel="noopener">Undo changes with a manual or auto rollback &#8212; that rollback requires a desired configuration and a specific numbered launch template version, that <code>$Latest</code> and <code>$Default</code> and an SSM Parameter Store AMI alias all disqualify it, that a finished refresh cannot be rolled back, that the previously saved configuration must be stable or the rollback itself fails, that an alarm without auto rollback fails the refresh without rolling back, the maximum of 10 alarms, and that an alarm in <code>ALARM</code> or <code>INSUFFICIENT_DATA</code> errors on start</a></li>
       <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh.html" target="_blank" rel="noopener">Use an instance refresh to update instances in an Auto Scaling group &#8212; further reading on the situations an instance refresh is intended for; no claims in this post are drawn from it</a></li>
