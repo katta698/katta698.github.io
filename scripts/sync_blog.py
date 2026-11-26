@@ -757,6 +757,10 @@ def load_cloud_catalogues():
         CLOUD_CATALOGUES[cloud] = data.get("services", {})
 
 
+_CLOUD_SVC_MEMO = {}
+_CLOUD_SVC_PATTERNS = {}
+
+
 def count_cloud_services(text, catalogue):
     """Which catalogue services this text mentions, word-bounded.
 
@@ -769,11 +773,28 @@ def count_cloud_services(text, catalogue):
     not by mentions, so a post that says "Cloud Run" nine times counts once --
     otherwise one long post outranks a service discussed across five.
     """
+    # build_index_page() is called once per pagination page -- 24 times for a
+    # 571-post archive -- and recomputes this for every post on every call,
+    # with identical results. Profiled 2026-11-25: 5.7 million regex searches,
+    # 2,291s of a 3,635s run. The function is pure, so memoise it on the text
+    # and the catalogue identity. Patterns are compiled once per name here
+    # too; re's own cache is only 512 entries and these catalogues are larger,
+    # so it was missing on nearly every call.
+    _key = (id(catalogue), text)
+    _hit = _CLOUD_SVC_MEMO.get(_key)
+    if _hit is not None:
+        return _hit
+    pats = _CLOUD_SVC_PATTERNS.get(id(catalogue))
+    if pats is None:
+        pats = [(name, re.compile(r"(?<![A-Za-z0-9])" + re.escape(name)
+                                  + r"(?![A-Za-z0-9])"))
+                for name in catalogue]
+        _CLOUD_SVC_PATTERNS[id(catalogue)] = pats
     hits = set()
-    for name in catalogue:
-        if re.search(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])",
-                     text):
+    for name, pat in pats:
+        if pat.search(text):
             hits.add(name)
+    _CLOUD_SVC_MEMO[_key] = hits
     return hits
 
 
@@ -876,6 +897,9 @@ def find_unlisted_services(texts, min_mentions=3):
                   key=lambda x: -x[1])
 
 
+_SVC_MEMO = {}
+
+
 def count_services(text, services=None):
     """Count AWS service mentions in one post.
 
@@ -887,6 +911,15 @@ def count_services(text, services=None):
     One pass with a combined pattern rather than one scan per service, because
     the catalogue is now ~660 names rather than 43.
     """
+    # Same reason as count_cloud_services above: build_index_page() calls this
+    # for every post on each of its 24 invocations. Profiled 2026-11-25:
+    # 42,898 calls, 237s of self time. Pure function, so memoise it -- and
+    # hand back a copy, because the result is a mutable dict the callers own.
+    if services is None:
+        _cached = _SVC_MEMO.get(text)
+        if _cached is not None:
+            return dict(_cached)
+
     counts = {}
     for m in SERVICE_SCAN_RE.finditer(text):
         name = SERVICE_ALIASES.get(m.group(1), m.group(1))
@@ -903,6 +936,8 @@ def count_services(text, services=None):
             name, r"(?:AWS|Amazon)\s+%s" % re.escape(name))
         if not re.search(explicit, text, re.IGNORECASE):
             del counts[name]
+    if services is None:
+        _SVC_MEMO[text] = dict(counts)
     return counts
 
 
