@@ -313,6 +313,16 @@ SERVICES_HEADER = ["Service", "Purpose here", "What it is"]
 SERVICES_HEADER_PENDING = {
 }
 
+# Weeks 1-5 predate the References list. Named here so the rule can start
+# green on everything written since, rather than failing from day one.
+REFERENCES_PENDING = {
+    "week-1-from-ticket-to-ec2-in-6-minutes-enterprise-self-servi.html",
+    "week-2-automating-postgresql-provisioning-with-servicenow-an.html",
+    "week-3-self-service-ec2-fleet-patching-with-aws-ssm.html",
+    "week-4-building-a-fleet-intelligence-platform-with-aws-glue-.html",
+    "week-5-cost-anomaly-detection-with-aws-cost-explorer-sns-and.html",
+}
+
 
 # THE REST OF THE SHAPE (added 2026-10-30)
 #
@@ -439,7 +449,14 @@ def check_text(text, name, report, slug=None, required=None, series=None):
     # the lab guide is the first reference, so a reader who wants the repo
     # does not have to hunt for it
     rm = re.search(r"<h3>References</h3>\s*<ul>\s*<li>(.*?)</li>", body, re.S)
-    if rm and "lab guide" not in rm.group(1).lower() and "README" not in rm.group(1):
+    if not rm:
+        # Checking the order only when the section exists let a post with no
+        # References at all through, sources living in frontmatter where no
+        # reader sees them.
+        if name not in REFERENCES_PENDING:
+            problems.append("no References list -- the sources a reader can "
+                            "follow, led by the lab guide")
+    elif "lab guide" not in rm.group(1).lower() and "README" not in rm.group(1):
         problems.append("the first reference is not the full lab guide")
 
     if problems:
@@ -555,6 +572,7 @@ def self_test():
          1, "too many screenshots"),
         (aws_post(refs="<h3>References</h3><ul><li>Some AWS doc</li></ul>"),
          1, "references not led by the lab guide"),
+        (aws_post(refs=""), 1, "no References list at all"),
     ]
     for text, want, label in aws_cases:
         r = []
