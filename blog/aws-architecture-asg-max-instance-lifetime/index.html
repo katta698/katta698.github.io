@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #126 — A protected instance has no maximum lifetime | Jayanth Katta Blog</title>
+<meta name="description" content="Maximum instance lifetime exists for compliance: AWS names internal security policies and external compliance controls as the use case, and it replaces every instance in a group once it has been in service for a set number of seconds. Two documented behaviours undercut reading it as a control. Instance scale-in protection wins - Auto Scaling will not terminate a protected instance even when it has reached its maximum lifetime, so an instance can outlive the limit indefinitely, and the same page recommends scale-in protection as the remedy for replacement happening too fast. And the pacing is adaptive rather than fixed: Auto Scaling usually replaces one instance at a time, but when the lifetime is too short to replace them individually it replaces several at once, up to 10 percent of current capacity. Setting the parameter at all can start replacing instances immediately, because desynchronising them is how it avoids replacing them all together later."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="A protected instance has no maximum lifetime"/>
+<meta property="og:description" content="Maximum instance lifetime exists for compliance: AWS names internal security policies and external compliance controls as the use case, and it replaces every instance in a group once it has been in service for a set number of seconds. Two documented behaviours undercut reading it as a control. Instance scale-in protection wins - Auto Scaling will not terminate a protected instance even when it has reached its maximum lifetime, so an instance can outlive the limit indefinitely, and the same page recommends scale-in protection as the remedy for replacement happening too fast. And the pacing is adaptive rather than fixed: Auto Scaling usually replaces one instance at a time, but when the lifetime is too short to replace them individually it replaces several at once, up to 10 percent of current capacity. Setting the parameter at all can start replacing instances immediately, because desynchronising them is how it avoids replacing them all together later."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-asg-max-instance-lifetime/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="A protected instance has no maximum lifetime"/>
+<meta name="twitter:description" content="Maximum instance lifetime exists for compliance: AWS names internal security policies and external compliance controls as the use case, and it replaces every instance in a group once it has been in service for a set number of seconds. Two documented behaviours undercut reading it as a control. Instance scale-in protection wins - Auto Scaling will not terminate a protected instance even when it has reached its maximum lifetime, so an instance can outlive the limit indefinitely, and the same page recommends scale-in protection as the remedy for replacement happening too fast. And the pacing is adaptive rather than fixed: Auto Scaling usually replaces one instance at a time, but when the lifetime is too short to replace them individually it replaces several at once, up to 10 percent of current capacity. Setting the parameter at all can start replacing instances immediately, because desynchronising them is how it avoids replacing them all together later."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-asg-max-instance-lifetime/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6d75b39c"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=bf6a32ba" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=bf6a32ba">
+<script src="/blog/assets/site-footer.js?v=bf6a32ba" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/data/">Data</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #126 — A protected instance has no maximum lifetime…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #126 — A protected instance has no maximum lifetime</h1>
+      <p class="post-description">Maximum instance lifetime exists for compliance: AWS names internal security policies and external compliance controls as the use case, and it replaces every instance in a group once it has been in service for a set number of seconds. Two documented behaviours undercut reading it as a control. Instance scale-in protection wins - Auto Scaling will not terminate a protected instance even when it has reached its maximum lifetime, so an instance can outlive the limit indefinitely, and the same page recommends scale-in protection as the remedy for replacement happening too fast. And the pacing is adaptive rather than fixed: Auto Scaling usually replaces one instance at a time, but when the lifetime is too short to replace them individually it replaces several at once, up to 10 percent of current capacity. Setting the parameter at all can start replacing instances immediately, because desynchronising them is how it avoids replacing them all together later.</p>
+      <div class="post-info">
+        <span>Nov 27, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>12 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 27 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-asg-max-instance-lifetime" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      This is the simplest setting in the series: one number, in seconds, after which an instance is
+      replaced. <em>&ldquo;The maximum instance lifetime specifies the maximum amount of time (in seconds)
+      that an instance can be in service before it is terminated and replaced.&rdquo;</em> And AWS is
+      explicit about who it is for:
+      <em>&ldquo;A common use case might be a requirement to replace your instances on a schedule because
+      of internal security policies or external compliance controls.&rdquo;</em>
+    </p>
+    <p>
+      A control that an auditor can be shown. That framing is what makes the rest of the page worth
+      reading closely, because three of its paragraphs describe conditions under which the number is not
+      what happens.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Scale-in protection beats the lifetime, and is the recommended remedy</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When this protection is enabled on an instance, Amazon EC2 Auto Scaling
+          <strong>will not terminate the instance even if it has reached its maximum instance
+          lifetime</strong>.&rdquo;</em>
+        </p>
+        <p>
+          There is no timeout on that and no escalation. A protected instance is simply exempt, for as
+          long as the protection is set. If the reason for the lifetime was a 30-day rotation requirement,
+          a protected instance does not rotate at 30 days or at 300.
+        </p>
+        <p>
+          What makes this more than a footnote is that the same page proposes it as a fix:
+          <em>&ldquo;To avoid replacing too many instances at once, either set a longer maximum instance
+          lifetime or use instance scale-in protection to temporarily prevent individual instances from
+          being terminated.&rdquo;</em>
+        </p>
+        <p>
+          So the documented mitigation for one behaviour of this feature is the documented way to opt out
+          of it. Both sentences are correct; read together they mean a group can satisfy the setting and
+          not the requirement behind it, and nothing in the group's configuration shows the difference.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The pace is adaptive, and the arithmetic decides it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Amazon EC2 Auto Scaling will usually replace instances one at a time, with a pause
+          between replacements.&rdquo;</em> Usually is doing real work in that sentence:
+        </p>
+        <p>
+          <em>&ldquo;if the specified maximum instance lifetime doesn't provide enough time to replace each
+          instance individually, Amazon EC2 Auto Scaling must replace more than one instance at a time.
+          Several instances might be replaced at once, by up to 10 percent of the current capacity of your
+          Auto Scaling group.&rdquo;</em>
+        </p>
+        <p>
+          The concurrency is therefore a function of the lifetime and the group size, not something you
+          set. A number chosen to be strict, on a group large enough that one-at-a-time cannot keep up,
+          converts itself into a rolling replacement of a tenth of the fleet. Nothing warns you at the
+          moment you set it; the group's behaviour simply changes.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Setting a long lifetime can terminate instances today</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Instances are not guaranteed to be replaced only at the end of their maximum
+          duration.&rdquo;</em> And the reason is the useful part:
+        </p>
+        <p>
+          <em>&ldquo;In some situations, Amazon EC2 Auto Scaling might need to start replacing instances
+          immediately after you update the maximum instance lifetime parameter. <strong>The reason for
+          this behavior is to avoid replacing all instances at the same time.</strong>&rdquo;</em>
+        </p>
+        <p>
+          A group whose instances all launched together would, under a naive implementation, reach their
+          lifetime together. Auto Scaling prevents that by spreading them out, and the only way to spread
+          out instances that are already the same age is to start replacing some of them early. So the
+          mechanism that protects you from a synchronised mass replacement in 90 days is a replacement
+          now.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-126-asg-max-instance-lifetime.svg" alt="Diagram: Amazon EC2 Auto Scaling maximum instance lifetime. The setting specifies the maximum amount of time in seconds that an instance can be in service before it is terminated and replaced, and AWS names internal security policies and external compliance controls as the common use case. The minimum value is 86,400 seconds, one day, and a value of 0 clears a previously set value; the setting applies to all current and future instances in the group. It cannot be set when creating a group in the console, only by editing the group afterwards or through the CLI and API. Replacement pacing is adaptive rather than configurable: Auto Scaling usually replaces instances one at a time with a pause between replacements, but if the specified lifetime does not provide enough time to replace each instance individually it must replace more than one at a time, and several instances might be replaced at once by up to 10 percent of the current capacity of the group. Instances are not guaranteed to be replaced only at the end of their maximum duration, and Auto Scaling might need to start replacing instances immediately after the parameter is updated, in order to avoid replacing all instances at the same time. Two documented conditions mean an instance does not observe the limit. With instance scale-in protection enabled, Auto Scaling will not terminate the instance even if it has reached its maximum instance lifetime, and the same documentation recommends scale-in protection as a way to avoid replacing too many instances at once. And when there is only one instance in the group, the feature can result in an outage, because by default Auto Scaling creates a scaling activity to terminate the instance and then terminates it, launching a replacement while the instance is terminating; an instance maintenance policy changes this to launch before terminating. Replacement also acts as a deploy: whenever an earlier instance is replaced the new instance uses the launch template or launch configuration currently associated with the group, so if that template specifies the AMI ID of a different version of the application, that version is deployed automatically.">
+
+    <h3>The one number, and its floor</h3>
+    <p>
+      <em>&ldquo;You must specify a value of at least 86,400 seconds (one day). To clear a previously set
+      value, specify a new value of 0. This setting applies to all current and future instances in your
+      Auto Scaling group.&rdquo;</em>
+    </p>
+    <p>
+      One day is the floor, and it is a sensible one: below that, the adaptive pacing from challenge 2
+      would be the normal case rather than the exception for all but the smallest groups. The clearing
+      value being 0 rather than an unset field matters for infrastructure as code, where omitting a
+      property and setting it to zero are different operations.
+    </p>
+    <p>
+      The console cannot set it at creation time:
+      <em>&ldquo;When you create an Auto Scaling group in the console, you cannot set the maximum instance
+      lifetime.&rdquo;</em> It is available when editing an existing group, and from the API at creation.
+      That is a smaller version of the console-versus-API divergence this series keeps running into: not a
+      different default, but a different set of available settings.
+    </p>
+
+    <h3>Why the pace cannot be configured</h3>
+    <p>
+      Every other replacement feature in this series exposes its pacing. An instance refresh takes a
+      minimum and maximum healthy percentage; a maintenance policy sets them for the group. Maximum
+      instance lifetime takes neither, and the reason is structural: the pace is whatever satisfies the
+      deadline you gave it.
+    </p>
+    <p>
+      The arithmetic is worth doing before setting the number. One at a time with a pause, across a group
+      of N instances, needs roughly N pauses of headroom inside the lifetime. Where it does not have
+      that, the documented consequence is replacement in batches of up to 10 percent of current capacity
+      &mdash; and because the ceiling is expressed against <em>current</em> capacity, a group that has
+      scaled out replaces more instances at once than the same group scaled in.
+    </p>
+
+    <h3>The single-instance outage</h3>
+    <p>
+      This is the one unambiguous defect-shaped behaviour on the page, and it is stated as a limitation
+      rather than buried:
+      <em>&ldquo;When there is only one instance in the Auto Scaling group, the maximum instance lifetime
+      feature can result in an outage because Amazon EC2 Auto Scaling terminates an instance and then
+      launches a new instance by default.&rdquo;</em>
+    </p>
+    <p>
+      The cause is the default order, described a few paragraphs earlier:
+      <em>&ldquo;By default, Amazon EC2 Auto Scaling creates a new scaling activity for terminating the
+      instance and then terminates it. While the instance is terminating, another scaling activity
+      launches a new instance.&rdquo;</em>
+    </p>
+    <p>
+      So a group of one has no capacity during the gap. The fix is the previous post's subject &mdash; an
+      instance maintenance policy that launches before terminating &mdash; and this is the clearest case
+      for setting one. A compliance rotation that takes the service down once a month is a worse outcome
+      than the rotation not happening.
+    </p>
+
+    <h3>The deploy nobody asked for</h3>
+    <p>
+      Replacement is not a restart. It is a launch, from whatever the group currently points at:
+      <em>&ldquo;Whenever an earlier instance is replaced and a new instance launches, the new instance
+      uses the launch template or launch configuration that is currently associated with the Auto Scaling
+      group.&rdquo;</em>
+    </p>
+    <p>
+      And the consequence is spelled out:
+      <em>&ldquo;If your launch template or launch configuration specifies the Amazon Machine Image (AMI)
+      ID of a different version of your application, this version of your application will be deployed
+      automatically.&rdquo;</em>
+    </p>
+    <p>
+      That is a genuine second function of this feature. A group with a maximum instance lifetime and a
+      launch template pointing at a rolling AMI converges on the current AMI without anyone starting an
+      instance refresh &mdash; which is useful if intended and a surprise if not. Combined with
+      <code>$Latest</code> from post #124, a template updated for a different reason reaches production on
+      the lifetime's schedule rather than on a deployment's.
+    </p>
+
+    <h3>What this feature does not have</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>An instance refresh has</th><th>Maximum instance lifetime has</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Minimum and maximum healthy percentage</td><td>Adaptive pacing, up to 10 percent of current capacity</td></tr>
+          <tr><td>A rollback, under conditions</td><td>Nothing &mdash; replacements are not a tracked operation</td></tr>
+          <tr><td>Checkpoints and a bake time</td><td>A pause between replacements, not configurable</td></tr>
+          <tr><td>CloudWatch alarms that can fail it</td><td>Nothing &mdash; it is a standing property of the group</td></tr>
+          <tr><td>A status you can poll</td><td>Activity history, after the fact</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The comparison is the point rather than a criticism. An instance refresh is an operation you start,
+      so it can be paced, paused and reversed. A maximum instance lifetime is a property the group holds
+      forever, so there is no operation to attach any of that to.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Expressing it as a per-instance age is the only thing that works</h3>
+    <p>
+      A fleet-wide replacement schedule stated as a schedule &mdash; replace everything every 30 days
+      &mdash; would synchronise the fleet by construction, and every group would take a correlated
+      replacement on the same day. A per-instance age cannot do that, because instances enter service at
+      different times and so age out at different times. The desynchronisation is a property of the unit
+      AWS chose, not a feature bolted on.
+    </p>
+
+    <h3>Honouring scale-in protection is right, even though it defeats the control</h3>
+    <p>
+      The alternative is worse. Scale-in protection exists so that an operator can say this instance must
+      not be terminated, and a feature that overrode it would make the protection conditional on which
+      other settings a group happens to carry. Auto Scaling honours the more specific, more deliberate
+      instruction, and it documents that it does so. The gap is not in the behaviour; it is that nothing
+      reports a group where the two are in conflict.
+    </p>
+
+    <h3>Adaptive pacing beats refusing the setting</h3>
+    <p>
+      Faced with a lifetime too short to honour one instance at a time, Auto Scaling could reject the
+      value. Instead it replaces faster, up to a documented ceiling. That is the better failure mode for a
+      compliance control, where the deadline is the requirement and the pace is the negotiable part
+      &mdash; and the 10 percent cap is what stops it becoming a full-fleet replacement.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Using it as a compliance control</td>
+            <td>Audit scale-in protection alongside it</td>
+            <td>A protected instance is exempt, with no timeout</td>
+          </tr>
+          <tr>
+            <td>Choosing the value</td>
+            <td>Long enough for N one-at-a-time replacements</td>
+            <td>Otherwise the pace escalates to 10 percent of capacity</td>
+          </tr>
+          <tr>
+            <td>Setting it on a live group</td>
+            <td>Expect replacements to begin immediately</td>
+            <td>Desynchronising an even-aged group means replacing some early</td>
+          </tr>
+          <tr>
+            <td>Groups of one</td>
+            <td>Set an instance maintenance policy first</td>
+            <td>The default order terminates before launching, and that is an outage</td>
+          </tr>
+          <tr>
+            <td>Launch template on the group</td>
+            <td>Know that replacement deploys whatever it points at</td>
+            <td>A template change reaches production on the lifetime's schedule</td>
+          </tr>
+          <tr>
+            <td>Clearing it</td>
+            <td>Set 0, not an empty value</td>
+            <td>That is the documented way to clear a previously set value</td>
+          </tr>
+          <tr>
+            <td>Creating groups in the console</td>
+            <td>Set it in a second step, or use the API</td>
+            <td>The console cannot set it at creation time</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every group with a maximum instance lifetime, cross-referenced against instances carrying scale-in
+        protection &mdash; that intersection is the set of instances the control does not cover.
+      </li>
+      <li>
+        Every such group's instance count against its lifetime, to find the ones where one-at-a-time
+        cannot keep up and replacement is running at 10 percent of capacity.
+      </li>
+      <li>
+        Every group of one or two instances with a lifetime set and no instance maintenance policy.
+      </li>
+      <li>
+        Every group whose launch template is updated by a pipeline, where the lifetime is silently acting
+        as the deployment mechanism.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Seven posts into Auto Scaling, the pattern across all of them is that a setting's name describes its
+      intent and the documentation describes its behaviour, and the gap between the two is where the
+      operational surprises live. This one has the widest gap so far, because the name is a guarantee and
+      the page lists two conditions under which it does not hold.
+    </p>
+    <p>
+      The finding I would act on is the scale-in protection exemption. Everything else here is a pacing
+      question you can reason about from the group's size. That one is different in kind: it means a group
+      can be configured exactly as an auditor asked, hold an instance that has been running for a year,
+      and present nothing anomalous in its configuration. If you are using this feature as a control, the
+      thing to monitor is not the setting. It is the instances the setting does not apply to.
+    </p>
+
+    <div class="next-post">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling instance scale-in protection: what it does and does not stop, the difference between protecting a group and protecting an instance, and why it is honoured by some terminations and ignored by others.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html" target="_blank" rel="noopener">Replace Auto Scaling instances based on maximum instance lifetime &#8212; the definition and the compliance use case, the 86,400-second minimum and clearing with 0, that it applies to all current and future instances, the usually-one-at-a-time pacing and the escalation to 10 percent of current capacity when the lifetime is too short, the recommendation to lengthen the lifetime or use scale-in protection, that replacement is not guaranteed to wait for the end of the duration and may begin immediately after the parameter is updated, that scale-in protection prevents termination even at maximum lifetime, the single-instance outage from the default terminate-then-launch order, that the console cannot set it at creation time, and that replacements use the launch template currently on the group and so deploy whatever AMI it names</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-maintenance-policy.html" target="_blank" rel="noopener">Instance maintenance policies &#8212; further reading on the policy that changes the replacement order to launch before terminating, which is the documented fix for the single-instance outage; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-protection.html" target="_blank" rel="noopener">Use instance scale-in protection to control instance termination &#8212; further reading on the protection that exempts an instance from its maximum lifetime; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh.html" target="_blank" rel="noopener">Use an instance refresh to update instances in an Auto Scaling group &#8212; further reading on the operation this feature is deliberately not, and the pacing controls it has that a lifetime cannot; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-regional-external-and-internal-application-load-balancers/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #105 — Regional External and Internal Application Load Balancers</span></a><a href="/blog/azure-architecture-just-in-time-vm-access/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #106 — Just-in-Time VM Access</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-asg-max-instance-lifetime/';
+      this.page.identifier = 'aws-architecture-asg-max-instance-lifetime';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=bf6a32ba"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

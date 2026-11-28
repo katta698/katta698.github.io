@@ -1,0 +1,483 @@
+---
+title: "AWS Daily Intelligence #87 - The orchestrator gets a year, the MicroVM gets eight hours"
+date: '2026-11-27T09:30:00'
+slug: aws-daily-intelligence-lambda-durable-microvm
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-11-27'
+catch: "AWS put Lambda durable functions in charge of Lambda MicroVM lifecycles, in developer preview for TypeScript and Python, aimed at software factories, security scanners and CI/CD running untrusted or agent-generated code in isolated sandboxes. The announcement pairs two durations without reconciling them: durable functions run up to one year, and a MicroVM's maximumDurationInSeconds has a range of 1 to 28,800 seconds - eight hours - which the documentation says is the maximum total lifespan including both running and suspended time. Suspending to save money does not buy you more wall clock. So any orchestration longer than a shift has to treat its MicroVMs as expiring resources rather than as workers, and a durable function can outlive the sandbox it is waiting on by three orders of magnitude. Two more things the announcement leaves out: Lambda does not automatically retry a failed durable execution, unlike an ordinary asynchronous invocation, so a dead-letter queue is not optional; and anything unique your image generates at build time - IDs, secrets, connections - is shared across every MicroVM run from that image version, which is the one property a sandbox for untrusted code cannot afford to inherit by accident."
+verified_claims:
+  - claim: "With AWS Lambda durable functions, you can build resilient multi-step applications and AI workflows that can execute for up to one year while maintaining reliable progress despite interruptions"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html
+  - claim: "During replay, your code runs from the beginning but skips over completed checkpoints, using stored results instead of re-executing completed operations"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html
+  - claim: "During wait operations, your function suspends without incurring compute charges"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html
+  - claim: "The maximum total lifespan of the MicroVM, including both running and suspended time. Lambda terminates the MicroVM when this duration is exceeded. Range: 1"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "The number of seconds without traffic after which the MicroVM is suspended. Maximum: 28,800 (8 hours)"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "The number of seconds a MicroVM remains in the suspended state before Lambda terminates it"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "All requests to a MicroVM endpoint require a JWE authentication token. There is no unauthenticated access option"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "Lambda routes inbound requests based on their port and does not filter them by URL path"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "For production workloads, host lifecycle hooks on a dedicated port separate from your application port"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "Unlike environment variables (which are set at image level and shared across all MicroVMs from that image), the run hook payload is unique to each MicroVM"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "A string payload (max 16 KB) delivered to the /run lifecycle hook when the MicroVM starts"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "If resume does not succeed, Lambda returns 502 Bad Gateway to the caller"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html
+  - claim: "If your application generates unique content during the build (such as unique IDs, secrets, or network connections), that content is shared across all MicroVMs run from the same image version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html
+  - claim: "MicroVM has been terminated. This is a terminal state. The MicroVM cannot be resumed or restarted"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html
+  - claim: "If your /run hook fails or times out, the MicroVM may transition directly to TERMINATING without ever reaching RUNNING"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html
+  - claim: "Each MicroVM runs an Amazon Linux 2023 operating system with operating system capabilities, providing near-instant launch and resume"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html
+  - claim: "Unlike asynchronous invocations of functions without durable execution, Lambda does not automatically retry durable executions on failure"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/durable-best-practices.html
+  - claim: "If you rename a step or alter its behavior while executions are in progress, those executions can fail to resume or produce incorrect results"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/durable-best-practices.html
+  - claim: "Provision each MicroVM for baseline or average usage, with the flexibility to vertically scale to 4x of configured baseline during peak activity"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html
+  - claim: "AWS Lambda now supports orchestrating MicroVMs with Lambda durable functions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/11/lambda-durable-microvm/
+---
+
+<div id="jk-post">
+
+<p class="lead">
+  The pitch is clean: a durable function that survives for a year, orchestrating disposable VMs that boot
+  in milliseconds, for running code you do not trust. Both halves are real. The thing to work out before
+  building on it is that they do not share a clock, and the shorter one is eight hours.
+</p>
+
+<p>
+  <em>&ldquo;The maximum total lifespan of the MicroVM, <strong>including both running and suspended
+  time</strong>. Lambda terminates the MicroVM when this duration is exceeded.&rdquo;</em>
+</p>
+
+<div class="section" id="summary">
+  <h2>Executive summary</h2>
+  <p>
+    The announcement is <em>&ldquo;AWS Lambda now supports orchestrating MicroVMs with Lambda durable
+    functions&rdquo;</em>, in developer preview for TypeScript and Python, with event source triggering from
+    Amazon SQS or Amazon EventBridge and an optional worker library that runs inside the MicroVM image to
+    receive tasks, send heartbeats and report results.
+  </p>
+  <p>
+    The durable half is documented as
+    <em>&ldquo;With AWS Lambda durable functions, you can build resilient multi-step applications and AI
+    workflows that can execute for up to one year while maintaining reliable progress despite
+    interruptions&rdquo;</em>, and the economics of long waits are the reason to use it:
+    <em>&ldquo;During wait operations, your function suspends without incurring compute charges.&rdquo;</em>
+  </p>
+  <p>
+    The MicroVM half is capped. <code>maximumDurationInSeconds</code> accepts a range of 1 to 28,800
+    seconds, which is eight hours, and the word that matters in its definition is
+    <strong>total</strong> &mdash; the ceiling counts suspended time too.
+  </p>
+</div>
+
+<div class="section" id="changed">
+  <h2>What changed</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Piece</th><th>What it now does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Durable functions extension</td><td>Durable operations for running work on MicroVMs and managing their lifecycle</td></tr>
+        <tr><td>Parallelism</td><td>One durable function can orchestrate multiple MicroVMs in parallel</td></tr>
+        <tr><td>Worker library</td><td>Optional, runs inside the image: task reception, heartbeats, result reporting</td></tr>
+        <tr><td>Triggers</td><td>Amazon SQS or Amazon EventBridge as event sources</td></tr>
+        <tr><td>Languages</td><td>TypeScript and Python, in developer preview</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The language list is worth noting against the base SDK, which the documentation says
+    is available for JavaScript, TypeScript, Python, Java, Go, Rust and C#. The MicroVM extension is two
+    of those seven, and it is a preview.
+  </p>
+</div>
+
+<div class="section" id="architecture">
+  <h2>Architecture</h2>
+
+  <img src="/blog/assets/diagrams/daily-087-lambda-durable-microvm.svg" alt="Diagram: AWS Lambda durable functions orchestrating Lambda MicroVMs. Durable functions can execute for up to one year, using checkpoints to track progress and replay to recover, and during wait operations the function suspends without incurring compute charges. A MicroVM's maximumDurationInSeconds parameter is the maximum total lifespan of the MicroVM including both running and suspended time, with a range of 1 to 28,800 seconds or eight hours, after which Lambda terminates it. Suspending a MicroVM to reduce cost therefore does not extend its lifespan, because suspended time counts against the same ceiling. The maximum idle duration before automatic suspension is also capped at 28,800 seconds, and a separate suspended duration setting terminates a MicroVM after it has been suspended for a configured number of seconds. TERMINATED is a terminal state and the MicroVM cannot be resumed or restarted, so a durable function that outlives its sandbox must treat the MicroVM as an expiring resource rather than a worker. Lambda does not automatically retry durable executions on failure, unlike asynchronous invocations of functions without durable execution, so a dead-letter queue is required to avoid losing the triggering event. Because replay re-runs code from the beginning while skipping completed checkpoints, renaming a step or altering its behaviour while executions are in progress can cause those executions to fail to resume or produce incorrect results, and with executions lasting up to a year the window of in-flight work a deploy can break is correspondingly long. On isolation, each MicroVM runs Amazon Linux 2023, all requests to a MicroVM endpoint require a JWE authentication token and there is no unauthenticated access option, but anything unique the application generates during the image build such as unique IDs, secrets or network connections is shared across all MicroVMs run from the same image version, so per-sandbox values must be generated after start through the run hook, whose payload is unique to each MicroVM and capped at 16 KB. Lambda routes inbound requests by port and does not filter them by URL path, so lifecycle hooks should be hosted on a dedicated port separate from the application port and excluded from the ports a token allows. If the run hook fails or times out the MicroVM may transition directly to terminating without ever reaching running, and if a resume does not succeed Lambda returns 502 Bad Gateway to the caller.">
+
+  <h3>One year against eight hours</h3>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>Maximum</th><th>Counts idle time?</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Durable execution</td><td>Up to one year</td><td>No &mdash; waits suspend without compute charges</td></tr>
+        <tr><td>MicroVM total lifespan</td><td>28,800 s (8 hours)</td><td><strong>Yes</strong> &mdash; running and suspended time both count</td></tr>
+        <tr><td>MicroVM idle before suspend</td><td>28,800 s maximum</td><td>&mdash;</td></tr>
+        <tr><td>Suspended before termination</td><td>Configurable</td><td>&mdash;</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The ratio is about 1,095 to one. That is not a criticism of either limit; it is the fact that decides
+    the shape of anything built on this pairing. A durable function that models a MicroVM as a worker it
+    can hand tasks to over the life of the execution is correct for the first eight hours and wrong
+    afterwards, and the transition is not gradual:
+    <em>&ldquo;MicroVM has been terminated. This is a terminal state. The MicroVM cannot be resumed or
+    restarted.&rdquo;</em>
+  </p>
+
+  <h3>Suspending does not buy time</h3>
+  <p>
+    This is the part most likely to be assumed away. Suspension is presented, correctly, as a cost
+    control: a suspended MicroVM preserves memory and disk state and stops accruing compute charges. The
+    natural inference is that a mostly-idle sandbox can be kept around cheaply for a long job.
+  </p>
+  <p>
+    It cannot, because the ceiling counts both states. Eight hours of wall clock is eight hours whether
+    the MicroVM spent it serving requests or parked. Suspension changes the bill, not the deadline.
+  </p>
+  <p>
+    There is a second, independent timer: a configured number of
+    <em>&ldquo;seconds a MicroVM remains in the suspended state before Lambda terminates it&rdquo;</em>.
+    So a long-running orchestration has two ways to lose a sandbox it was not actively using, and both
+    end in the same terminal state.
+  </p>
+
+  <h3>The retry that is not there</h3>
+  <p>
+    The announcement lists automatic retries among durable functions' built-in features, and within a step
+    that is exactly right. At the level of the execution it inverts:
+  </p>
+  <p>
+    <em>&ldquo;Unlike asynchronous invocations of functions without durable execution, Lambda does not
+    automatically retry durable executions on failure.&rdquo;</em>
+  </p>
+  <p>
+    An ordinary asynchronous Lambda invocation is retried by the service. A durable one is not. The
+    documented consequence is that a dead-letter queue stops being a nicety: without one, the event that
+    triggered a permanently failed execution is gone. Lambda sends the original triggering event to the
+    DLQ when an execution reaches FAILED, STOPPED or TIMED_OUT after an asynchronous invocation, and that
+    is the only copy.
+  </p>
+  <p>
+    This is a reasonable design &mdash; blind retries of a workflow that has already consumed eight hours
+    of MicroVM time would be worse &mdash; but it is the opposite of the Lambda behaviour most people have
+    internalised.
+  </p>
+
+  <h3>Replay is the programming model, and a deploy can break it</h3>
+  <p>
+    Durable functions work by re-running your code:
+    <em>&ldquo;During replay, your code runs from the beginning but skips over completed checkpoints,
+    using stored results instead of re-executing completed operations.&rdquo;</em>
+  </p>
+  <p>
+    That imposes a constraint on deployments rather than only on code:
+    <em>&ldquo;If you rename a step or alter its behavior while executions are in progress, those
+    executions can fail to resume or produce incorrect results.&rdquo;</em>
+  </p>
+  <p>
+    Combine that with the one-year ceiling and the exposure is clear. In-flight means anything started up
+    to a year ago, so a refactor that renames a step is not a change to future behaviour &mdash; it is a
+    change to executions already running. The documented mitigation is to invoke with version numbers or
+    aliases so executions pin to the code they started on, and to ensure new versions can handle state
+    from older ones.
+  </p>
+
+  <h3>What the sandbox actually isolates</h3>
+  <p>
+    The isolation story is strong where it counts. Each MicroVM
+    <em>&ldquo;runs an Amazon Linux 2023 operating system with operating system capabilities, providing
+    near-instant launch and resume&rdquo;</em>, and the endpoint is closed by default:
+    <em>&ldquo;All requests to a MicroVM endpoint require a JWE authentication token. There is no
+    unauthenticated access option.&rdquo;</em>
+  </p>
+  <p>
+    The gap is not in the runtime boundary. It is in the snapshot the sandboxes are stamped from:
+  </p>
+  <p>
+    <em>&ldquo;If your application generates unique content during the build (such as unique IDs, secrets,
+    or network connections), that content is shared across all MicroVMs run from the same image
+    version.&rdquo;</em>
+  </p>
+  <p>
+    For a web service that is a curiosity. For the use case this launch names &mdash; untrusted or
+    agent-generated code in isolated sandboxes &mdash; it is the thing to check first, because every
+    tenant's sandbox inherits whatever the build produced. A credential fetched during image build is one
+    credential across every sandbox, and the per-tenant isolation the architecture promises does not
+    extend to it.
+  </p>
+  <p>
+    The documented remedy is to generate unique content after start, through the <code>/run</code> hook,
+    and to pass per-sandbox configuration at run time rather than at image time:
+    <em>&ldquo;Unlike environment variables (which are set at image level and shared across all MicroVMs
+    from that image), the run hook payload is unique to each MicroVM.&rdquo;</em> It is
+    <em>&ldquo;A string payload (max 16 KB) delivered to the /run lifecycle hook when the MicroVM
+    starts&rdquo;</em>, which is enough for identifiers and Secrets Manager paths and not enough for the
+    secrets themselves.
+  </p>
+
+  <h3>Routing is by port, not by path</h3>
+  <p>
+    One more thing that matters specifically because the workload is untrusted:
+    <em>&ldquo;Lambda routes inbound requests based on their port and does not filter them by URL
+    path.&rdquo;</em>
+  </p>
+  <p>
+    Lifecycle hooks live on a known path under <code>/aws/lambda-microvms/runtime/v1/</code>. If a token
+    permits the port the hooks listen on, the holder of that token can call them &mdash; suspend, resume,
+    terminate, or re-run the initialisation hook. The guidance is explicit:
+    <em>&ldquo;For production workloads, host lifecycle hooks on a dedicated port separate from your
+    application port.&rdquo;</em> Tokens should then exclude the hook port from their allowed ports.
+  </p>
+
+  <h3>Two failure modes to handle in the orchestrator</h3>
+  <p>
+    Both are stated plainly and both will happen under load. On start:
+    <em>&ldquo;If your /run hook fails or times out, the MicroVM may transition directly to TERMINATING
+    without ever reaching RUNNING.&rdquo;</em> On resume:
+    <em>&ldquo;If resume does not succeed, Lambda returns 502 Bad Gateway to the caller.&rdquo;</em>
+  </p>
+  <p>
+    A durable function orchestrating MicroVMs has to treat both as ordinary branches rather than as
+    exceptions, because a step that assumes <code>run-microvm</code> produces a reachable endpoint will
+    checkpoint a success it did not get.
+  </p>
+</div>
+
+<div class="section" id="value">
+  <h2>Business value</h2>
+  <p>
+    The combination is genuinely new. Before it, running untrusted code in a strong sandbox meant either
+    containers with a weaker boundary, or EC2 with a startup time and a lifecycle you managed yourself.
+    MicroVMs give VM-level isolation with snapshot restore; durable functions give an orchestrator that
+    survives its own interruptions. Together they cover the case where a job is long, parallel, and must
+    not share a kernel with its neighbours.
+  </p>
+  <p>
+    The named use cases are coherent with that: software factories, security scanners, and CI/CD for
+    untrusted or agent-generated code. All three are fan-out workloads where the per-job environment is
+    disposable and the orchestration is the hard part. A single durable function orchestrating MicroVMs in
+    parallel replaces a queue, a worker pool and the state machine you would otherwise write.
+  </p>
+  <p>
+    The vertical scaling model also fits the shape: provision each MicroVM for baseline usage,
+    <em>&ldquo;with the flexibility to vertically scale to 4x of configured baseline during peak
+    activity&rdquo;</em>, paying the baseline rate while running and only for active use above it.
+  </p>
+</div>
+
+<div class="section" id="security">
+  <h2>Security considerations</h2>
+  <p>
+    Three things to settle before this carries untrusted code.
+  </p>
+  <p>
+    First, the build-time snapshot. Audit the image build for anything unique it produces, because that
+    uniqueness becomes a shared constant across every sandbox from that image version. Move it to the
+    <code>/run</code> hook.
+  </p>
+  <p>
+    Second, the hook port. Routing by port rather than path means a token that covers the hook port is a
+    lifecycle control-plane token. Separate ports, and scope tokens to the application port only.
+  </p>
+  <p>
+    Third, the token model itself, which is the strong part. There is no unauthenticated option, tokens
+    are scoped to specific ports and carry a configurable expiry, and egress is a connector you choose
+    rather than a default. For a sandbox, the defaults point the right way.
+  </p>
+  <p>
+    Worth stating plainly: nothing here is a statement about whether the Firecracker boundary holds. It is
+    the same virtualization underneath Lambda functions. The findings above are about configuration that
+    travels into every sandbox, which is where a per-tenant isolation story is most likely to leak.
+  </p>
+</div>
+
+<div class="section" id="cost">
+  <h2>Cost considerations</h2>
+  <p>
+    No pricing is in the announcement, and the documentation points at the Lambda pricing page rather than
+    quoting rates, so there is no figure here worth repeating. The cost <em>model</em> is documented:
+    running MicroVMs incur compute charges, suspended MicroVMs incur snapshot storage charges but not
+    compute charges, and terminated MicroVMs incur no charges.
+  </p>
+  <p>
+    The durable half has its own shape: waits suspend without compute charges, so a workflow that spends
+    most of a year waiting is cheap to hold open. The asymmetry from the architecture section reappears as
+    a cost asymmetry &mdash; the orchestrator is cheap to keep alive for a year, and the sandbox is not
+    available to keep for more than eight hours at any price.
+  </p>
+  <p>
+    The lever that actually matters is the idle policy. Suspending idle MicroVMs moves them off compute
+    charges onto snapshot storage, and <code>suspendedDurationSeconds</code> terminates them rather than
+    leaving them billing for storage indefinitely.
+  </p>
+</div>
+
+<div class="section" id="operational">
+  <h2>Operational considerations</h2>
+  <p>
+    Capacity is an account-level memory quota across all MicroVMs in <code>RUNNING</code> or
+    <code>SUSPENDED</code> state in a Region, adjustable through Service Quotas. The error to expect is
+    <code>ServiceQuotaExceededException</code> from <code>run-microvm</code>, and the documented responses
+    are to terminate idle MicroVMs or raise the quota. Suspended MicroVMs still count, which is the
+    non-obvious part: an aggressive idle policy reduces cost without freeing capacity, and only
+    termination does both.
+  </p>
+  <p>
+    For the durable side, the monitoring guidance is concrete: structured logging with execution IDs and
+    step names, CloudWatch alarms on error rates and execution duration, EventBridge rules on FAILED,
+    STOPPED and TIMED_OUT status changes, and an alarm on the DLQ's
+    <code>ApproximateNumberOfMessagesVisible</code>.
+  </p>
+  <p>
+    And it is a developer preview, in two languages, with GitHub repositories for samples and feedback.
+    That is the right status for something whose programming model has a replay constraint and whose two
+    halves have clocks three orders of magnitude apart.
+  </p>
+</div>
+
+<div class="section" id="tradeoffs">
+  <h2>Tradeoffs</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Design choice</th><th>What you get</th><th>What it costs</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Counting suspended time against the lifespan</td>
+          <td>A hard bound on how long any sandbox can exist</td>
+          <td>Suspension cannot be used to stretch a long job</td>
+        </tr>
+        <tr>
+          <td>TERMINATED as a terminal state</td>
+          <td>No ambiguity about whether state survived</td>
+          <td>The orchestrator must rebuild, not reconnect</td>
+        </tr>
+        <tr>
+          <td>No automatic retry of durable executions</td>
+          <td>No blind replay of expensive workflows</td>
+          <td>A DLQ is mandatory or the triggering event is lost</td>
+        </tr>
+        <tr>
+          <td>Replay as the durability mechanism</td>
+          <td>Ordinary sequential code, no DSL</td>
+          <td>Renaming a step can break executions up to a year old</td>
+        </tr>
+        <tr>
+          <td>Snapshot-based near-instant launch</td>
+          <td>Sandboxes that start fast enough to be per-request</td>
+          <td>Build-time uniqueness is shared across every sandbox</td>
+        </tr>
+        <tr>
+          <td>Routing by port, not path</td>
+          <td>Arbitrary protocols: HTTP/2, gRPC, WebSockets, SSE</td>
+          <td>Lifecycle hooks need their own port and token scope</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section" id="implementation">
+  <h2>Implementation guidance</h2>
+  <p>
+    Decide first whether any single unit of work can exceed eight hours. If it can, the MicroVM is not the
+    unit of work &mdash; it is a lease. Model the durable function as acquiring, using and releasing
+    sandboxes, with the expiry as a first-class state rather than an error, and checkpoint enough about
+    the work in progress that a fresh MicroVM can pick it up.
+  </p>
+  <p>
+    Attach a dead-letter queue before the first asynchronous invocation, not after the first loss. Pin
+    invocations to a version or alias so a deploy cannot change the code a running execution replays
+    through. Keep step names stable, and treat renaming one as a migration.
+  </p>
+  <p>
+    On the image, move anything per-tenant out of the build. Identifiers and Secrets Manager paths go
+    through the run hook payload; the secrets themselves get fetched after start. Put lifecycle hooks on
+    their own port from the beginning, because moving them later means reissuing every token.
+  </p>
+  <p>
+    Then handle the two failure branches explicitly: a MicroVM that never reaches <code>RUNNING</code>
+    because the run hook failed, and a 502 from a resume that did not succeed.
+  </p>
+</div>
+
+<div class="section" id="practices">
+  <h2>Best practices</h2>
+  <ul>
+    <li>Treat eight hours as the sandbox's hard ceiling, including any time it spends suspended.</li>
+    <li>Attach a DLQ to every durable function invoked asynchronously; Lambda will not retry the
+      execution.</li>
+    <li>Invoke by version or alias, and never rename a step while executions are in flight.</li>
+    <li>Generate per-sandbox values in the <code>/run</code> hook, never during the image build.</li>
+    <li>Host lifecycle hooks on a dedicated port and exclude it from application tokens.</li>
+    <li>Terminate rather than only suspend when you need capacity back &mdash; suspended MicroVMs still
+      count against the quota.</li>
+    <li>Handle a MicroVM that never reaches <code>RUNNING</code>, and a 502 on resume, as normal
+      branches.</li>
+  </ul>
+</div>
+
+<div class="section" id="adopt">
+  <h2>Who should adopt this and when</h2>
+  <p>
+    Now, in a preview capacity, if you are already running untrusted or model-generated code and your
+    current isolation is a container. That is the case this is built for, and the sandbox boundary is a
+    genuine upgrade.
+  </p>
+  <p>
+    Now, also, if you have a fan-out workload of independent jobs that each need a real operating system
+    &mdash; package installs, filesystem mounts, arbitrary ports &mdash; and each job finishes inside a
+    shift.
+  </p>
+  <p>
+    Not yet, if your orchestration is in Java, Go, Rust or C#; the extension is TypeScript and Python. Not
+    yet either if your unit of work regularly exceeds eight hours, unless you are prepared to build the
+    lease-and-resume machinery, because that is the part this does not give you.
+  </p>
+</div>
+
+<div class="section" id="takeaways">
+  <h2>Key takeaways</h2>
+  <ul>
+    <li>Durable functions run up to a year; a MicroVM's total lifespan caps at 28,800 seconds, and that
+      ceiling counts suspended time as well as running time.</li>
+    <li>Suspension is a cost control, not a time extension, and a separate suspended-duration timer can
+      terminate an idle sandbox before the eight hours are up.</li>
+    <li><code>TERMINATED</code> is terminal &mdash; the MicroVM cannot be resumed or restarted, so the
+      orchestrator rebuilds rather than reconnects.</li>
+    <li>Lambda does not automatically retry a durable execution, unlike an ordinary asynchronous
+      invocation. A DLQ is the only thing holding the triggering event.</li>
+    <li>Replay means a renamed step can break executions that started as long as a year ago. Pin to a
+      version or alias.</li>
+    <li>Anything unique generated during the image build is shared by every MicroVM from that image
+      version &mdash; the one property a per-tenant sandbox cannot inherit by accident.</li>
+    <li>Inbound routing is by port and not by path, so lifecycle hooks belong on their own port with
+      tokens scoped away from it.</li>
+  </ul>
+</div>
+
+<div class="section" id="references">
+  <h2>Official AWS references</h2>
+  <ul>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/11/lambda-durable-microvm/" target="_blank" rel="noopener">AWS Lambda now supports orchestrating MicroVMs with Lambda durable functions &#8212; the announcement, the developer preview status and language support, the named use cases, the optional worker library and the SQS and EventBridge event sources</a></li>
+    <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html" target="_blank" rel="noopener">Running and using MicroVMs &#8212; the <code>maximumDurationInSeconds</code> range and that it covers running and suspended time, the idle policy fields and the 28,800-second idle maximum, the suspended-duration termination timer, the 16 KB run hook payload and that it is unique per MicroVM where environment variables are not, the JWE token requirement with no unauthenticated option, port-based routing and the dedicated-port guidance for lifecycle hooks, and the 502 on a failed resume</a></li>
+    <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html" target="_blank" rel="noopener">AWS Lambda MicroVMs core concepts &#8212; Amazon Linux 2023 and the per-tenant environment, the Firecracker snapshot build process, the warning that build-time unique content is shared across all MicroVMs from an image version, the full lifecycle states and transitions, that <code>TERMINATED</code> is terminal, and that a failed run hook can skip <code>RUNNING</code> entirely</a></li>
+    <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html" target="_blank" rel="noopener">Lambda durable functions &#8212; the one-year execution ceiling, the checkpoint and replay mechanism and that replay re-runs code from the beginning while skipping completed checkpoints, that waits suspend without compute charges, and the SDK language list</a></li>
+    <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/durable-best-practices.html" target="_blank" rel="noopener">Best practices for Lambda durable functions &#8212; that Lambda does not automatically retry durable executions unlike ordinary asynchronous invocations, the DLQ requirement and the terminal states that trigger it, the version and alias pinning guidance, and the warning that renaming or altering a step breaks in-progress executions</a></li>
+    <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html" target="_blank" rel="noopener">AWS Lambda MicroVMs &#8212; the isolation and networking capabilities, the account-level memory quota and the 4x vertical scaling model, and the cost model for running, suspended and terminated MicroVMs</a></li>
+    <li><a href="https://docs.aws.amazon.com/durable-execution/" target="_blank" rel="noopener">AWS Durable Execution SDK Developer Guide &#8212; further reading on the SDK programming reference and language-specific guides; no claims in this post are drawn from it</a></li>
+  </ul>
+</div>
+
+</div>

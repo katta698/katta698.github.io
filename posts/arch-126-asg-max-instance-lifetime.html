@@ -1,0 +1,374 @@
+---
+title: "AWS Architecture Series #126 — A protected instance has no maximum lifetime"
+date: '2026-11-27T09:00:00'
+slug: aws-architecture-asg-max-instance-lifetime
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-27'
+problem: "Maximum instance lifetime exists for compliance: AWS names internal security policies and external compliance controls as the use case, and it replaces every instance in a group once it has been in service for a set number of seconds. Two documented behaviours undercut reading it as a control. Instance scale-in protection wins - Auto Scaling will not terminate a protected instance even when it has reached its maximum lifetime, so an instance can outlive the limit indefinitely, and the same page recommends scale-in protection as the remedy for replacement happening too fast. And the pacing is adaptive rather than fixed: Auto Scaling usually replaces one instance at a time, but when the lifetime is too short to replace them individually it replaces several at once, up to 10 percent of current capacity. Setting the parameter at all can start replacing instances immediately, because desynchronising them is how it avoids replacing them all together later."
+builds: "A precise reading of what maximum instance lifetime guarantees: the minimum value and how to clear it, why the replacement pace is adaptive and what sets the 10 percent ceiling, why setting the parameter can terminate instances today, the two documented ways an instance outlives the limit, the outage a single-instance group can take from the default terminate-then-launch order, and the deploy that happens as a side effect because replacements use whatever launch template the group currently carries."
+verified_claims:
+  - claim: "The maximum instance lifetime specifies the maximum amount of time (in seconds) that an instance can be in service before it is terminated and replaced"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "A common use case might be a requirement to replace your instances on a schedule because of internal security policies or external compliance controls"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "You must specify a value of at least 86,400 seconds (one day). To clear a previously set value, specify a new value of 0. This setting applies to all current and future instances in your Auto Scaling group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "Amazon EC2 Auto Scaling will usually replace instances one at a time, with a pause between replacements"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "if the specified maximum instance lifetime doesn't provide enough time to replace each instance individually, Amazon EC2 Auto Scaling must replace more than one instance at a time. Several instances might be replaced at once, by up to 10 percent of the current capacity of your Auto Scaling group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "To avoid replacing too many instances at once, either set a longer maximum instance lifetime or use instance scale-in protection to temporarily prevent individual instances from being terminated"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "Instances are not guaranteed to be replaced only at the end of their maximum duration"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "In some situations, Amazon EC2 Auto Scaling might need to start replacing instances immediately after you update the maximum instance lifetime parameter. The reason for this behavior is to avoid replacing all instances at the same time"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "When this protection is enabled on an instance, Amazon EC2 Auto Scaling will not terminate the instance even if it has reached its maximum instance lifetime"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "When there is only one instance in the Auto Scaling group, the maximum instance lifetime feature can result in an outage because Amazon EC2 Auto Scaling terminates an instance and then launches a new instance by default"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "Whenever an earlier instance is replaced and a new instance launches, the new instance uses the launch template or launch configuration that is currently associated with the Auto Scaling group"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "If your launch template or launch configuration specifies the Amazon Machine Image (AMI) ID of a different version of your application, this version of your application will be deployed automatically"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "By default, Amazon EC2 Auto Scaling creates a new scaling activity for terminating the instance and then terminates it. While the instance is terminating, another scaling activity launches a new instance"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+  - claim: "When you create an Auto Scaling group in the console, you cannot set the maximum instance lifetime"
+    source: https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html
+---
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #126 &middot; Reliability</div>
+  <h1 class="post-title">A protected instance has no maximum lifetime</h1>
+  <p class="post-subtitle">Maximum instance lifetime is documented as a compliance control: replace every instance on a schedule. Two documented behaviours stop it being one. Scale-in protection outranks it entirely, and the page recommends scale-in protection as the fix for the feature replacing instances too quickly.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      This is the simplest setting in the series: one number, in seconds, after which an instance is
+      replaced. <em>&ldquo;The maximum instance lifetime specifies the maximum amount of time (in seconds)
+      that an instance can be in service before it is terminated and replaced.&rdquo;</em> And AWS is
+      explicit about who it is for:
+      <em>&ldquo;A common use case might be a requirement to replace your instances on a schedule because
+      of internal security policies or external compliance controls.&rdquo;</em>
+    </p>
+    <p>
+      A control that an auditor can be shown. That framing is what makes the rest of the page worth
+      reading closely, because three of its paragraphs describe conditions under which the number is not
+      what happens.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Scale-in protection beats the lifetime, and is the recommended remedy</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;When this protection is enabled on an instance, Amazon EC2 Auto Scaling
+          <strong>will not terminate the instance even if it has reached its maximum instance
+          lifetime</strong>.&rdquo;</em>
+        </p>
+        <p>
+          There is no timeout on that and no escalation. A protected instance is simply exempt, for as
+          long as the protection is set. If the reason for the lifetime was a 30-day rotation requirement,
+          a protected instance does not rotate at 30 days or at 300.
+        </p>
+        <p>
+          What makes this more than a footnote is that the same page proposes it as a fix:
+          <em>&ldquo;To avoid replacing too many instances at once, either set a longer maximum instance
+          lifetime or use instance scale-in protection to temporarily prevent individual instances from
+          being terminated.&rdquo;</em>
+        </p>
+        <p>
+          So the documented mitigation for one behaviour of this feature is the documented way to opt out
+          of it. Both sentences are correct; read together they mean a group can satisfy the setting and
+          not the requirement behind it, and nothing in the group's configuration shows the difference.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The pace is adaptive, and the arithmetic decides it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Amazon EC2 Auto Scaling will usually replace instances one at a time, with a pause
+          between replacements.&rdquo;</em> Usually is doing real work in that sentence:
+        </p>
+        <p>
+          <em>&ldquo;if the specified maximum instance lifetime doesn't provide enough time to replace each
+          instance individually, Amazon EC2 Auto Scaling must replace more than one instance at a time.
+          Several instances might be replaced at once, by up to 10 percent of the current capacity of your
+          Auto Scaling group.&rdquo;</em>
+        </p>
+        <p>
+          The concurrency is therefore a function of the lifetime and the group size, not something you
+          set. A number chosen to be strict, on a group large enough that one-at-a-time cannot keep up,
+          converts itself into a rolling replacement of a tenth of the fleet. Nothing warns you at the
+          moment you set it; the group's behaviour simply changes.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Setting a long lifetime can terminate instances today</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Instances are not guaranteed to be replaced only at the end of their maximum
+          duration.&rdquo;</em> And the reason is the useful part:
+        </p>
+        <p>
+          <em>&ldquo;In some situations, Amazon EC2 Auto Scaling might need to start replacing instances
+          immediately after you update the maximum instance lifetime parameter. <strong>The reason for
+          this behavior is to avoid replacing all instances at the same time.</strong>&rdquo;</em>
+        </p>
+        <p>
+          A group whose instances all launched together would, under a naive implementation, reach their
+          lifetime together. Auto Scaling prevents that by spreading them out, and the only way to spread
+          out instances that are already the same age is to start replacing some of them early. So the
+          mechanism that protects you from a synchronised mass replacement in 90 days is a replacement
+          now.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-126-asg-max-instance-lifetime.svg" alt="Diagram: Amazon EC2 Auto Scaling maximum instance lifetime. The setting specifies the maximum amount of time in seconds that an instance can be in service before it is terminated and replaced, and AWS names internal security policies and external compliance controls as the common use case. The minimum value is 86,400 seconds, one day, and a value of 0 clears a previously set value; the setting applies to all current and future instances in the group. It cannot be set when creating a group in the console, only by editing the group afterwards or through the CLI and API. Replacement pacing is adaptive rather than configurable: Auto Scaling usually replaces instances one at a time with a pause between replacements, but if the specified lifetime does not provide enough time to replace each instance individually it must replace more than one at a time, and several instances might be replaced at once by up to 10 percent of the current capacity of the group. Instances are not guaranteed to be replaced only at the end of their maximum duration, and Auto Scaling might need to start replacing instances immediately after the parameter is updated, in order to avoid replacing all instances at the same time. Two documented conditions mean an instance does not observe the limit. With instance scale-in protection enabled, Auto Scaling will not terminate the instance even if it has reached its maximum instance lifetime, and the same documentation recommends scale-in protection as a way to avoid replacing too many instances at once. And when there is only one instance in the group, the feature can result in an outage, because by default Auto Scaling creates a scaling activity to terminate the instance and then terminates it, launching a replacement while the instance is terminating; an instance maintenance policy changes this to launch before terminating. Replacement also acts as a deploy: whenever an earlier instance is replaced the new instance uses the launch template or launch configuration currently associated with the group, so if that template specifies the AMI ID of a different version of the application, that version is deployed automatically.">
+
+    <h3>The one number, and its floor</h3>
+    <p>
+      <em>&ldquo;You must specify a value of at least 86,400 seconds (one day). To clear a previously set
+      value, specify a new value of 0. This setting applies to all current and future instances in your
+      Auto Scaling group.&rdquo;</em>
+    </p>
+    <p>
+      One day is the floor, and it is a sensible one: below that, the adaptive pacing from challenge 2
+      would be the normal case rather than the exception for all but the smallest groups. The clearing
+      value being 0 rather than an unset field matters for infrastructure as code, where omitting a
+      property and setting it to zero are different operations.
+    </p>
+    <p>
+      The console cannot set it at creation time:
+      <em>&ldquo;When you create an Auto Scaling group in the console, you cannot set the maximum instance
+      lifetime.&rdquo;</em> It is available when editing an existing group, and from the API at creation.
+      That is a smaller version of the console-versus-API divergence this series keeps running into: not a
+      different default, but a different set of available settings.
+    </p>
+
+    <h3>Why the pace cannot be configured</h3>
+    <p>
+      Every other replacement feature in this series exposes its pacing. An instance refresh takes a
+      minimum and maximum healthy percentage; a maintenance policy sets them for the group. Maximum
+      instance lifetime takes neither, and the reason is structural: the pace is whatever satisfies the
+      deadline you gave it.
+    </p>
+    <p>
+      The arithmetic is worth doing before setting the number. One at a time with a pause, across a group
+      of N instances, needs roughly N pauses of headroom inside the lifetime. Where it does not have
+      that, the documented consequence is replacement in batches of up to 10 percent of current capacity
+      &mdash; and because the ceiling is expressed against <em>current</em> capacity, a group that has
+      scaled out replaces more instances at once than the same group scaled in.
+    </p>
+
+    <h3>The single-instance outage</h3>
+    <p>
+      This is the one unambiguous defect-shaped behaviour on the page, and it is stated as a limitation
+      rather than buried:
+      <em>&ldquo;When there is only one instance in the Auto Scaling group, the maximum instance lifetime
+      feature can result in an outage because Amazon EC2 Auto Scaling terminates an instance and then
+      launches a new instance by default.&rdquo;</em>
+    </p>
+    <p>
+      The cause is the default order, described a few paragraphs earlier:
+      <em>&ldquo;By default, Amazon EC2 Auto Scaling creates a new scaling activity for terminating the
+      instance and then terminates it. While the instance is terminating, another scaling activity
+      launches a new instance.&rdquo;</em>
+    </p>
+    <p>
+      So a group of one has no capacity during the gap. The fix is the previous post's subject &mdash; an
+      instance maintenance policy that launches before terminating &mdash; and this is the clearest case
+      for setting one. A compliance rotation that takes the service down once a month is a worse outcome
+      than the rotation not happening.
+    </p>
+
+    <h3>The deploy nobody asked for</h3>
+    <p>
+      Replacement is not a restart. It is a launch, from whatever the group currently points at:
+      <em>&ldquo;Whenever an earlier instance is replaced and a new instance launches, the new instance
+      uses the launch template or launch configuration that is currently associated with the Auto Scaling
+      group.&rdquo;</em>
+    </p>
+    <p>
+      And the consequence is spelled out:
+      <em>&ldquo;If your launch template or launch configuration specifies the Amazon Machine Image (AMI)
+      ID of a different version of your application, this version of your application will be deployed
+      automatically.&rdquo;</em>
+    </p>
+    <p>
+      That is a genuine second function of this feature. A group with a maximum instance lifetime and a
+      launch template pointing at a rolling AMI converges on the current AMI without anyone starting an
+      instance refresh &mdash; which is useful if intended and a surprise if not. Combined with
+      <code>$Latest</code> from post #124, a template updated for a different reason reaches production on
+      the lifetime's schedule rather than on a deployment's.
+    </p>
+
+    <h3>What this feature does not have</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>An instance refresh has</th><th>Maximum instance lifetime has</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Minimum and maximum healthy percentage</td><td>Adaptive pacing, up to 10 percent of current capacity</td></tr>
+          <tr><td>A rollback, under conditions</td><td>Nothing &mdash; replacements are not a tracked operation</td></tr>
+          <tr><td>Checkpoints and a bake time</td><td>A pause between replacements, not configurable</td></tr>
+          <tr><td>CloudWatch alarms that can fail it</td><td>Nothing &mdash; it is a standing property of the group</td></tr>
+          <tr><td>A status you can poll</td><td>Activity history, after the fact</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The comparison is the point rather than a criticism. An instance refresh is an operation you start,
+      so it can be paced, paused and reversed. A maximum instance lifetime is a property the group holds
+      forever, so there is no operation to attach any of that to.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Expressing it as a per-instance age is the only thing that works</h3>
+    <p>
+      A fleet-wide replacement schedule stated as a schedule &mdash; replace everything every 30 days
+      &mdash; would synchronise the fleet by construction, and every group would take a correlated
+      replacement on the same day. A per-instance age cannot do that, because instances enter service at
+      different times and so age out at different times. The desynchronisation is a property of the unit
+      AWS chose, not a feature bolted on.
+    </p>
+
+    <h3>Honouring scale-in protection is right, even though it defeats the control</h3>
+    <p>
+      The alternative is worse. Scale-in protection exists so that an operator can say this instance must
+      not be terminated, and a feature that overrode it would make the protection conditional on which
+      other settings a group happens to carry. Auto Scaling honours the more specific, more deliberate
+      instruction, and it documents that it does so. The gap is not in the behaviour; it is that nothing
+      reports a group where the two are in conflict.
+    </p>
+
+    <h3>Adaptive pacing beats refusing the setting</h3>
+    <p>
+      Faced with a lifetime too short to honour one instance at a time, Auto Scaling could reject the
+      value. Instead it replaces faster, up to a documented ceiling. That is the better failure mode for a
+      compliance control, where the deadline is the requirement and the pace is the negotiable part
+      &mdash; and the 10 percent cap is what stops it becoming a full-fleet replacement.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Using it as a compliance control</td>
+            <td>Audit scale-in protection alongside it</td>
+            <td>A protected instance is exempt, with no timeout</td>
+          </tr>
+          <tr>
+            <td>Choosing the value</td>
+            <td>Long enough for N one-at-a-time replacements</td>
+            <td>Otherwise the pace escalates to 10 percent of capacity</td>
+          </tr>
+          <tr>
+            <td>Setting it on a live group</td>
+            <td>Expect replacements to begin immediately</td>
+            <td>Desynchronising an even-aged group means replacing some early</td>
+          </tr>
+          <tr>
+            <td>Groups of one</td>
+            <td>Set an instance maintenance policy first</td>
+            <td>The default order terminates before launching, and that is an outage</td>
+          </tr>
+          <tr>
+            <td>Launch template on the group</td>
+            <td>Know that replacement deploys whatever it points at</td>
+            <td>A template change reaches production on the lifetime's schedule</td>
+          </tr>
+          <tr>
+            <td>Clearing it</td>
+            <td>Set 0, not an empty value</td>
+            <td>That is the documented way to clear a previously set value</td>
+          </tr>
+          <tr>
+            <td>Creating groups in the console</td>
+            <td>Set it in a second step, or use the API</td>
+            <td>The console cannot set it at creation time</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <ul>
+      <li>
+        Every group with a maximum instance lifetime, cross-referenced against instances carrying scale-in
+        protection &mdash; that intersection is the set of instances the control does not cover.
+      </li>
+      <li>
+        Every such group's instance count against its lifetime, to find the ones where one-at-a-time
+        cannot keep up and replacement is running at 10 percent of capacity.
+      </li>
+      <li>
+        Every group of one or two instances with a lifetime set and no instance maintenance policy.
+      </li>
+      <li>
+        Every group whose launch template is updated by a pipeline, where the lifetime is silently acting
+        as the deployment mechanism.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Seven posts into Auto Scaling, the pattern across all of them is that a setting's name describes its
+      intent and the documentation describes its behaviour, and the gap between the two is where the
+      operational surprises live. This one has the widest gap so far, because the name is a guarantee and
+      the page lists two conditions under which it does not hold.
+    </p>
+    <p>
+      The finding I would act on is the scale-in protection exemption. Everything else here is a pacing
+      question you can reason about from the group's size. That one is different in kind: it means a group
+      can be configured exactly as an auditor asked, hold an instance that has been running for a year,
+      and present nothing anomalous in its configuration. If you are using this feature as a control, the
+      thing to monitor is not the setting. It is the instances the setting does not apply to.
+    </p>
+
+    <div class="next-post">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon EC2 Auto Scaling instance scale-in protection: what it does and does not stop, the difference between protecting a group and protecting an instance, and why it is honoured by some terminations and ignored by others.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-max-instance-lifetime.html" target="_blank" rel="noopener">Replace Auto Scaling instances based on maximum instance lifetime &#8212; the definition and the compliance use case, the 86,400-second minimum and clearing with 0, that it applies to all current and future instances, the usually-one-at-a-time pacing and the escalation to 10 percent of current capacity when the lifetime is too short, the recommendation to lengthen the lifetime or use scale-in protection, that replacement is not guaranteed to wait for the end of the duration and may begin immediately after the parameter is updated, that scale-in protection prevents termination even at maximum lifetime, the single-instance outage from the default terminate-then-launch order, that the console cannot set it at creation time, and that replacements use the launch template currently on the group and so deploy whatever AMI it names</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-maintenance-policy.html" target="_blank" rel="noopener">Instance maintenance policies &#8212; further reading on the policy that changes the replacement order to launch before terminating, which is the documented fix for the single-instance outage; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-protection.html" target="_blank" rel="noopener">Use instance scale-in protection to control instance termination &#8212; further reading on the protection that exempts an instance from its maximum lifetime; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-instance-refresh.html" target="_blank" rel="noopener">Use an instance refresh to update instances in an Auto Scaling group &#8212; further reading on the operation this feature is deliberately not, and the pacing controls it has that a lifetime cannot; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
